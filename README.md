@@ -20,8 +20,17 @@ concurrency-safe `claimNextQueued` (`FOR UPDATE SKIP LOCKED`), `resumeToken` ide
 process restart. Completion outbox + best-effort webhook delivery with retry. The full behavioral suite
 runs against **both** stores (parametrized); the golden `result_hash` is identical across backends.
 
-Deferred (see ARCHITECTURE §11): Docker sandbox for untrusted bundles (Slice 3), networked Research
-Historical Data API (Slice 4), trading-lab cutover (Slice 5).
+**Slice 3 (sandboxed untrusted bundles)** — a submitted `moduleBundle` is content-addressed (`bundleHash`)
+in the backtester's **own** registry (ADR §12.5, variant A) and executed in a locked-down Docker
+container: `--network none`, read-only rootfs, `--cap-drop ALL`, no env/secrets, cpu/memory/pids limits.
+The runner keeps the same `(request, deps)` seam — an executor produces signals (trusted momentum
+in-process, or the sandboxed bundle); sizing/metrics stay trusted. Same bundle → same `result_hash`
+(independent of the sandbox environment). Limit violations map to a clean terminal status + code
+(`timed_out`/`sandbox_timeout`, `failed`/`sandbox_memory_exceeded`|`sandbox_module_error`), never a
+service crash.
+
+Deferred (see ARCHITECTURE §11): networked Research Historical Data API (Slice 4), trading-lab
+cutover (Slice 5).
 
 ## Layout
 
@@ -31,13 +40,16 @@ apps/backtester               # the service
   src/determinism/            # canonical-json + seeded rng (lifted verbatim from platform 018) + content hashing
   src/runner/                 # minimal deterministic momentum runner (runBacktest seam)
   src/data/                   # BacktesterDataPort + in-process fixture reader + materialize
+  src/runner/                 # ModuleExecutor seam: trusted momentum executor + runBacktest
   src/jobs/                   # 8-state lifecycle, JobStore (in-memory + Postgres), fingerprint, submit, worker, completion/outbox
+  src/sandbox/                # bundle model + content-addressed registry + Docker driver + SandboxModuleExecutor
   src/artifacts/              # content-addressed artifact store + manifest
   src/db/                     # pg pool + forward-only migration runner
   src/api/                    # Fastify HTTP API
-  migrations/                 # 0001_init.sql (backtest_job + backtest_job_event)
+  migrations/                 # 0001_init.sql, 0002_bundle_hash.sql
+  sandbox-harness/            # entry.mjs — trusted in-container harness (plain ESM)
   fixtures/candles/           # smoke dataset
-  test/                       # determinism, idempotency, e2e, restart, completion, concurrent-claim (parametrized over stores)
+  test/                       # determinism, idempotency, e2e, restart, completion, concurrent-claim, bundle, sandbox
 ```
 
 ## Develop
@@ -61,6 +73,20 @@ BACKTESTER_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/backte
 ```
 
 Each test run isolates itself in a throwaway schema (created + migrated, dropped on teardown).
+
+### Sandbox (Slice 3)
+
+Submitting a `moduleBundle` on `POST /v1/runs` runs untrusted code in a Docker container, so the host
+needs a Docker daemon and the `node:24-alpine` image. The sandbox tests are **gated on Docker** — they
+**skip** (never fail) when no daemon is reachable. To run them:
+
+```bash
+docker pull node:24-alpine
+pnpm test   # sandbox tests run when Docker is available
+```
+
+The bundle's entry exports `signals(candles, seed): boolean[]`; the trusted runner consumes those
+signals (sizing/metrics stay trusted). Tune limits with `BACKTESTER_SANDBOX_*` env vars.
 
 ## HTTP API (v1, bearer auth)
 

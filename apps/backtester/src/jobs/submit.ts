@@ -1,7 +1,9 @@
 // Submit service — validate, fingerprint, idempotent insert, accepted -> queued.
 
-import type { RunJobHandle, RunSubmitRequest } from '@trading/research-contracts';
+import type { ContentHash, RunJobHandle, RunSubmitRequest } from '@trading/research-contracts';
 import { METRIC_CATALOG } from '@trading/research-contracts';
+import { validateBundle } from '../sandbox/bundle';
+import type { BundleStore } from '../sandbox/bundle-store';
 import { requestFingerprint } from './fingerprint';
 import { toHandle, type JobEventRow, type JobStore, type NewJob } from './job-store';
 
@@ -22,6 +24,7 @@ export interface SubmitDeps {
   uid: () => string;
   defaultQueueTimeoutMs: number;
   defaultRunTimeoutMs: number;
+  bundleStore?: BundleStore;
 }
 
 const VALID_MODES = new Set(['research', 'review', 'promotion']);
@@ -61,6 +64,12 @@ function validate(req: RunSubmitRequest): void {
       throw new SubmitError(400, 'validation_error', `unknown_metric: ${unknown.join(', ')}`);
     }
   }
+  if (req.moduleBundle !== undefined) {
+    const issues = validateBundle(req.moduleBundle);
+    if (issues.length > 0) {
+      throw new SubmitError(400, 'validation_error', `invalid module bundle: ${issues.map((i) => i.code).join(', ')}`);
+    }
+  }
 }
 
 function eventRow(
@@ -86,6 +95,16 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promi
   const fingerprint = requestFingerprint(body);
   const now = deps.clock();
 
+  // Store a submitted bundle in the own content-addressed registry; the job keeps only the hash.
+  let storedBundleHash: ContentHash | undefined;
+  if (body.moduleBundle) {
+    if (!deps.bundleStore) {
+      throw new SubmitError(400, 'validation_error', 'module bundle submission is not enabled');
+    }
+    storedBundleHash = await deps.bundleStore.put(body.moduleBundle);
+  }
+
+  const { moduleBundle: _omitBundle, ...rest } = body;
   const newJob: NewJob = {
     jobId: runId,
     runId,
@@ -93,13 +112,14 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promi
     requestFingerprint: fingerprint,
     correlationId: body.correlationId,
     workflowId: body.workflowId,
-    request: { ...body, runId, metrics: body.metrics ?? [] },
+    request: { ...rest, runId, metrics: body.metrics ?? [] },
     effectiveSeed: body.seed,
     datasetRef: body.datasetRef,
     callbackUrl: body.callbackUrl,
     queueDeadlineMs: now + (body.queueTimeoutMs ?? deps.defaultQueueTimeoutMs),
     runTimeoutMs: body.runTimeoutMs ?? deps.defaultRunTimeoutMs,
     acceptedAtMs: now,
+    ...(storedBundleHash ? { bundleHash: storedBundleHash } : {}),
   };
 
   const { job, created } = await deps.store.insertOrGet(newJob);

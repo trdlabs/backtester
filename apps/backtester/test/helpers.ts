@@ -12,6 +12,7 @@ import type { StoreFactory } from './store-factories';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = resolve(HERE, '../fixtures/candles');
+export const HARNESS_DIR = resolve(HERE, '../sandbox-harness');
 export const AUTH = { authorization: 'Bearer test-token' };
 
 export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
@@ -21,9 +22,20 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     authToken: 'test-token',
     fixturesDir: FIXTURES_DIR,
     artifactsDir: mkdtempSync(resolve(tmpdir(), 'bt-artifacts-')),
+    bundlesDir: mkdtempSync(resolve(tmpdir(), 'bt-bundles-')),
     defaultQueueTimeoutMs: 3_600_000,
     defaultRunTimeoutMs: 3_600_000,
     autoWorker: false,
+    sandbox: {
+      harnessDir: HARNESS_DIR,
+      image: 'node:24-alpine',
+      memoryMb: 256,
+      cpus: 1,
+      pidsLimit: 64,
+      wallTimeMs: 5_000,
+      tmpfsMb: 64,
+      user: '65534:65534',
+    },
     ...over,
   };
 }

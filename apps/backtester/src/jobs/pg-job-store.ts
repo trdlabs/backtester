@@ -38,6 +38,7 @@ interface JobDbRow {
   effective_seed: string;
   dataset_ref: string;
   dataset_fingerprint: string | null;
+  bundle_hash: string | null;
   callback_url: string | null;
   queue_deadline_ms: string | null;
   run_timeout_ms: string;
@@ -70,6 +71,7 @@ function rowToJob(r: JobDbRow): JobRow {
     effectiveSeed: Number(r.effective_seed),
     datasetRef: r.dataset_ref,
     datasetFingerprint: str(r.dataset_fingerprint),
+    bundleHash: (r.bundle_hash as ContentHash | null) ?? undefined,
     callbackUrl: str(r.callback_url),
     queueDeadlineMs: num(r.queue_deadline_ms),
     runTimeoutMs: Number(r.run_timeout_ms),
@@ -133,6 +135,7 @@ export class PgJobStore implements JobStore {
       job.runTimeoutMs,
       job.acceptedAtMs,
       JSON.stringify(timeline),
+      job.bundleHash ?? null,
     ];
     const conflict = job.resumeToken
       ? 'ON CONFLICT (resume_token) WHERE resume_token IS NOT NULL DO NOTHING'
@@ -141,8 +144,8 @@ export class PgJobStore implements JobStore {
       `INSERT INTO backtest_job
          (run_id, job_id, resume_token, request_fingerprint, correlation_id, workflow_id,
           request_json, effective_seed, dataset_ref, callback_url, queue_deadline_ms, run_timeout_ms,
-          accepted_at_ms, timeline_json, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14::jsonb,'accepted')
+          accepted_at_ms, timeline_json, bundle_hash, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,'accepted')
        ${conflict}
        RETURNING ${SELECT_COLS}`,
       values,

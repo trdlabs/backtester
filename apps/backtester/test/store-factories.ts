@@ -5,8 +5,12 @@
 import { Pool } from 'pg';
 import { createPool } from '../src/db/pool';
 import { DEFAULT_MIGRATIONS_DIR, migrate } from '../src/db/migrate';
+import { dockerAvailable } from '../src/sandbox/docker';
 import { InMemoryJobStore, type JobStore } from '../src/jobs/job-store';
 import { PgJobStore } from '../src/jobs/pg-job-store';
+
+/** Probed once; sandbox tests skip (not fail) when the Docker daemon is unreachable. */
+export const DOCKER_AVAILABLE = await dockerAvailable();
 
 const PG_URL = process.env.BACKTESTER_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 

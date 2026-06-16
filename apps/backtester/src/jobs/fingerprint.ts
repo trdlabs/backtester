@@ -5,11 +5,14 @@
 import type { RunSubmitRequest } from '@trading/research-contracts';
 import { canonicalJson } from '../determinism/canonical-json';
 import { sha256Hex } from '../determinism/hash';
+import { bundleHash } from '../sandbox/bundle';
 
 export function requestFingerprint(req: RunSubmitRequest): string {
   const normalized = {
     datasetRef: req.datasetRef,
     moduleRef: req.moduleRef,
+    // A submitted bundle is run-affecting; identify it by content hash (null for trusted runs).
+    moduleBundle: req.moduleBundle ? bundleHash(req.moduleBundle) : null,
     symbols: req.symbols,
     timeframe: req.timeframe,
     period: req.period,

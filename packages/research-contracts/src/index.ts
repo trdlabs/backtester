@@ -7,6 +7,9 @@ export const CONTRACT_VERSION = '017.2';
 /** 022 artifact-set contract version. */
 export const ARTIFACT_CONTRACT_VERSION = '022.1';
 
+/** Module-bundle/registry metadata version (Slice 3 — submitted-bundle sandbox execution). */
+export const BUNDLE_CONTRACT_VERSION = '019.1';
+
 /** Metric names the MVP runner can compute (request-gated). */
 export const METRIC_CATALOG = [
   'pnl',

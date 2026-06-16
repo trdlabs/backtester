@@ -404,7 +404,12 @@ The thinnest end-to-end that proves the architecture:
 ### Subsequent slices
 
 - **Slice 2:** Pg `JobStore` (own DB) + outbox + webhook completion + persisted deadlines/reaper.
-- **Slice 3:** Docker sandbox + harness for **submitted bundles** (untrusted execution) + 019 taxonomy.
+- **Slice 3:** Docker sandbox + in-container harness for **submitted bundles** (untrusted execution).
+  Bundles are self-contained, content-addressed (`bundleHash`), and stored in the backtester's own
+  registry (decision §12.5, variant A) — no platform registry on the execution path. Same bundle →
+  same `result_hash` (determinism independent of the sandbox environment). Limit violations (time /
+  memory / crash) map to a clean terminal status (`timed_out` / `failed`) with a precise
+  `terminal_code`, never a service crash.
 - **Slice 4:** Network Research Historical Data API on platform/mock; switch `platformDataClient` to
   HTTP; mock-platform parity.
 - **Slice 5:** trading-lab cutover behind the flag; retire sp4_mock; publish `@trading-backtester/client`.
@@ -425,10 +430,13 @@ The thinnest end-to-end that proves the architecture:
    `HistoricalDatasetReader` behind the `platformDataClient` port; the networked "Research Historical
    Data API" on platform + mock-platform is a later slice (§11, Slice 4), not a blocker.
 
-### Still open
-
-5. **Module registry:** does the backtester share a module registry with the platform for
-   *trusted/promoted* modules, or only accept submitted bundles + its own registry? (trading-lab today
-   submits `submitted_overlay` bundles, so the sandbox path — Slice 3 — is required for end-to-end
-   parity regardless.) — to decide before Slice 3.
+5. **Module registry: submitted bundles + own content-addressed registry only (variant A).**
+   ✅ Confirmed. The backtester accepts self-contained submitted bundles and stores/addresses them by
+   content-hash in its **own** registry. It does **not** share a registry with the platform on the
+   execution path. Rationale: (a) isolation — the backtester stays an independent bounded context with
+   no read coupling into platform internals to run a backtest; (b) it reinforces the sandbox security
+   boundary — every executed module is untrusted and self-contained, never a trusted cross-service
+   reference; (c) it falls out naturally from content-addressing (`bundleHash`), which is already the
+   determinism/parity primitive. Promotion-parity (resolving *promoted* modules from the platform) is a
+   possible later slice and is explicitly **not** in Slice 3.
 ```

@@ -1,31 +1,30 @@
 // Worker — claims the oldest queued job, runs the backtest in-process, persists artifacts, transitions
-// to a terminal state, and publishes the completion event. Slice 1 drained synchronously; the queue
-// (the store) is the durable boundary, so the Postgres store + multiple concurrent workers need no
-// change here — claimNextQueued is the concurrency-safe handoff (FOR UPDATE SKIP LOCKED in Pg).
+// to a terminal state, and publishes the completion event. claimNextQueued is the concurrency-safe
+// handoff (FOR UPDATE SKIP LOCKED in Pg). A job with a bundleHash runs in the Docker sandbox; otherwise
+// the trusted momentum executor. Sandbox limit/▶failures map to a clean terminal status + terminal_code
+// (never a service crash).
 
 import type { BacktestRunRequest, RunPeriod, RunResultSummary } from '@trading/research-contracts';
 import { CONTRACT_VERSION } from '@trading/research-contracts';
 import { contentRef } from '../determinism/hash';
 import { persistRunArtifacts, type ArtifactStore } from '../artifacts/store';
 import { datasetFingerprint, materialize, type BacktesterDataPort } from '../data/reader';
+import { RunnerError } from '../runner/errors';
+import { TrustedMomentumExecutor, type ModuleExecutor } from '../runner/module-executor';
 import { runBacktest } from '../runner/run-backtest';
+import { SandboxModuleExecutor, type SandboxConfig } from '../sandbox/sandbox-executor';
+import type { BundleStore } from '../sandbox/bundle-store';
 import { publishCompletion, type CompletionDeps } from './completion';
 import type { JobRow, JobStore } from './job-store';
 
-export class RunnerError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'RunnerError';
-  }
-}
+export { RunnerError };
 
 export interface WorkerDeps extends CompletionDeps {
   store: JobStore;
   dataPort: BacktesterDataPort;
   artifactStore: ArtifactStore;
+  bundleStore?: BundleStore;
+  sandbox?: SandboxConfig;
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -37,13 +36,26 @@ function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
   };
 }
 
+async function executorFor(deps: WorkerDeps, job: JobRow): Promise<ModuleExecutor> {
+  if (!job.bundleHash) return new TrustedMomentumExecutor();
+  if (!deps.bundleStore || !deps.sandbox) {
+    throw new RunnerError('sandbox_unavailable', 'sandbox execution is not configured');
+  }
+  const bundle = await deps.bundleStore.get(job.bundleHash);
+  if (!bundle) throw new RunnerError('missing_module', `unknown bundle: ${job.bundleHash}`);
+  return new SandboxModuleExecutor(bundle, deps.sandbox);
+}
+
 /** Claim and run one queued job. Returns the (now terminal) row, or undefined if the queue was empty. */
 export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | undefined> {
   const claimed = await deps.store.claimNextQueued(deps.clock());
   if (!claimed) return undefined;
   const runId = claimed.runId;
 
+  let executor: ModuleExecutor | undefined;
   try {
+    executor = await executorFor(deps, claimed);
+
     const reader = await deps.dataPort.openDataset(claimed.datasetRef);
     if (!reader) throw new RunnerError('missing_dataset', `unknown dataset: ${claimed.datasetRef}`);
 
@@ -68,7 +80,11 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       metrics: claimed.request.metrics,
     };
 
-    const result = runBacktest(request, { dataset });
+    const result = await runBacktest(request, {
+      dataset,
+      executor,
+      ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
+    });
     const { manifest, artifactRefs } = await persistRunArtifacts(
       deps.artifactStore,
       result,
@@ -87,6 +103,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         moduleVersions: [request.moduleRef],
         datasetRef: request.datasetRef,
         datasetFingerprint: dsFingerprint,
+        ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
       },
       resultHash,
     };
@@ -103,12 +120,15 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     });
   } catch (err) {
     const code = err instanceof RunnerError ? err.code : 'runner_failure';
+    const terminalStatus = err instanceof RunnerError ? err.terminalStatus : 'failed';
     const now = deps.clock();
-    await deps.store.transition(runId, 'running', 'failed', {
+    await deps.store.transition(runId, 'running', terminalStatus, {
       atMs: now,
       terminalAtMs: now,
       terminalCode: code,
     });
+  } finally {
+    await executor?.close?.();
   }
 
   const finished = await deps.store.get(runId);

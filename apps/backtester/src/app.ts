@@ -20,11 +20,15 @@ import {
 import { InMemoryJobStore, type JobStore } from './jobs/job-store';
 import { PgJobStore } from './jobs/pg-job-store';
 import { drainQueue, type WorkerDeps } from './jobs/worker';
+import { FileBundleStore, type BundleStore } from './sandbox/bundle-store';
+import type { SandboxConfig } from './sandbox/sandbox-executor';
 
 export interface BuildAppOptions {
   store?: JobStore;
   dataPort?: BacktesterDataPort;
   artifactStore?: ArtifactStore;
+  bundleStore?: BundleStore;
+  sandbox?: SandboxConfig;
   clock?: () => number;
   uid?: () => string;
   postWebhook?: WebhookPoster;
@@ -58,12 +62,27 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
 
   const dataPort = overrides.dataPort ?? new FixtureDataPort(config.fixturesDir);
   const artifactStore = overrides.artifactStore ?? new FileArtifactStore(config.artifactsDir);
+  const bundleStore = overrides.bundleStore ?? new FileBundleStore(config.bundlesDir);
   const clock = overrides.clock ?? ((): number => Date.now());
   const uid = overrides.uid ?? ((): string => randomUUID());
   const postWebhook = overrides.postWebhook ?? defaultWebhookPoster();
 
+  const sandbox: SandboxConfig = overrides.sandbox ?? {
+    harnessDir: config.sandbox.harnessDir,
+    limits: {
+      image: config.sandbox.image,
+      memoryMb: config.sandbox.memoryMb,
+      cpus: config.sandbox.cpus,
+      pidsLimit: config.sandbox.pidsLimit,
+      wallTimeMs: config.sandbox.wallTimeMs,
+      tmpfsMb: config.sandbox.tmpfsMb,
+      user: config.sandbox.user,
+      maxOutputBytes: 4_000_000,
+    },
+  };
+
   const completionDeps: CompletionDeps = { store, clock, uid, postWebhook };
-  const workerDeps: WorkerDeps = { ...completionDeps, dataPort, artifactStore };
+  const workerDeps: WorkerDeps = { ...completionDeps, dataPort, artifactStore, bundleStore, sandbox };
 
   const drain = (): Promise<number> => drainQueue(workerDeps);
   const reap = (): Promise<unknown> => reapAndPublish(completionDeps);
@@ -98,6 +117,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     store,
     dataPort,
     artifactStore,
+    bundleStore,
     clock,
     uid,
     postWebhook,

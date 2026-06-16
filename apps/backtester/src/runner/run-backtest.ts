@@ -1,19 +1,25 @@
-// Minimal deterministic runner for the Slice 1 golden smoke path.
+// Deterministic runner for the Slice 1 golden smoke path, now driven by a ModuleExecutor seam.
 //
-// This is intentionally a small momentum simulation — NOT a lift of the full platform engine. Its job
-// is to exercise the determinism machinery end to end (seeded RNG + decimal-quantized metrics +
-// canonical-JSON result_hash) so the real `runBacktest` from trading-platform `src/research/backtest`
-// can later drop into the same `(request, deps) => result` seam without touching the service around it.
+// The runner owns sizing / execution / metrics (trusted); the executor only supplies per-bar long/flat
+// signals. With the default TrustedMomentumExecutor the output is byte-identical to Slice 1/2 (the
+// golden result_hash is unchanged). With a SandboxModuleExecutor the same loop consumes signals from an
+// untrusted bundle — so the result is a pure function of (bundle, data, seed), independent of the
+// sandbox environment. This is still NOT a lift of the platform engine; the seam is `(request, deps)`.
 
-import type { BacktestRunRequest, RunMode } from '@trading/research-contracts';
+import type { BacktestRunRequest, ReaderRow, RunMode } from '@trading/research-contracts';
 import { quantize } from '../determinism/canonical-json';
 import { createSeededRng } from '../determinism/rng';
 import type { MaterializedDataset } from '../data/reader';
+import { TrustedMomentumExecutor, type ModuleExecutor } from './module-executor';
 
 const INITIAL_EQUITY = 10_000;
 
 export interface RunDeps {
   readonly dataset: MaterializedDataset;
+  /** Defaults to the trusted in-process momentum executor. */
+  readonly executor?: ModuleExecutor;
+  /** Content hash of the executed bundle (sandboxed runs) — recorded in evidence. */
+  readonly bundleHash?: string;
 }
 
 export interface TradeRecord {
@@ -36,6 +42,7 @@ export interface BacktestResult {
     readonly seed: number;
     readonly datasetRef: string;
     readonly moduleRef: { id: string; version: string };
+    readonly bundleHash?: string;
   };
 }
 
@@ -46,19 +53,17 @@ interface SymbolSim {
   trades: TradeRecord[];
 }
 
-/**
- * Trivial momentum: a bar is "long" when the previous bar closed up vs. the bar before it; the long
- * bar then captures that bar's close-to-close return. Pure over `(candles, logic)` — deterministic.
- */
-function simulateSymbol(dataset: MaterializedDataset, symbol: string): SymbolSim {
-  const candles = dataset.candles(symbol);
+/** Apply long/flat signals to candles: a long bar `i` captures bar `i`'s close-to-close return. */
+function simulateSymbol(
+  symbol: string,
+  candles: readonly ReaderRow[],
+  signals: readonly boolean[],
+): SymbolSim {
   const sim: SymbolSim = { equity: INITIAL_EQUITY, longBars: 0, wins: 0, trades: [] };
   for (let i = 2; i < candles.length; i++) {
-    const prevPrev = candles[i - 2];
-    const prev = candles[i - 1];
-    const cur = candles[i];
-    const signalLong = prev.close > prevPrev.close;
-    if (!signalLong || prev.close === 0) continue;
+    const prev = candles[i - 1]!;
+    const cur = candles[i]!;
+    if (!signals[i] || prev.close === 0) continue;
     const ret = (cur.close - prev.close) / prev.close;
     sim.equity = sim.equity * (1 + ret);
     sim.longBars += 1;
@@ -75,8 +80,12 @@ function simulateSymbol(dataset: MaterializedDataset, symbol: string): SymbolSim
   return sim;
 }
 
-export function runBacktest(request: BacktestRunRequest, deps: RunDeps): BacktestResult {
+export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): Promise<BacktestResult> {
+  const executor = deps.executor ?? new TrustedMomentumExecutor();
   const symbols = deps.dataset.symbols();
+  const series = symbols.map((symbol) => ({ symbol, candles: deps.dataset.candles(symbol) }));
+  const signalMap = await executor.computeSignals(series, request.seed);
+
   let pnl = 0;
   let totalBars = 0;
   let longBars = 0;
@@ -84,16 +93,17 @@ export function runBacktest(request: BacktestRunRequest, deps: RunDeps): Backtes
   const trades: TradeRecord[] = [];
 
   for (const symbol of symbols) {
-    const sim = simulateSymbol(deps.dataset, symbol);
+    const candles = deps.dataset.candles(symbol);
+    const signals = signalMap.get(symbol) ?? [];
+    const sim = simulateSymbol(symbol, candles, signals);
     pnl += sim.equity - INITIAL_EQUITY;
-    totalBars += Math.max(0, deps.dataset.candles(symbol).length - 2);
+    totalBars += Math.max(0, candles.length - 2);
     longBars += sim.longBars;
     wins += sim.wins;
     trades.push(...sim.trades);
   }
 
   const denom = INITIAL_EQUITY * Math.max(1, symbols.length);
-  // A single deterministic RNG draw proves the seeded-randomness path is wired (echoed, not used in sim).
   const seedProbe = createSeededRng(request.seed).next();
 
   const full: Record<string, number> = {
@@ -108,7 +118,7 @@ export function runBacktest(request: BacktestRunRequest, deps: RunDeps): Backtes
   const requested = request.metrics.length > 0 ? request.metrics : Object.keys(full);
   const metrics: Record<string, number> = {};
   for (const name of [...requested].sort()) {
-    if (name in full) metrics[name] = full[name];
+    if (name in full) metrics[name] = full[name]!;
   }
 
   return {
@@ -122,6 +132,7 @@ export function runBacktest(request: BacktestRunRequest, deps: RunDeps): Backtes
       seed: request.seed,
       datasetRef: request.datasetRef,
       moduleRef: { id: request.moduleRef.id, version: request.moduleRef.version },
+      ...(deps.bundleHash !== undefined ? { bundleHash: deps.bundleHash } : {}),
     },
   };
 }

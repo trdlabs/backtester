@@ -30,19 +30,19 @@ async function loadDataset() {
 
 describe('determinism', () => {
   it('produces a byte-identical result_hash across runs', async () => {
-    const h1 = contentRef(runBacktest(REQ, { dataset: await loadDataset() }));
-    const h2 = contentRef(runBacktest(REQ, { dataset: await loadDataset() }));
+    const h1 = contentRef(await runBacktest(REQ, { dataset: await loadDataset() }));
+    const h2 = contentRef(await runBacktest(REQ, { dataset: await loadDataset() }));
     expect(h1).toEqual(h2);
   });
 
   it('locks the golden result_hash (regression guard)', async () => {
-    const result = runBacktest(REQ, { dataset: await loadDataset() });
+    const result = await runBacktest(REQ, { dataset: await loadDataset() });
     expect(contentRef(result)).toMatchInlineSnapshot(`"sha256:eff10116147933c96d92ae50071ef66339467fb69545c38855dcd50c2c0b43ba"`);
   });
 
   it('a different seed changes the result_hash (rng is wired)', async () => {
-    const base = contentRef(runBacktest(REQ, { dataset: await loadDataset() }));
-    const other = contentRef(runBacktest({ ...REQ, seed: 43 }, { dataset: await loadDataset() }));
+    const base = contentRef(await runBacktest(REQ, { dataset: await loadDataset() }));
+    const other = contentRef(await runBacktest({ ...REQ, seed: 43 }, { dataset: await loadDataset() }));
     expect(other).not.toEqual(base);
   });
 

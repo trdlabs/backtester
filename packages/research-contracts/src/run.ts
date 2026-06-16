@@ -16,6 +16,27 @@ export interface RunPeriod {
   readonly to: string; // ISO-8601 UTC
 }
 
+export type ModuleKind = 'strategy';
+
+/** Manifest of a submitted module. Identity is `id@version`; the registry key is the content hash. */
+export interface ModuleManifest {
+  readonly id: string;
+  readonly version: string;
+  readonly kind: ModuleKind;
+  readonly bundleContractVersion: string;
+}
+
+/**
+ * A self-contained, untrusted strategy module submitted for backtest. `files[entry]` is ESM source
+ * exporting `signals(candles, seed): boolean[]`. Addressed and stored by content hash (`bundleHash`)
+ * in the backtester's own registry — never shared with the platform on the execution path (ADR §12.5).
+ */
+export interface ModuleBundle {
+  readonly manifest: ModuleManifest;
+  readonly entry: string;
+  readonly files: Readonly<Record<string, string>>;
+}
+
 /** Canonical, self-contained backtest run request consumed by the runner. */
 export interface BacktestRunRequest {
   readonly runId: string;
@@ -34,6 +55,8 @@ export interface BacktestRunRequest {
 export interface RunSubmitRequest extends Omit<BacktestRunRequest, 'runId'> {
   /** Optional — server generates one when absent. */
   readonly runId?: string;
+  /** When present, the run executes this untrusted bundle in the sandbox instead of the trusted runner. */
+  readonly moduleBundle?: ModuleBundle;
   readonly resumeToken?: string;
   readonly correlationId?: string;
   readonly workflowId?: string;
@@ -97,6 +120,8 @@ export interface RunEvidence {
   readonly moduleVersions: readonly Ref[];
   readonly datasetRef: string;
   readonly datasetFingerprint?: string;
+  /** Content hash of the executed bundle (sandboxed runs only); absent for the trusted runner. */
+  readonly bundleHash?: ContentHash;
 }
 
 export interface RunResultSummary {

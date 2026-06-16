@@ -26,6 +26,8 @@ export interface JobRow {
   effectiveSeed: number;
   datasetRef: string;
   datasetFingerprint?: string;
+  /** Content hash of the submitted bundle (sandbox runs); absent for trusted runs. */
+  bundleHash?: ContentHash;
   callbackUrl?: string;
   queueDeadlineMs?: number;
   runTimeoutMs: number;
@@ -52,6 +54,7 @@ export interface NewJob {
   request: RunSubmitRequest;
   effectiveSeed: number;
   datasetRef: string;
+  bundleHash?: ContentHash;
   callbackUrl?: string;
   queueDeadlineMs?: number;
   runTimeoutMs: number;
