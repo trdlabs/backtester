@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
@@ -5,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { buildApp, type AppHandles, type BuildAppOptions } from '../src/app';
 import { InMemoryArtifactStore } from '../src/artifacts/store';
 import type { AppConfig } from '../src/config';
+import type { JobStore } from '../src/jobs/job-store';
 import type { RunSubmitRequest } from '@trading/research-contracts';
+import type { StoreFactory } from './store-factories';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = resolve(HERE, '../fixtures/candles');
@@ -25,21 +28,39 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
   };
 }
 
-/** Deterministic clock + sequential ids + in-memory artifact store, for golden assertions. */
-export function fixedDeps(): BuildAppOptions {
-  let seq = 0;
+/** Fixed clock (deterministic deadlines) + random ids + in-memory artifact store. */
+export function testDeps(extra: Partial<BuildAppOptions> = {}): BuildAppOptions {
   return {
     artifactStore: new InMemoryArtifactStore(),
     clock: () => 1_700_000_000_000,
-    uid: () => `id-${(seq += 1)}`,
+    uid: () => randomUUID(),
+    ...extra,
   };
 }
 
-export function buildTestApp(
+export async function buildTestApp(
   over: Partial<AppConfig> = {},
-  deps: BuildAppOptions = fixedDeps(),
-): AppHandles {
+  deps: BuildAppOptions = testDeps(),
+): Promise<AppHandles> {
   return buildApp(testConfig(over), deps);
+}
+
+/** Build an app over a factory's store, returning a combined cleanup (dispose app + teardown store). */
+export async function makeApp(
+  factory: StoreFactory,
+  extra: Partial<BuildAppOptions> = {},
+  over: Partial<AppConfig> = {},
+): Promise<{ app: AppHandles; store: JobStore; cleanup: () => Promise<void> }> {
+  const handle = await factory.create();
+  const app = await buildTestApp(over, testDeps({ store: handle.store, ...extra }));
+  return {
+    app,
+    store: handle.store,
+    cleanup: async () => {
+      await app.dispose();
+      await handle.teardown();
+    },
+  };
 }
 
 export function runBody(over: Partial<RunSubmitRequest> = {}): RunSubmitRequest {

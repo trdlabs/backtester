@@ -82,6 +82,8 @@ export type JobEventType =
   | 'job_expired'
   | 'job_timed_out';
 
+export type DeliveryState = 'pending' | 'delivered' | 'failed';
+
 export interface JobEventRow {
   eventUid: string;
   jobId: string;
@@ -89,6 +91,9 @@ export interface JobEventRow {
   eventType: JobEventType;
   payload: unknown;
   createdAtMs: number;
+  /** Outbox: set only for terminal events on a job with a callback URL. */
+  deliveryState?: DeliveryState;
+  deliveryAttempts?: number;
 }
 
 export interface JobStore {
@@ -100,6 +105,9 @@ export interface JobStore {
   appendEvent(ev: JobEventRow): Promise<void>;
   listEvents(runId: string): Promise<JobEventRow[]>;
   reapDeadlines(nowMs: number): Promise<JobRow[]>;
+  /** Outbox: terminal events still pending/failed delivery, oldest first. */
+  listDeliverable(limit: number): Promise<JobEventRow[]>;
+  markDelivered(eventUid: string, ok: boolean): Promise<void>;
 }
 
 export class InMemoryJobStore implements JobStore {
@@ -187,6 +195,20 @@ export class InMemoryJobStore implements JobStore {
 
   async listEvents(runId: string): Promise<JobEventRow[]> {
     return this.events.filter((e) => e.runId === runId);
+  }
+
+  async listDeliverable(limit: number): Promise<JobEventRow[]> {
+    return this.events
+      .filter((e) => e.deliveryState === 'pending' || e.deliveryState === 'failed')
+      .sort((a, b) => a.createdAtMs - b.createdAtMs)
+      .slice(0, limit);
+  }
+
+  async markDelivered(eventUid: string, ok: boolean): Promise<void> {
+    const ev = this.events.find((e) => e.eventUid === eventUid);
+    if (!ev) return;
+    ev.deliveryState = ok ? 'delivered' : 'failed';
+    ev.deliveryAttempts = (ev.deliveryAttempts ?? 0) + 1;
   }
 
   async reapDeadlines(nowMs: number): Promise<JobRow[]> {

@@ -5,7 +5,7 @@ import { loadConfig } from './config';
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const app = buildApp(config);
+  const app = await buildApp(config);
   app.startWorker();
 
   const addr = await app.server.listen({ host: config.host, port: config.port });
@@ -13,8 +13,7 @@ async function main(): Promise<void> {
   console.log(`trading-backtester listening on ${addr}`);
 
   const shutdown = async (): Promise<void> => {
-    app.stopWorker();
-    await app.server.close();
+    await app.dispose();
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown());

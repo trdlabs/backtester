@@ -12,6 +12,8 @@ export interface AppConfig {
   readonly fixturesDir: string;
   /** Content-addressed artifact store root. */
   readonly artifactsDir: string;
+  /** Postgres connection string. When set, the service uses PgJobStore; otherwise in-memory. */
+  readonly databaseUrl?: string;
   readonly defaultQueueTimeoutMs: number;
   readonly defaultRunTimeoutMs: number;
   /** When true the HTTP server runs a background worker tick; tests drain manually instead. */
@@ -25,6 +27,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     authToken: env.BACKTESTER_AUTH_TOKEN ?? 'dev-token',
     fixturesDir: env.BACKTESTER_FIXTURES_DIR ?? resolve(HERE, '../fixtures/candles'),
     artifactsDir: env.BACKTESTER_ARTIFACTS_DIR ?? resolve(HERE, '../.data/artifacts'),
+    ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
     defaultQueueTimeoutMs: Number(env.BACKTESTER_QUEUE_TIMEOUT_MS ?? 6 * 60 * 60 * 1000),
     defaultRunTimeoutMs: Number(env.BACKTESTER_RUN_TIMEOUT_MS ?? 2 * 60 * 60 * 1000),
     autoWorker: (env.BACKTESTER_AUTO_WORKER ?? 'true') !== 'false',

@@ -14,9 +14,10 @@ import type { BacktesterDataPort } from '../data/reader';
 import type { ArtifactStore } from '../artifacts/store';
 import { toStatusView, type JobStore } from '../jobs/job-store';
 import { isTerminal } from '../jobs/lifecycle';
+import { publishCompletion, reapAndPublish, type CompletionDeps } from '../jobs/completion';
 import { submitRun, SubmitError, type SubmitDeps } from '../jobs/submit';
 
-export interface ServerDeps extends SubmitDeps {
+export interface ServerDeps extends SubmitDeps, CompletionDeps {
   store: JobStore;
   dataPort: BacktesterDataPort;
   artifactStore: ArtifactStore;
@@ -89,7 +90,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   app.get('/v1/runs/:runId/status', async (req, reply) => {
     const { runId } = req.params as { runId: string };
-    await deps.store.reapDeadlines(deps.clock());
+    await reapAndPublish(deps);
     const job = await deps.store.get(runId);
     if (!job) return reply.code(404).send({ category: 'validation_error', code: 'run_not_found', message: runId });
     return toStatusView(job);
@@ -97,7 +98,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   app.get('/v1/runs/:runId/result', async (req, reply) => {
     const { runId } = req.params as { runId: string };
-    await deps.store.reapDeadlines(deps.clock());
+    await reapAndPublish(deps);
     const job = await deps.store.get(runId);
     if (!job) return reply.code(404).send({ category: 'validation_error', code: 'run_not_found', message: runId });
     if (job.resultSummary) return job.resultSummary;
@@ -153,14 +154,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         terminalAtMs: now,
         terminalCode: 'canceled',
       });
-      await deps.store.appendEvent({
-        eventUid: deps.uid(),
-        jobId: job.jobId,
-        runId,
-        eventType: 'job_canceled',
-        payload: { eventType: 'job_canceled', runId, status: 'canceled', emittedAtMs: now },
-        createdAtMs: now,
-      });
+      const canceled = await deps.store.get(runId);
+      if (canceled) await publishCompletion(deps, canceled);
     }
     const updated = await deps.store.get(runId);
     return toStatusView(updated!);
