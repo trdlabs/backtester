@@ -11,6 +11,7 @@
   "dependencies": {
     "@trading/research-contracts": "workspace:*",
     "decimal.js": "^10.4.3",
-    "fastify": "^5.1.0"
+    "fastify": "^5.1.0",
+    "pg": "^8.13.1"
   }
 }

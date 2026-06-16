@@ -8,16 +8,20 @@ and fetches historical data through a platform-owned data port (so real `trading
 
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full MVP architecture and decisions.
 
-## Status — Slice 1 (thin spine)
+## Status
 
-The first vertical slice proves the spine end to end: **HTTP API + async job lifecycle + idempotency +
-content-addressed artifact store + deterministic `result_hash`** on a small fixture. It deliberately uses
-a *minimal* momentum runner (not a full lift of the platform engine), an in-memory job store, the
-in-process fixture data port, and the trusted in-process executor (no Docker sandbox yet).
+**Slice 1 (thin spine)** — HTTP API + async lifecycle + idempotency + content-addressed artifact store
++ deterministic `result_hash`, on a small fixture. Minimal momentum runner behind the `runBacktest`
+seam (not a full engine lift), in-process fixture data port, trusted in-process executor.
 
-Deferred to later slices (see ARCHITECTURE §11): Postgres job store + outbox/webhook (Slice 2), Docker
-sandbox for untrusted bundles (Slice 3), networked Research Historical Data API (Slice 4), trading-lab
-cutover (Slice 5).
+**Slice 2 (durable store + outbox/webhook)** — Postgres `JobStore` (`PgJobStore`) behaviorally
+equivalent to the in-memory one: atomic conditional `transition` (terminal statuses immutable),
+concurrency-safe `claimNextQueued` (`FOR UPDATE SKIP LOCKED`), `resumeToken` idempotency that survives
+process restart. Completion outbox + best-effort webhook delivery with retry. The full behavioral suite
+runs against **both** stores (parametrized); the golden `result_hash` is identical across backends.
+
+Deferred (see ARCHITECTURE §11): Docker sandbox for untrusted bundles (Slice 3), networked Research
+Historical Data API (Slice 4), trading-lab cutover (Slice 5).
 
 ## Layout
 
@@ -27,11 +31,13 @@ apps/backtester               # the service
   src/determinism/            # canonical-json + seeded rng (lifted verbatim from platform 018) + content hashing
   src/runner/                 # minimal deterministic momentum runner (runBacktest seam)
   src/data/                   # BacktesterDataPort + in-process fixture reader + materialize
-  src/jobs/                   # 8-state lifecycle, in-memory JobStore, fingerprint, submit, worker, reaper
+  src/jobs/                   # 8-state lifecycle, JobStore (in-memory + Postgres), fingerprint, submit, worker, completion/outbox
   src/artifacts/              # content-addressed artifact store + manifest
+  src/db/                     # pg pool + forward-only migration runner
   src/api/                    # Fastify HTTP API
+  migrations/                 # 0001_init.sql (backtest_job + backtest_job_event)
   fixtures/candles/           # smoke dataset
-  test/                       # determinism (golden result_hash), idempotency, API e2e
+  test/                       # determinism, idempotency, e2e, restart, completion, concurrent-claim (parametrized over stores)
 ```
 
 ## Develop
@@ -42,6 +48,19 @@ pnpm typecheck
 pnpm test
 pnpm start          # serves on 127.0.0.1:8080 (BACKTESTER_AUTH_TOKEN, default "dev-token")
 ```
+
+### Postgres (Slice 2)
+
+Set `DATABASE_URL` to run the service on `PgJobStore`; without it the service uses the in-memory store.
+To run the suite against Postgres as well (otherwise the pg-parametrized tests **skip**, they do not fail):
+
+```bash
+docker run -d --name bt-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=backtester_test \
+  -p 55432:5432 postgres:16-alpine
+BACKTESTER_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/backtester_test pnpm test
+```
+
+Each test run isolates itself in a throwaway schema (created + migrated, dropped on teardown).
 
 ## HTTP API (v1, bearer auth)
 

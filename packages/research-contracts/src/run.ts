@@ -122,6 +122,25 @@ export interface RunStatusView {
   readonly terminalCode?: string;
 }
 
+export type CompletionEventType =
+  | 'job_completed'
+  | 'job_failed'
+  | 'job_canceled'
+  | 'job_expired'
+  | 'job_timed_out';
+
+/** The payload POSTed to a run's callback URL (and the durable outbox row) on a terminal transition. */
+export interface CompletionEvent {
+  readonly eventType: CompletionEventType;
+  readonly jobId: string;
+  readonly runId: string;
+  readonly status: TerminalRunStatus;
+  readonly correlationId?: string;
+  readonly workflowId?: string;
+  readonly summary: RunResultSummary;
+  readonly emittedAtMs: number;
+}
+
 // ---- validation -------------------------------------------------------------
 
 export type GatewayErrorCategory =

@@ -1,22 +1,16 @@
-// Worker — claims the oldest queued job, runs the backtest in-process, persists artifacts, and
-// transitions to a terminal state. Slice 1 drains synchronously; the queue (the store) is the durable
-// boundary, so Slice 2's Postgres store + multiple workers need no change here.
+// Worker — claims the oldest queued job, runs the backtest in-process, persists artifacts, transitions
+// to a terminal state, and publishes the completion event. Slice 1 drained synchronously; the queue
+// (the store) is the durable boundary, so the Postgres store + multiple concurrent workers need no
+// change here — claimNextQueued is the concurrency-safe handoff (FOR UPDATE SKIP LOCKED in Pg).
 
-import type {
-  BacktestRunRequest,
-  RunPeriod,
-  RunResultSummary,
-} from '@trading/research-contracts';
+import type { BacktestRunRequest, RunPeriod, RunResultSummary } from '@trading/research-contracts';
 import { CONTRACT_VERSION } from '@trading/research-contracts';
 import { contentRef } from '../determinism/hash';
 import { persistRunArtifacts, type ArtifactStore } from '../artifacts/store';
-import {
-  datasetFingerprint,
-  materialize,
-  type BacktesterDataPort,
-} from '../data/reader';
+import { datasetFingerprint, materialize, type BacktesterDataPort } from '../data/reader';
 import { runBacktest } from '../runner/run-backtest';
-import type { JobEventRow, JobEventType, JobRow, JobStore } from './job-store';
+import { publishCompletion, type CompletionDeps } from './completion';
+import type { JobRow, JobStore } from './job-store';
 
 export class RunnerError extends Error {
   constructor(
@@ -28,12 +22,10 @@ export class RunnerError extends Error {
   }
 }
 
-export interface WorkerDeps {
+export interface WorkerDeps extends CompletionDeps {
   store: JobStore;
   dataPort: BacktesterDataPort;
   artifactStore: ArtifactStore;
-  clock: () => number;
-  uid: () => string;
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -42,17 +34,6 @@ function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
   return {
     tsFrom: Number.isNaN(from) ? 0 : from,
     tsTo: Number.isNaN(to) ? Number.MAX_SAFE_INTEGER : to,
-  };
-}
-
-function event(deps: WorkerDeps, job: JobRow, eventType: JobEventType, payload: unknown): JobEventRow {
-  return {
-    eventUid: deps.uid(),
-    jobId: job.jobId,
-    runId: job.runId,
-    eventType,
-    payload,
-    createdAtMs: deps.clock(),
   };
 }
 
@@ -120,16 +101,6 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       artifactManifest: manifest,
       datasetFingerprint: dsFingerprint,
     });
-    await deps.store.appendEvent(
-      event(deps, claimed, 'job_completed', {
-        eventType: 'job_completed',
-        jobId: claimed.jobId,
-        runId,
-        status: 'completed',
-        summary,
-        emittedAtMs: now,
-      }),
-    );
   } catch (err) {
     const code = err instanceof RunnerError ? err.code : 'runner_failure';
     const now = deps.clock();
@@ -138,19 +109,11 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       terminalAtMs: now,
       terminalCode: code,
     });
-    await deps.store.appendEvent(
-      event(deps, claimed, 'job_failed', {
-        eventType: 'job_failed',
-        jobId: claimed.jobId,
-        runId,
-        status: 'failed',
-        terminalCode: code,
-        emittedAtMs: now,
-      }),
-    );
   }
 
-  return deps.store.get(runId);
+  const finished = await deps.store.get(runId);
+  if (finished) await publishCompletion(deps, finished);
+  return finished;
 }
 
 /** Drain every currently-queued job. Returns the number processed. */
