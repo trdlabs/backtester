@@ -38,12 +38,21 @@ server (`createDataApiServer`, what trading-platform / trading-mock-platform imp
 included for dev + parity tests. The materialized tape + `dataset_fingerprint` are **identical** across
 the in-process and HTTP paths, so the golden `result_hash` is unchanged regardless of transport.
 
-Deferred (see ARCHITECTURE §11): trading-lab cutover (Slice 5).
+**Slice 5 (trading-lab cutover — client boundary)** — `@trading-backtester/client` (this repo,
+`packages/client`): a git/path-dependency-ready typed HTTP client (self-contained dist; vendored wire
+types; **not** published to npm), with a compile-time parity guard against the contracts. In
+`trading-lab`, `HttpBacktesterAdapter` implements `ResearchPlatformPort` over this client behind
+`selectResearchPlatform('backtester')` — so backtest submit/status/result/artifacts flow
+trading-lab → backtesterClient → trading-backtester, independent of the platform client. Additive and
+flag-gated; the `mock`/`mcp` paths and `sp4_mock` are unchanged. The backtester runs strategy-signals
+bundles (not platform overlay modules); full overlay-module execution + retiring `sp4_mock` await
+lifting the platform runner (a later slice).
 
 ## Layout
 
 ```
 packages/research-contracts   # @trading/research-contracts — shared 017/022 types + historical data port (parity anchor)
+packages/client               # @trading-backtester/client — typed HTTP client (git/path dep for trading-lab; self-contained dist)
 apps/backtester               # the service
   src/determinism/            # canonical-json + seeded rng (lifted verbatim from platform 018) + content hashing
   src/runner/                 # minimal deterministic momentum runner (runBacktest seam)
