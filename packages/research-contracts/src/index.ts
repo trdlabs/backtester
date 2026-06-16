@@ -10,6 +10,9 @@ export const ARTIFACT_CONTRACT_VERSION = '022.1';
 /** Module-bundle/registry metadata version (Slice 3 — submitted-bundle sandbox execution). */
 export const BUNDLE_CONTRACT_VERSION = '019.1';
 
+/** Networked Research Historical Data API metadata version (Slice 4). */
+export const HISTORICAL_DATA_CONTRACT_VERSION = '030.1';
+
 /** Metric names the MVP runner can compute (request-gated). */
 export const METRIC_CATALOG = [
   'pnl',

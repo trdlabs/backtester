@@ -8,6 +8,7 @@ import { buildServer } from './api/server';
 import type { AppConfig } from './config';
 import { FileArtifactStore, type ArtifactStore } from './artifacts/store';
 import { FixtureDataPort, type BacktesterDataPort } from './data/reader';
+import { HttpDataPort } from './data/http-data-port';
 import { createPool } from './db/pool';
 import { migrate } from './db/migrate';
 import {
@@ -60,7 +61,15 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     }
   }
 
-  const dataPort = overrides.dataPort ?? new FixtureDataPort(config.fixturesDir);
+  const dataPort =
+    overrides.dataPort ??
+    (config.dataSource === 'http' && config.dataApiUrl
+      ? new HttpDataPort({
+          baseUrl: config.dataApiUrl,
+          ...(config.dataApiToken ? { token: config.dataApiToken } : {}),
+          pageLimit: config.dataApiPageLimit,
+        })
+      : new FixtureDataPort(config.fixturesDir));
   const artifactStore = overrides.artifactStore ?? new FileArtifactStore(config.artifactsDir);
   const bundleStore = overrides.bundleStore ?? new FileBundleStore(config.bundlesDir);
   const clock = overrides.clock ?? ((): number => Date.now());

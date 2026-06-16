@@ -6,7 +6,8 @@
   "main": "./src/index.ts",
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "start:data-api": "tsx src/data-api-main.ts"
   },
   "dependencies": {
     "@trading/research-contracts": "workspace:*",
