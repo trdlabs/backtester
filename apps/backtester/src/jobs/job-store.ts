@@ -1,0 +1,247 @@
+// Job store — status of record for the async lifecycle. Slice 1 ships the in-memory implementation;
+// a Postgres `JobStore` against `backtest_job` + `backtest_job_event` slots in behind this interface
+// in Slice 2 (see docs/ARCHITECTURE.md §5, §7). Interface and transitions mirror trading-platform 031.
+
+import type {
+  ArtifactManifest,
+  ContentHash,
+  RunJobHandle,
+  RunResultSummary,
+  RunStatus,
+  RunStatusView,
+  RunSubmitRequest,
+  RunTimelineEntry,
+} from '@trading/research-contracts';
+import { canTransition, isTerminal } from './lifecycle';
+
+export interface JobRow {
+  jobId: string;
+  runId: string;
+  resumeToken?: string;
+  requestFingerprint: string;
+  correlationId?: string;
+  workflowId?: string;
+  status: RunStatus;
+  request: RunSubmitRequest;
+  effectiveSeed: number;
+  datasetRef: string;
+  datasetFingerprint?: string;
+  callbackUrl?: string;
+  queueDeadlineMs?: number;
+  runTimeoutMs: number;
+  runDeadlineMs?: number;
+  acceptedAtMs: number;
+  queuedAtMs?: number;
+  startedAtMs?: number;
+  terminalAtMs?: number;
+  lastActivityMs?: number;
+  resultSummary?: RunResultSummary;
+  resultHash?: ContentHash;
+  artifactManifest?: ArtifactManifest;
+  terminalCode?: string;
+  timeline: RunTimelineEntry[];
+}
+
+export interface NewJob {
+  jobId: string;
+  runId: string;
+  resumeToken?: string;
+  requestFingerprint: string;
+  correlationId?: string;
+  workflowId?: string;
+  request: RunSubmitRequest;
+  effectiveSeed: number;
+  datasetRef: string;
+  callbackUrl?: string;
+  queueDeadlineMs?: number;
+  runTimeoutMs: number;
+  acceptedAtMs: number;
+}
+
+export interface JobRowPatch {
+  atMs: number;
+  queuedAtMs?: number;
+  startedAtMs?: number;
+  terminalAtMs?: number;
+  lastActivityMs?: number;
+  runDeadlineMs?: number;
+  resultSummary?: RunResultSummary;
+  resultHash?: ContentHash;
+  artifactManifest?: ArtifactManifest;
+  datasetFingerprint?: string;
+  terminalCode?: string;
+}
+
+export type JobEventType =
+  | 'job_accepted'
+  | 'job_queued'
+  | 'job_started'
+  | 'job_completed'
+  | 'job_failed'
+  | 'job_canceled'
+  | 'job_expired'
+  | 'job_timed_out';
+
+export interface JobEventRow {
+  eventUid: string;
+  jobId: string;
+  runId: string;
+  eventType: JobEventType;
+  payload: unknown;
+  createdAtMs: number;
+}
+
+export interface JobStore {
+  insertOrGet(job: NewJob): Promise<{ job: JobRow; created: boolean }>;
+  get(runId: string): Promise<JobRow | undefined>;
+  transition(runId: string, from: RunStatus, to: RunStatus, patch: JobRowPatch): Promise<boolean>;
+  claimNextQueued(nowMs: number): Promise<JobRow | undefined>;
+  list(filter?: { status?: RunStatus; correlationId?: string; workflowId?: string }): Promise<JobRow[]>;
+  appendEvent(ev: JobEventRow): Promise<void>;
+  listEvents(runId: string): Promise<JobEventRow[]>;
+  reapDeadlines(nowMs: number): Promise<JobRow[]>;
+}
+
+export class InMemoryJobStore implements JobStore {
+  private readonly jobs = new Map<string, JobRow>();
+  private readonly byKey = new Map<string, string>();
+  private readonly events: JobEventRow[] = [];
+
+  async insertOrGet(job: NewJob): Promise<{ job: JobRow; created: boolean }> {
+    const key = job.resumeToken ?? job.runId;
+    const existingRunId = this.byKey.get(key);
+    if (existingRunId) {
+      const existing = this.jobs.get(existingRunId);
+      if (existing) return { job: existing, created: false };
+    }
+    const row: JobRow = {
+      ...job,
+      status: 'accepted',
+      timeline: [{ status: 'accepted', atMs: job.acceptedAtMs }],
+    };
+    this.jobs.set(row.runId, row);
+    this.byKey.set(key, row.runId);
+    return { job: row, created: true };
+  }
+
+  async get(runId: string): Promise<JobRow | undefined> {
+    return this.jobs.get(runId);
+  }
+
+  async transition(
+    runId: string,
+    from: RunStatus,
+    to: RunStatus,
+    patch: JobRowPatch,
+  ): Promise<boolean> {
+    const job = this.jobs.get(runId);
+    if (!job || job.status !== from || !canTransition(from, to)) return false;
+    job.status = to;
+    if (patch.queuedAtMs !== undefined) job.queuedAtMs = patch.queuedAtMs;
+    if (patch.startedAtMs !== undefined) job.startedAtMs = patch.startedAtMs;
+    if (patch.terminalAtMs !== undefined) job.terminalAtMs = patch.terminalAtMs;
+    if (patch.lastActivityMs !== undefined) job.lastActivityMs = patch.lastActivityMs;
+    if (patch.runDeadlineMs !== undefined) job.runDeadlineMs = patch.runDeadlineMs;
+    if (patch.resultSummary !== undefined) job.resultSummary = patch.resultSummary;
+    if (patch.resultHash !== undefined) job.resultHash = patch.resultHash;
+    if (patch.artifactManifest !== undefined) job.artifactManifest = patch.artifactManifest;
+    if (patch.datasetFingerprint !== undefined) job.datasetFingerprint = patch.datasetFingerprint;
+    if (patch.terminalCode !== undefined) job.terminalCode = patch.terminalCode;
+    job.timeline.push({ status: to, atMs: patch.atMs });
+    return true;
+  }
+
+  async claimNextQueued(nowMs: number): Promise<JobRow | undefined> {
+    const queued = [...this.jobs.values()]
+      .filter((j) => j.status === 'queued')
+      .sort((a, b) =>
+        (a.queuedAtMs ?? a.acceptedAtMs) - (b.queuedAtMs ?? b.acceptedAtMs) ||
+        (a.runId < b.runId ? -1 : 1),
+      );
+    const next = queued[0];
+    if (!next) return undefined;
+    const ok = await this.transition(next.runId, 'queued', 'running', {
+      atMs: nowMs,
+      startedAtMs: nowMs,
+      lastActivityMs: nowMs,
+      runDeadlineMs: nowMs + next.runTimeoutMs,
+    });
+    return ok ? next : undefined;
+  }
+
+  async list(filter?: {
+    status?: RunStatus;
+    correlationId?: string;
+    workflowId?: string;
+  }): Promise<JobRow[]> {
+    return [...this.jobs.values()]
+      .filter((j) => !filter?.status || j.status === filter.status)
+      .filter((j) => !filter?.correlationId || j.correlationId === filter.correlationId)
+      .filter((j) => !filter?.workflowId || j.workflowId === filter.workflowId)
+      .sort((a, b) => a.acceptedAtMs - b.acceptedAtMs);
+  }
+
+  async appendEvent(ev: JobEventRow): Promise<void> {
+    this.events.push(ev);
+  }
+
+  async listEvents(runId: string): Promise<JobEventRow[]> {
+    return this.events.filter((e) => e.runId === runId);
+  }
+
+  async reapDeadlines(nowMs: number): Promise<JobRow[]> {
+    const reaped: JobRow[] = [];
+    for (const job of this.jobs.values()) {
+      if (isTerminal(job.status)) continue;
+      if (
+        job.status === 'queued' &&
+        job.queueDeadlineMs !== undefined &&
+        nowMs > job.queueDeadlineMs
+      ) {
+        if (await this.transition(job.runId, 'queued', 'expired', {
+          atMs: nowMs,
+          terminalAtMs: nowMs,
+          terminalCode: 'queue_deadline_exceeded',
+        })) {
+          reaped.push(job);
+        }
+      } else if (
+        job.status === 'running' &&
+        job.runDeadlineMs !== undefined &&
+        nowMs > job.runDeadlineMs
+      ) {
+        if (await this.transition(job.runId, 'running', 'timed_out', {
+          atMs: nowMs,
+          terminalAtMs: nowMs,
+          terminalCode: 'run_deadline_exceeded',
+        })) {
+          reaped.push(job);
+        }
+      }
+    }
+    return reaped;
+  }
+}
+
+export function toStatusView(job: JobRow): RunStatusView {
+  return {
+    runId: job.runId,
+    jobId: job.jobId,
+    status: job.status,
+    timeline: job.timeline,
+    ...(job.terminalCode !== undefined ? { terminalCode: job.terminalCode } : {}),
+  };
+}
+
+export function toHandle(job: JobRow, idempotentReplay: boolean): RunJobHandle {
+  return {
+    jobId: job.jobId,
+    runId: job.runId,
+    status: 'accepted',
+    effectiveSeed: job.effectiveSeed,
+    requestFingerprint: job.requestFingerprint,
+    idempotentReplay,
+    ...(job.correlationId !== undefined ? { correlationId: job.correlationId } : {}),
+    ...(job.workflowId !== undefined ? { workflowId: job.workflowId } : {}),
+  };
+}

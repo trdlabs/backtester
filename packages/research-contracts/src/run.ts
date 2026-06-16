@@ -1,0 +1,172 @@
+// Run / result / artifact contract types (017 + 022 surface, MVP subset).
+//
+// These are the wire vocabulary the backtester HTTP API accepts and emits, and the eventual
+// trading-lab `backtesterClient` consumes. Kept as pure types (no runtime deps) so this package is
+// the single versioned parity anchor.
+
+export type RunMode = 'research' | 'review' | 'promotion';
+
+export interface Ref {
+  readonly id: string;
+  readonly version: string;
+}
+
+export interface RunPeriod {
+  readonly from: string; // ISO-8601 UTC
+  readonly to: string; // ISO-8601 UTC
+}
+
+/** Canonical, self-contained backtest run request consumed by the runner. */
+export interface BacktestRunRequest {
+  readonly runId: string;
+  readonly mode: RunMode;
+  readonly moduleRef: Ref;
+  readonly datasetRef: string;
+  readonly symbols: readonly string[];
+  readonly timeframe: string;
+  readonly period: RunPeriod;
+  readonly params?: Record<string, unknown>;
+  readonly seed: number;
+  readonly metrics: readonly string[];
+}
+
+/** Gateway submit DTO: the run request plus orchestration fields (not part of the fingerprint). */
+export interface RunSubmitRequest extends Omit<BacktestRunRequest, 'runId'> {
+  /** Optional — server generates one when absent. */
+  readonly runId?: string;
+  readonly resumeToken?: string;
+  readonly correlationId?: string;
+  readonly workflowId?: string;
+  readonly callbackUrl?: string;
+  readonly queueTimeoutMs?: number;
+  readonly runTimeoutMs?: number;
+}
+
+export type NonTerminalRunStatus = 'accepted' | 'queued' | 'running';
+export type TerminalRunStatus = 'completed' | 'failed' | 'canceled' | 'expired' | 'timed_out';
+export type RunStatus = NonTerminalRunStatus | TerminalRunStatus;
+
+export interface RunJobHandle {
+  readonly jobId: string;
+  readonly runId: string;
+  readonly status: 'accepted';
+  readonly effectiveSeed: number;
+  readonly requestFingerprint: string;
+  readonly idempotentReplay: boolean;
+  readonly correlationId?: string;
+  readonly workflowId?: string;
+}
+
+export type ContentHash = `sha256:${string}`;
+
+export type ArtifactAvailability = 'available' | 'unavailable' | 'not_applicable';
+
+export interface ArtifactReference {
+  readonly artifactId: ContentHash;
+  readonly artifactType: string;
+  readonly availability: ArtifactAvailability;
+  readonly approxItemCount?: number;
+}
+
+export interface ArtifactDescriptor {
+  readonly artifactType: string;
+  readonly contentHash: ContentHash;
+  readonly availability: ArtifactAvailability;
+  readonly approxItemCount?: number;
+}
+
+export interface ArtifactManifest {
+  readonly runId: string;
+  readonly contractVersion: string;
+  readonly artifactContractVersion: string;
+  readonly descriptors: readonly ArtifactDescriptor[];
+}
+
+export interface ArtifactPage {
+  readonly artifactId: ContentHash;
+  readonly artifactType: string;
+  readonly page: readonly unknown[];
+  readonly total: number;
+  readonly offset: number;
+  readonly nextCursor?: string;
+}
+
+export interface RunEvidence {
+  readonly seed: number;
+  readonly contractVersion: string;
+  readonly moduleVersions: readonly Ref[];
+  readonly datasetRef: string;
+  readonly datasetFingerprint?: string;
+}
+
+export interface RunResultSummary {
+  readonly runId: string;
+  readonly status: RunStatus;
+  readonly metrics: Record<string, number>;
+  readonly artifactRefs: readonly ArtifactReference[];
+  readonly evidence: RunEvidence;
+  /** sha256 of canonicalJson(result) — the verifiable determinism/parity primitive. */
+  readonly resultHash?: ContentHash;
+}
+
+export interface RunTimelineEntry {
+  readonly status: RunStatus;
+  readonly atMs: number;
+}
+
+export interface RunStatusView {
+  readonly runId: string;
+  readonly jobId: string;
+  readonly status: RunStatus;
+  readonly timeline: readonly RunTimelineEntry[];
+  readonly terminalCode?: string;
+}
+
+// ---- validation -------------------------------------------------------------
+
+export type GatewayErrorCategory =
+  | 'validation_error'
+  | 'missing_dataset'
+  | 'unsupported_data_needs'
+  | 'sandbox_module_error'
+  | 'runner_failure'
+  | 'internal_gateway_error';
+
+export interface GatewayError {
+  readonly category: GatewayErrorCategory;
+  readonly code: string;
+  readonly message: string;
+}
+
+export type ValidationStatus = 'accepted' | 'accepted_with_warnings' | 'rejected';
+
+export interface ValidationIssue {
+  readonly code: string;
+  readonly severity: 'error' | 'warning';
+  readonly path?: string;
+  readonly message: string;
+}
+
+export interface ValidationReport {
+  readonly status: ValidationStatus;
+  readonly issues: readonly ValidationIssue[];
+  readonly executed: false;
+}
+
+// ---- capability / dataset discovery ----------------------------------------
+
+export interface CapabilityDescriptor {
+  readonly contractVersion: string;
+  readonly artifactContractVersion: string;
+  readonly supportedMetrics: readonly string[];
+  readonly supportedModes: readonly RunMode[];
+  readonly maxConcurrency: number;
+}
+
+export interface DatasetDescriptor {
+  readonly datasetRef: string;
+  readonly symbols: readonly string[];
+  readonly timeframe: string;
+  readonly period: RunPeriod;
+  readonly rowCount: number;
+}
