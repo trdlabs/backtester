@@ -29,8 +29,16 @@ in-process, or the sandboxed bundle); sizing/metrics stay trusted. Same bundle �
 (`timed_out`/`sandbox_timeout`, `failed`/`sandbox_memory_exceeded`|`sandbox_module_error`), never a
 service crash.
 
-Deferred (see ARCHITECTURE §11): networked Research Historical Data API (Slice 4), trading-lab
-cutover (Slice 5).
+**Slice 4 (networked data API)** — `platformDataClient` gains an `HttpDataPort` implementing the same
+`BacktesterDataPort`/`HistoricalDatasetReader` seam as the fixture reader; selection is config-driven
+(`BACKTESTER_DATA_SOURCE=fixture|http`). The backtester gets historical data **only** through this
+networked Research Historical Data API (no direct parquet/snapshot mount), credential-free. Rows stream
+by range/symbol with cursor paging (back-pressure; no whole dataset in memory). A reference data-API
+server (`createDataApiServer`, what trading-platform / trading-mock-platform implement paritetically) is
+included for dev + parity tests. The materialized tape + `dataset_fingerprint` are **identical** across
+the in-process and HTTP paths, so the golden `result_hash` is unchanged regardless of transport.
+
+Deferred (see ARCHITECTURE §11): trading-lab cutover (Slice 5).
 
 ## Layout
 
@@ -39,7 +47,7 @@ packages/research-contracts   # @trading/research-contracts — shared 017/022 t
 apps/backtester               # the service
   src/determinism/            # canonical-json + seeded rng (lifted verbatim from platform 018) + content hashing
   src/runner/                 # minimal deterministic momentum runner (runBacktest seam)
-  src/data/                   # BacktesterDataPort + in-process fixture reader + materialize
+  src/data/                   # BacktesterDataPort: fixture reader + HTTP data-API client + reference data-API server
   src/runner/                 # ModuleExecutor seam: trusted momentum executor + runBacktest
   src/jobs/                   # 8-state lifecycle, JobStore (in-memory + Postgres), fingerprint, submit, worker, completion/outbox
   src/sandbox/                # bundle model + content-addressed registry + Docker driver + SandboxModuleExecutor
@@ -87,6 +95,24 @@ pnpm test   # sandbox tests run when Docker is available
 
 The bundle's entry exports `signals(candles, seed): boolean[]`; the trusted runner consumes those
 signals (sizing/metrics stay trusted). Tune limits with `BACKTESTER_SANDBOX_*` env vars.
+
+### Data source — in-process vs HTTP (Slice 4)
+
+By default the service reads the local fixture datasets in-process. To fetch historical data over the
+networked Research Historical Data API instead (the contract real `trading-platform` /
+`trading-mock-platform` serve):
+
+```bash
+# terminal 1 — run the reference data API over the local fixtures (stands in for platform/mock)
+pnpm --filter @trading-backtester/service start:data-api      # listens on :8081
+
+# terminal 2 — point the backtester at it
+BACKTESTER_DATA_SOURCE=http BACKTESTER_DATA_API_URL=http://127.0.0.1:8081 pnpm start
+```
+
+The HTTP path is parity-tested against the in-process reader (identical materialized tape +
+`dataset_fingerprint`). Tests that target an **external** data API are gated on
+`BACKTESTER_TEST_DATA_API_URL` and **skip** (never fail) when it is unset/unreachable.
 
 ## HTTP API (v1, bearer auth)
 

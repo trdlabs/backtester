@@ -26,6 +26,13 @@ export interface AppConfig {
   readonly artifactsDir: string;
   /** Content-addressed module-bundle registry root. */
   readonly bundlesDir: string;
+  /** Historical data source: in-process fixture reader, or the networked Research Historical Data API. */
+  readonly dataSource: 'fixture' | 'http';
+  /** Base URL of the Research Historical Data API (required when dataSource === 'http'). */
+  readonly dataApiUrl?: string;
+  /** Optional bearer token for the data API (NOT exchange credentials). */
+  readonly dataApiToken?: string;
+  readonly dataApiPageLimit: number;
   /** Postgres connection string. When set, the service uses PgJobStore; otherwise in-memory. */
   readonly databaseUrl?: string;
   readonly defaultQueueTimeoutMs: number;
@@ -43,6 +50,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     fixturesDir: env.BACKTESTER_FIXTURES_DIR ?? resolve(HERE, '../fixtures/candles'),
     artifactsDir: env.BACKTESTER_ARTIFACTS_DIR ?? resolve(HERE, '../.data/artifacts'),
     bundlesDir: env.BACKTESTER_BUNDLES_DIR ?? resolve(HERE, '../.data/bundles'),
+    dataSource: env.BACKTESTER_DATA_SOURCE === 'http' ? 'http' : 'fixture',
+    ...(env.BACKTESTER_DATA_API_URL ? { dataApiUrl: env.BACKTESTER_DATA_API_URL } : {}),
+    ...(env.BACKTESTER_DATA_API_TOKEN ? { dataApiToken: env.BACKTESTER_DATA_API_TOKEN } : {}),
+    dataApiPageLimit: Number(env.BACKTESTER_DATA_API_PAGE_LIMIT ?? 1000),
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
     defaultQueueTimeoutMs: Number(env.BACKTESTER_QUEUE_TIMEOUT_MS ?? 6 * 60 * 60 * 1000),
     defaultRunTimeoutMs: Number(env.BACKTESTER_RUN_TIMEOUT_MS ?? 2 * 60 * 60 * 1000),

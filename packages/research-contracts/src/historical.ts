@@ -47,3 +47,14 @@ export interface HistoricalDatasetReader {
   queryOneSymbolTimeSeries(q: OneSymbolQuery): AsyncIterable<ReaderRow[]>;
   close?(): Promise<void>;
 }
+
+/**
+ * One page of the networked Research Historical Data API (Slice 4). `nextCursor` is an opaque token;
+ * absent on the last page. The wire rendering of `HistoricalDatasetReader.queryRange` — streaming and
+ * paged so neither side loads a whole dataset into memory. trading-platform and trading-mock-platform
+ * implement this identically; the backtester consumes it credential-free over HTTP.
+ */
+export interface HistoricalRowsPage {
+  readonly rows: readonly ReaderRow[];
+  readonly nextCursor?: string;
+}
