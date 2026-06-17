@@ -29,6 +29,9 @@ importers:
       '@trading/research-contracts':
         specifier: workspace:*
         version: link:../../packages/research-contracts
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
       decimal.js:
         specifier: ^10.4.3
         version: 10.6.0

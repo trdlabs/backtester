@@ -34,7 +34,12 @@ const SCHEMAS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 's
 
 /** Parsed 017 core schema JSON, read from the package's committed assets. */
 export function schemaAsset(name: CoreSchemaName): Record<string, unknown> {
-  return JSON.parse(readFileSync(join(SCHEMAS_DIR, SCHEMA_FILES[name]), 'utf8')) as Record<string, unknown>;
+  const file = join(SCHEMAS_DIR, SCHEMA_FILES[name]);
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+  } catch (cause) {
+    throw new Error(`Cannot load 017 schema '${name}' from ${file}`, { cause });
+  }
 }
 
 /** All 5 core schema assets, in catalog order. Task 4 loads these into one ajv instance. */
