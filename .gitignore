@@ -1,5 +1,8 @@
 node_modules/
 dist/
+# The client package ships a prebuilt, self-contained dist so it installs from git/path with no
+# workspace resolution (rebuild with `pnpm --filter @trading-backtester/client build`).
+!/packages/client/dist/
 .data/
 coverage/
 *.log
