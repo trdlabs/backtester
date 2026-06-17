@@ -19,7 +19,8 @@ describe('lifted hooks-bundle fixtures', () => {
       expect(b.manifest.id).toBe(id);
       expect((b.manifest as { hooks?: string[] }).hooks).toEqual(hooks);
       expect(b.files[b.entry]).toContain('export'); // module source present
-      expect(bundleHash(b)).toBe(bundleHash(b)); // stable
+      const again = loadInlineBundle(name); // fresh JSON.parse of the same fixture
+      expect(bundleHash(again)).toBe(bundleHash(b)); // content-addressed identity is stable across independent parses
       expect(bundleHash(b)).toMatch(/^sha256:/);
     });
   }
