@@ -65,9 +65,12 @@ the verbatim `src/determinism/{canonical-json,rng}`, and the lift's overlay `res
 enforced by the platform's `scripts/verify_018_{baseline,overlay_variant,determinism}.mjs` run in
 `VERIFY_018_TARGET=http` mode against the live service — asserting the service `result_hash` equals the
 in-process golden — which is the required gate before any cutover. The momentum/signals path and its
-golden `sha256:eff10116…` are unchanged. **Untrusted sandboxed overlay-module execution (the
-per-bar-IPC `SandboxModuleExecutor` lift), the trading-lab cutover off `baselineOnlyComparison`, and
-retiring `sp4_mock` remain follow-ups (Slice 6b + after).**
+golden `sha256:eff10116…` are unchanged. **Slice 6b-A is now landed in this repo: untrusted
+sandboxed overlay-module execution (the per-bar-IPC `SandboxModuleExecutor` lift) is implemented,
+Docker-gated, and wired into the overlay-engine path. Follow-ups remain in downstream cutover work:
+Slice 6b-B (trading-lab switches from `baselineOnlyComparison` to the real `comparison` flow and
+submits untrusted overlay bundles through the backtester) and Slice 6b-C (retire `sp4_mock` after the
+new path becomes the default).**
 
 ## Layout
 
