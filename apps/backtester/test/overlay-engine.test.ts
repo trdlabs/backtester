@@ -4,12 +4,16 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSchemaRegistry } from '../src/engine/validation/schema-registry.js';
 import { SCHEMA_IDS } from '@trading/research-contracts/research';
-import type { BacktestRunRequest } from '@trading/research-contracts';
+import type {
+  BacktestRunRequest,
+  RunResultSummary,
+  RunStatusView,
+} from '@trading/research-contracts';
 import { buildOverlayDataset } from '../src/engine/data-adapter.js';
 import { runOverlayBacktest } from '../src/engine/run-overlay.js';
 import { buildTrustedRegistry } from '../src/engine/trusted-registry.js';
 import { FixtureDataPort } from '../src/data/reader.js';
-import { FIXTURES_DIR } from './helpers.js';
+import { AUTH, buildTestApp, FIXTURES_DIR } from './helpers.js';
 
 const OVERLAY_REQUESTS_DIR = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -110,5 +114,60 @@ describe('runOverlayBacktest — trusted overlay run path (Slice 6a)', () => {
     const out = runOverlayBacktest(req, await overlayDeps(req));
     // would be 'rejected' (additionalProperties:false) if `engine` leaked to 017 validation
     expect(out.status).toBe('completed');
+  });
+});
+
+describe('overlay engine — end-to-end through the worker (Slice 6a CP4)', () => {
+  // Platform-derived golden (NEVER frozen from backtester output — the worker run must MATCH it).
+  const GV = readFileSync(
+    new URL('./fixtures/overlay/goldens/variant.hash', import.meta.url),
+    'utf8',
+  ).trim();
+
+  async function submitDrainResult(
+    body: BacktestRunRequest & { engine: 'overlay' },
+  ): Promise<RunResultSummary> {
+    const app = await buildTestApp({ enableOverlayEngine: true });
+    try {
+      const submit = await app.server.inject({
+        method: 'POST',
+        url: '/v1/runs',
+        headers: AUTH,
+        payload: body,
+      });
+      expect(submit.statusCode).toBe(202);
+
+      expect(await app.drain()).toBe(1);
+
+      const status = (
+        await app.server.inject({ url: `/v1/runs/${body.runId}/status`, headers: AUTH })
+      ).json() as RunStatusView;
+      expect(status.status).toBe('completed');
+
+      return (
+        await app.server.inject({ url: `/v1/runs/${body.runId}/result`, headers: AUTH })
+      ).json() as RunResultSummary;
+    } finally {
+      await app.dispose();
+    }
+  }
+
+  it('overlay variant job runs end-to-end and result_hash hits the platform golden', async () => {
+    const variantReq = loadRequest('variant.json');
+    const result = await submitDrainResult({ ...variantReq, engine: 'overlay' });
+    expect(result.resultHash).toBe(GV);
+    expect(result.comparison).toBeDefined();
+    expect(
+      Object.values(result.comparison!.variants[0].metricDeltas).some((d) => d.delta !== 0),
+    ).toBe(true);
+    expect(result.evidence.datasetFingerprint).toMatch(/^sha256:/);
+  });
+
+  it('overlay baseline (no overlayRefs) completes with comparison omitted', async () => {
+    const baselineReq = loadRequest('baseline.json');
+    const result = await submitDrainResult({ ...baselineReq, engine: 'overlay' });
+    expect(result.resultHash).toMatch(/^sha256:/);
+    expect(result.comparison).toBeUndefined();
+    expect('comparison' in result).toBe(false);
   });
 });

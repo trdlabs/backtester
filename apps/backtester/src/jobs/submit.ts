@@ -2,6 +2,7 @@
 
 import type { ContentHash, RunJobHandle, RunSubmitRequest } from '@trading/research-contracts';
 import { METRIC_CATALOG } from '@trading/research-contracts';
+import { METRIC_CATALOG as OVERLAY_METRIC_CATALOG } from '@trading/research-contracts/research';
 import { validateBundle } from '../sandbox/bundle';
 import type { BundleStore } from '../sandbox/bundle-store';
 import { requestFingerprint } from './fingerprint';
@@ -30,6 +31,9 @@ export interface SubmitDeps {
 
 const VALID_MODES = new Set(['research', 'review', 'promotion']);
 const VALID_METRICS = new Set<string>(METRIC_CATALOG);
+// Overlay runs execute the lifted engine, whose metric vocabulary is the platform/research catalog
+// (sharpe, max_drawdown, …) rather than the momentum catalog. Gate accordingly.
+const VALID_OVERLAY_METRICS = new Set<string>(OVERLAY_METRIC_CATALOG);
 
 function validate(req: RunSubmitRequest): void {
   if (!req || typeof req !== 'object') {
@@ -60,7 +64,8 @@ function validate(req: RunSubmitRequest): void {
     if (!Array.isArray(req.metrics)) {
       throw new SubmitError(400, 'validation_error', 'metrics must be an array');
     }
-    const unknown = req.metrics.filter((m) => !VALID_METRICS.has(m));
+    const catalog = req.engine === 'overlay' ? VALID_OVERLAY_METRICS : VALID_METRICS;
+    const unknown = req.metrics.filter((m) => !catalog.has(m));
     if (unknown.length > 0) {
       throw new SubmitError(400, 'validation_error', `unknown_metric: ${unknown.join(', ')}`);
     }

@@ -4,11 +4,22 @@
 // the trusted momentum executor. Sandbox limit/▶failures map to a clean terminal status + terminal_code
 // (never a service crash).
 
-import type { BacktestRunRequest, RunPeriod, RunResultSummary } from '@trading/research-contracts';
+import type {
+  ArtifactManifest,
+  BacktestRunRequest,
+  ContentHash,
+  RunPeriod,
+  RunResultSummary,
+} from '@trading/research-contracts';
 import { CONTRACT_VERSION } from '@trading/research-contracts';
 import { contentRef } from '../determinism/hash';
 import { persistRunArtifacts, type ArtifactStore } from '../artifacts/store';
+import { persistOverlayArtifacts } from '../artifacts/overlay-store';
 import { datasetFingerprint, materialize, type BacktesterDataPort } from '../data/reader';
+import { buildOverlayDataset } from '../engine/data-adapter';
+import { runOverlayBacktest } from '../engine/run-overlay';
+import { buildTrustedRegistry } from '../engine/trusted-registry';
+import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
 import { TrustedMomentumExecutor, type ModuleExecutor } from '../runner/module-executor';
 import { runBacktest } from '../runner/run-backtest';
@@ -54,59 +65,115 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
 
   let executor: ModuleExecutor | undefined;
   try {
-    executor = await executorFor(deps, claimed);
+    let summary: RunResultSummary;
+    let resultHash: ContentHash;
+    let manifest: ArtifactManifest;
+    let dsFingerprint: string;
 
-    const reader = await deps.dataPort.openDataset(claimed.datasetRef);
-    if (!reader) throw new RunnerError('missing_dataset', `unknown dataset: ${claimed.datasetRef}`);
+    if (claimed.request.engine === 'overlay') {
+      // ===== OVERLAY PATH — lifted engine end-to-end (Slice 6a) =====
+      const r = claimed.request;
+      const marketTape = await buildOverlayDataset(deps.dataPort, {
+        datasetRef: r.datasetRef,
+        symbols: r.symbols,
+        timeframe: r.timeframe,
+        period: r.period,
+      });
+      // Wire-summary fingerprint only — NOT part of the hashed RunOutcome (platform golden).
+      dsFingerprint = contentRef(r.symbols.map((s) => marketTape.candles(s)));
 
-    const { tsFrom, tsTo } = periodMs(claimed.request.period);
-    const dataset = await materialize(reader, claimed.datasetRef, {
-      tsFrom,
-      tsTo,
-      symbols: claimed.request.symbols,
-    });
-    const dsFingerprint = datasetFingerprint(dataset);
+      const engineRequest: BacktestRunRequest = {
+        runId,
+        mode: r.mode,
+        moduleRef: r.moduleRef,
+        ...(r.overlayRefs !== undefined ? { overlayRefs: r.overlayRefs } : {}),
+        datasetRef: r.datasetRef,
+        symbols: r.symbols,
+        timeframe: r.timeframe,
+        period: r.period,
+        ...(r.params !== undefined ? { params: r.params } : {}),
+        ...(r.riskProfileRef !== undefined ? { riskProfileRef: r.riskProfileRef } : {}),
+        ...(r.executionProfileRef !== undefined
+          ? { executionProfileRef: r.executionProfileRef }
+          : {}),
+        seed: claimed.effectiveSeed,
+        metrics: r.metrics,
+        ...(r.robustnessChecks !== undefined ? { robustnessChecks: r.robustnessChecks } : {}),
+      };
 
-    const request: BacktestRunRequest = {
-      runId,
-      mode: claimed.request.mode,
-      moduleRef: claimed.request.moduleRef,
-      datasetRef: claimed.datasetRef,
-      symbols: claimed.request.symbols,
-      timeframe: claimed.request.timeframe,
-      period: claimed.request.period,
-      ...(claimed.request.params !== undefined ? { params: claimed.request.params } : {}),
-      seed: claimed.effectiveSeed,
-      metrics: claimed.request.metrics,
-    };
+      const outcome = runOverlayBacktest(engineRequest, {
+        registry: buildTrustedRegistry(),
+        marketTape,
+      });
+      if (outcome.status !== 'completed') {
+        throw new RunnerError(
+          'validation_error',
+          `overlay run rejected: ${JSON.stringify(outcome.validation.issues)}`,
+        );
+      }
+      resultHash = contentRef(outcome);
+      const persisted = await persistOverlayArtifacts(
+        deps.artifactStore,
+        outcome,
+        dsFingerprint,
+      );
+      manifest = persisted.manifest;
+      summary = toOverlaySummary(outcome, runId, persisted.artifactRefs, resultHash, dsFingerprint);
+    } else {
+      // ===== MOMENTUM PATH — unchanged (golden eff10116… must not move) =====
+      executor = await executorFor(deps, claimed);
 
-    const result = await runBacktest(request, {
-      dataset,
-      executor,
-      ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
-    });
-    const { manifest, artifactRefs } = await persistRunArtifacts(
-      deps.artifactStore,
-      result,
-      dsFingerprint,
-    );
-    const resultHash = contentRef(result);
+      const reader = await deps.dataPort.openDataset(claimed.datasetRef);
+      if (!reader) {
+        throw new RunnerError('missing_dataset', `unknown dataset: ${claimed.datasetRef}`);
+      }
 
-    const summary: RunResultSummary = {
-      runId,
-      status: 'completed',
-      metrics: result.metrics,
-      artifactRefs,
-      evidence: {
-        seed: request.seed,
-        contractVersion: CONTRACT_VERSION,
-        moduleVersions: [request.moduleRef],
-        datasetRef: request.datasetRef,
-        datasetFingerprint: dsFingerprint,
+      const { tsFrom, tsTo } = periodMs(claimed.request.period);
+      const dataset = await materialize(reader, claimed.datasetRef, {
+        tsFrom,
+        tsTo,
+        symbols: claimed.request.symbols,
+      });
+      dsFingerprint = datasetFingerprint(dataset);
+
+      const request: BacktestRunRequest = {
+        runId,
+        mode: claimed.request.mode,
+        moduleRef: claimed.request.moduleRef,
+        datasetRef: claimed.datasetRef,
+        symbols: claimed.request.symbols,
+        timeframe: claimed.request.timeframe,
+        period: claimed.request.period,
+        ...(claimed.request.params !== undefined ? { params: claimed.request.params } : {}),
+        seed: claimed.effectiveSeed,
+        metrics: claimed.request.metrics,
+      };
+
+      const result = await runBacktest(request, {
+        dataset,
+        executor,
         ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
-      },
-      resultHash,
-    };
+      });
+      const persisted = await persistRunArtifacts(deps.artifactStore, result, dsFingerprint);
+      manifest = persisted.manifest;
+      resultHash = contentRef(result);
+
+      summary = {
+        runId,
+        status: 'completed',
+        metrics: result.metrics,
+        artifactRefs: persisted.artifactRefs,
+        evidence: {
+          seed: request.seed,
+          contractVersion: CONTRACT_VERSION,
+          moduleVersions: [request.moduleRef],
+          datasetRef: request.datasetRef,
+          datasetFingerprint: dsFingerprint,
+          ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
+        },
+        resultHash,
+      };
+    }
 
     const now = deps.clock();
     await deps.store.transition(runId, 'running', 'completed', {

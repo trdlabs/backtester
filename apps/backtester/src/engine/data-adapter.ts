@@ -6,8 +6,8 @@
 // rows to `marketTapeFromCanonicalRows` to materialize a `MarketTapeDataset`.
 //
 // The backtester carries no liquidations: every mapped row sets `liq_long_usd`/`liq_short_usd` to null
-// and `has_liquidations` to false. Everything else copies 1:1; `turnover` has no CanonicalRowV2 field
-// (the tape builder ignores it), so it is dropped during the map.
+// and `has_liquidations` to false. Everything else copies 1:1 — `turnover` is a CanonicalRowV2 field
+// and is carried through verbatim.
 
 import type {
   MarketTapeDataset,
@@ -69,6 +69,11 @@ export async function buildOverlayDataset(
 
   const tsFrom = Date.parse(sel.period.from);
   const tsTo = Date.parse(sel.period.to);
+  if (Number.isNaN(tsFrom) || Number.isNaN(tsTo)) {
+    throw new Error(
+      `buildOverlayDataset: unparseable period [${sel.period.from}, ${sel.period.to})`,
+    );
+  }
 
   const mappedRows: CanonicalRowV2[] = [];
   for await (const batch of reader.queryRange({ tsFrom, tsTo, symbols: sel.symbols })) {
