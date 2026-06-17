@@ -56,33 +56,3 @@ pnpm start               # tsx apps/backtester/src/index.ts
 **Обязательно** используй Gortex MCP (`graph_stats`, `smart_context`, `get_editing_context`,
 `verify_change`, `get_edit_plan`/`batch_edit`, `check_guards`, `get_test_targets`) вместо Read/Grep/Glob —
 PreToolUse hooks блокируют прямое чтение индексированного кода. Подробный workflow — в `CLAUDE.md`.
-
-<!-- gortex:communities:start -->
-<!-- gortex:skills:start -->
-## Community Skills
-
-| Area | Description | Skill |
-|------|-------------|-------|
-| Src Engine 2 Dirs | 155 symbols | `/gortex-src-engine-2-dirs` |
-| Engine Validation 2 Dirs | 129 symbols | `/gortex-engine-validation-2-dirs` |
-| Engine Sandbox 2 Dirs Callhook | 113 symbols | `/gortex-engine-sandbox-2-dirs-callhook` |
-| Src Engine 1 Dirs Pointintimemarketapi | 79 symbols | `/gortex-src-engine-1-dirs-pointintimemarketapi` |
-| Src Engine Settlepending | 73 symbols | `/gortex-src-engine-settlepending` |
-| Src Jobs 1 Dirs Processnextqueued | 69 symbols | `/gortex-src-jobs-1-dirs-processnextqueued` |
-| Src Engine 1 Dirs Runbacktest | 69 symbols | `/gortex-src-engine-1-dirs-runbacktest` |
-| Backtester Test 3 Dirs | 55 symbols | `/gortex-backtester-test-3-dirs` |
-| Engine Indicators 2 Dirs | 52 symbols | `/gortex-engine-indicators-2-dirs` |
-| Client Src 1 Dirs | 50 symbols | `/gortex-client-src-1-dirs` |
-| Src Engine Buildtrade | 45 symbols | `/gortex-src-engine-buildtrade` |
-| Src Engine 1 Dirs Kindcoverage | 43 symbols | `/gortex-src-engine-1-dirs-kindcoverage` |
-| Backtester Src Buildapp | 43 symbols | `/gortex-backtester-src-buildapp` |
-| Src Runner Runbacktest | 40 symbols | `/gortex-src-runner-runbacktest` |
-| Src Engine Computemetrics | 40 symbols | `/gortex-src-engine-computemetrics` |
-| Src Jobs Rowtojob | 40 symbols | `/gortex-src-jobs-rowtojob` |
-| Src Jobs 1 Dirs Submitrun | 40 symbols | `/gortex-src-jobs-1-dirs-submitrun` |
-| Src Engine 1 Dirs Buildmarkettape | 40 symbols | `/gortex-src-engine-1-dirs-buildmarkettape` |
-| Backtester Src Persistoverlayartifacts | 35 symbols | `/gortex-backtester-src-persistoverlayartifacts` |
-| Src Engine 1 Dirs Evaluate | 33 symbols | `/gortex-src-engine-1-dirs-evaluate` |
-<!-- gortex:skills:end -->
-
-<!-- gortex:communities:end -->
