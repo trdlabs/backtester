@@ -18,6 +18,8 @@ export interface RunPeriod {
 
 export type ModuleKind = 'strategy';
 
+export type BacktestEngine = 'momentum' | 'overlay';
+
 /** Manifest of a submitted module. Identity is `id@version`; the registry key is the content hash. */
 export interface ModuleManifest {
   readonly id: string;
@@ -49,6 +51,13 @@ export interface BacktestRunRequest {
   readonly params?: Record<string, unknown>;
   readonly seed: number;
   readonly metrics: readonly string[];
+  readonly overlayRefs?: readonly Ref[];
+  readonly riskProfileRef?: Ref;
+  readonly executionProfileRef?: Ref;
+  readonly parameterGrid?: object;
+  readonly robustnessChecks?: readonly string[];
+  readonly artifacts?: readonly string[];
+  readonly engine?: BacktestEngine;
 }
 
 /** Gateway submit DTO: the run request plus orchestration fields (not part of the fingerprint). */

@@ -1,15 +1,6 @@
 export * from './run';
 export * from './historical';
 
-export * from './research/decision.js';
-export * from './research/module.js';
-export * from './research/context.js';
-export * from './research/run.js';
-export * from './research/catalogs.js';
-export * from './research/indicators.js';
-export * from './research/market-tape.js';
-export * from './research/validation-codes.js';
-
 /** 017 run/module contract version. Must stay in lockstep with trading-platform for byte parity. */
 export const CONTRACT_VERSION = '017.2';
 
