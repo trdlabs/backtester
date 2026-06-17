@@ -4,6 +4,9 @@ export * from './historical';
 /** 017 run/module contract version. Must stay in lockstep with trading-platform for byte parity. */
 export const CONTRACT_VERSION = '017.2';
 
+/** The platform's lifted 017 contract version (parity anchor). Root CONTRACT_VERSION must equal it. */
+export { CONTRACT_VERSION as PLATFORM_CONTRACT_VERSION } from './research/catalogs.js';
+
 /** 022 artifact-set contract version. */
 export const ARTIFACT_CONTRACT_VERSION = '022.1';
 

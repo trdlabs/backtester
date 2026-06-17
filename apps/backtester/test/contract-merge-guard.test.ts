@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BacktestRunRequest } from '@trading/research-contracts';
+import { CONTRACT_VERSION, PLATFORM_CONTRACT_VERSION } from '@trading/research-contracts';
+import { schemaAsset, SCHEMA_IDS } from '@trading/research-contracts/research';
 
 describe('additive 017 contract merge', () => {
   it('still accepts the legacy signals request shape unchanged', () => {
@@ -24,4 +26,14 @@ describe('additive 017 contract merge', () => {
     expect(overlay.engine).toBe('overlay');
     expect(overlay.overlayRefs?.length).toBe(1);
   });
+});
+
+it('CONTRACT_VERSION is in lockstep with the lifted platform anchor', () => {
+  expect(CONTRACT_VERSION).toBe(PLATFORM_CONTRACT_VERSION);
+});
+
+it('loads the 017 strategy-decision schema asset with its $id intact', () => {
+  const schema = schemaAsset('strategy-decision');
+  expect(schema.$id).toBe(SCHEMA_IDS['strategy-decision']);
+  expect(typeof schema).toBe('object');
 });

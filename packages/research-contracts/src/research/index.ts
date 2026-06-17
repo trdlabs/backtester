@@ -6,3 +6,4 @@ export * from './catalogs.js';
 export * from './indicators.js';
 export * from './market-tape.js';
 export * from './validation-codes.js';
+export * from './schema-assets.js';
