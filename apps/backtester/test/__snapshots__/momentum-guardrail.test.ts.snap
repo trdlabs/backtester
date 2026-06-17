@@ -1,0 +1,6 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`momentum byte-identity guardrail (independent of the overlay engine) > legacy momentum runner result_hash equals the frozen golden 1`] = `
+"{"long_bars":7,"pnl":93.45794393,"return_pct":0.93457944,"seed_probe":0.60110375,"total_bars":10,"win_rate":0.57142857}
+"
+`;
