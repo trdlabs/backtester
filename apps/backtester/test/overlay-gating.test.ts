@@ -44,4 +44,17 @@ describe('overlay pre-queue gating (engine off)', () => {
     });
     expect(res.statusCode).toBe(202);
   });
+
+  it('overlay request while disabled reports engine-disabled (not unknown_metric) regardless of metrics', async () => {
+    app = await buildTestApp({ enableOverlayEngine: false });
+    const res = await app.server.inject({
+      method: 'POST',
+      url: '/v1/runs',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      payload: { ...runBody(), engine: 'overlay', metrics: ['sharpe'] },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('validation_error');
+    expect(res.json().message).toMatch(/overlay engine is disabled/i);
+  });
 });

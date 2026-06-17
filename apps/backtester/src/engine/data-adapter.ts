@@ -17,6 +17,7 @@ import type {
 import type { CanonicalRow as ReaderRow } from '@trading/research-contracts';
 import { marketTapeFromCanonicalRows } from './market-tape.js';
 import type { BacktesterDataPort } from '../data/reader.js';
+import { RunnerError } from '../runner/errors.js';
 
 /** Selector identifying which dataset/window/symbols to materialize into an engine tape. */
 export interface OverlayDatasetSelector {
@@ -70,7 +71,8 @@ export async function buildOverlayDataset(
   const tsFrom = Date.parse(sel.period.from);
   const tsTo = Date.parse(sel.period.to);
   if (Number.isNaN(tsFrom) || Number.isNaN(tsTo)) {
-    throw new Error(
+    throw new RunnerError(
+      'validation_error',
       `buildOverlayDataset: unparseable period [${sel.period.from}, ${sel.period.to})`,
     );
   }

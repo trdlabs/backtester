@@ -117,6 +117,19 @@ describe('runOverlayBacktest — trusted overlay run path (Slice 6a)', () => {
   });
 });
 
+describe('buildOverlayDataset — period guard (Slice 6b-a)', () => {
+  it('rejects an unparseable period with a RunnerError(validation_error)', async () => {
+    await expect(
+      buildOverlayDataset(new FixtureDataPort(FIXTURES_DIR), {
+        datasetRef: 'pump-fixture-1m',
+        symbols: ['BTCUSDT'],
+        timeframe: '1m',
+        period: { from: 'not-a-date', to: 'also-bad' },
+      }),
+    ).rejects.toMatchObject({ code: 'validation_error' });
+  });
+});
+
 describe('overlay engine — end-to-end through the worker (Slice 6a CP4)', () => {
   // Platform-derived golden (NEVER frozen from backtester output — the worker run must MATCH it).
   const GV = readFileSync(

@@ -95,11 +95,14 @@ export interface SubmitOutcome {
 }
 
 export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promise<SubmitOutcome> {
-  validate(body);
-
+  // Gate the overlay engine BEFORE validate(): a disabled overlay request must surface the
+  // engine-disabled message, not an incidental validation error (e.g. an overlay-only metric that
+  // the momentum catalog would reject as unknown_metric).
   if (body.engine === 'overlay' && !deps.enableOverlayEngine) {
     throw new SubmitError(400, 'validation_error', 'overlay engine is disabled');
   }
+
+  validate(body);
 
   const runId = body.runId ?? deps.uid();
   const fingerprint = requestFingerprint(body);
