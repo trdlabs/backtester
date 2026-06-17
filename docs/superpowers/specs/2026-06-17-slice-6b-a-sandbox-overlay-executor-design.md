@@ -138,7 +138,9 @@ apps/backtester/src/determinism/*    REUSED (rng, canonical-json, hash) — shar
         │
 worker engine:'overlay' branch:
    bundle present → createModuleRegistry({…,sandboxPolicies}) + createExecutorRouter → runOverlayBacktest({registry, router, marketTape})
-   no bundle      → buildTrustedRegistry → runOverlayBacktest({registry, marketTape})    (6a, unchanged)
+   no bundle      → buildTrustedRegistry → runOverlayBacktest({registry, marketTape})    (6a path, byte-identical)
+        │ runOverlayBacktest is EXTENDED additively: OverlayRunDeps gains an optional `router?`
+        │ forwarded to runBacktest (which already does `deps.router ?? createTrustedRouter`).
         │ contentRef(runOutcome) == 0be9931c / e381659c  (same goldens)
 ```
 
@@ -196,7 +198,18 @@ it `:ro`; the temp dir is cleaned up on `close()`.
 
 ### 4.4 Executor selection (worker)
 
-In the worker's `engine:'overlay'` branch (6a):
+**First, extend `runOverlayBacktest` additively (explicit plan task — NOT "lift, import-rewrite only").**
+Today `apps/backtester/src/engine/run-overlay.ts` is `OverlayRunDeps = { registry, marketTape }` and
+calls `runBacktest(engineRequest, { registry, marketTape })` with **no router**. 6b-A adds an optional
+`router?: ExecutorRouter` to `OverlayRunDeps` and forwards it: `runBacktest(engineRequest, { registry,
+marketTape, ...(router ? { router } : {}) })`. The lifted runner already does `deps.router ??
+createTrustedRouter(deps.executor)`, so a present router engages the sandbox path and an absent one
+falls back to the trusted in-process router. **Sub-invariant:** with **no bundle / no router**, the
+overlay path is **byte-identical to 6a** — same `RunOutcome`, same goldens (`0be9931c` / `e381659c`);
+the 6a overlay-golden + e2e tests must stay green unchanged. (The `engine`-strip and everything else in
+`runOverlayBacktest` are preserved.)
+
+Then, in the worker's `engine:'overlay'` branch (6a):
 - **`job.bundleHash` present** → materialize the bundle, build `createModuleRegistry({strategyBundles |
   overlayBundles, riskProfiles:[DEFAULT_RISK], executionProfiles:[DEFAULT_EXEC], sandboxPolicies:[DEFAULT_SANDBOX]})`
   + `createExecutorRouter({sandboxPolicies})`, then `runOverlayBacktest(request, {registry, router,
