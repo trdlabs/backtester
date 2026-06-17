@@ -28,6 +28,7 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     defaultQueueTimeoutMs: 3_600_000,
     defaultRunTimeoutMs: 3_600_000,
     autoWorker: false,
+    enableOverlayEngine: false,
     sandbox: {
       harnessDir: HARNESS_DIR,
       image: 'node:24-alpine',

@@ -1,0 +1,47 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { loadConfig } from '../src/config';
+import { buildTestApp, runBody, AUTH } from './helpers';
+import type { AppHandles } from '../src/app';
+
+describe('enableOverlayEngine flag', () => {
+  it('defaults to false', () => {
+    expect(loadConfig({}).enableOverlayEngine).toBe(false);
+  });
+  it('is true only for exactly "true"', () => {
+    expect(loadConfig({ BACKTESTER_ENABLE_OVERLAY_ENGINE: 'true' }).enableOverlayEngine).toBe(true);
+    expect(loadConfig({ BACKTESTER_ENABLE_OVERLAY_ENGINE: '1' }).enableOverlayEngine).toBe(false);
+    expect(loadConfig({ BACKTESTER_ENABLE_OVERLAY_ENGINE: 'false' }).enableOverlayEngine).toBe(false);
+  });
+});
+
+describe('overlay pre-queue gating (engine off)', () => {
+  let app: AppHandles | undefined;
+
+  afterEach(async () => {
+    await app?.dispose();
+    app = undefined;
+  });
+
+  it('rejects an overlay request with validation_error when the engine is OFF', async () => {
+    app = await buildTestApp(); // enableOverlayEngine defaults to false in testConfig
+    const res = await app.server.inject({
+      method: 'POST',
+      url: '/v1/runs',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      payload: { ...runBody(), engine: 'overlay' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code ?? res.json().category).toBe('validation_error');
+  });
+
+  it('accepts a momentum request (no engine) when the engine is OFF', async () => {
+    app = await buildTestApp();
+    const res = await app.server.inject({
+      method: 'POST',
+      url: '/v1/runs',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      payload: runBody(),
+    });
+    expect(res.statusCode).toBe(202);
+  });
+});

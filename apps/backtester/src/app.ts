@@ -133,6 +133,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     authToken: config.authToken,
     defaultQueueTimeoutMs: config.defaultQueueTimeoutMs,
     defaultRunTimeoutMs: config.defaultRunTimeoutMs,
+    enableOverlayEngine: config.enableOverlayEngine,
     maxConcurrency: 1,
     kick,
   });

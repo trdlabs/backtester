@@ -24,6 +24,7 @@ export interface SubmitDeps {
   uid: () => string;
   defaultQueueTimeoutMs: number;
   defaultRunTimeoutMs: number;
+  enableOverlayEngine: boolean;
   bundleStore?: BundleStore;
 }
 
@@ -90,6 +91,10 @@ export interface SubmitOutcome {
 
 export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promise<SubmitOutcome> {
   validate(body);
+
+  if (body.engine === 'overlay' && !deps.enableOverlayEngine) {
+    throw new SubmitError(400, 'validation_error', 'overlay engine is disabled');
+  }
 
   const runId = body.runId ?? deps.uid();
   const fingerprint = requestFingerprint(body);
