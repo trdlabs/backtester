@@ -138,10 +138,11 @@ The backtester reads historical data through the platform contract, not through 
 - failure-mode coverage for:
   - validation reject
   - sandbox failure
-  - timeout
-  - missing dataset
-  - non-completed terminal runs
-- artifact access verification
+  - timeout ✅ (`run_deadline_exceeded` covered in `deadline-reaping.test.ts`)
+  - missing dataset ✅ (`missing_dataset` covered in `deadline-reaping.test.ts`)
+  - queue expiry ✅ (`queue_deadline_exceeded` covered in `deadline-reaping.test.ts`)
+  - non-completed terminal runs ✅ (GET /result and GET /artifacts for all terminal states in `terminal-result-api.test.ts`)
+- artifact access verification ✅ (artifact manifest + paged artifact endpoint covered in `api.e2e.test.ts`)
 
 ### Done when
 
