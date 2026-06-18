@@ -132,17 +132,16 @@ The “hypothesis to backtest result” user flow works end-to-end. ✅
 
 **Goal:** make the whole system operable.
 
-### Remaining work
+### Completed
 
-- CI gates for the cross-repo flow
-- contract / parity checks across repos
-- env/config documentation
-- local smoke scripts for the whole stack
-- release ordering between repos
+- `docs/OPERATIONS.md` — release ordering, env matrix, per-repo `check` gates, local verification workflow
+- GitHub Actions CI (`pnpm check`) in `trading-backtester` and `trading-lab`
+- `make cross-repo-e2e` in trading-lab (host gate against demo stack; publishes backtester on loopback)
+- Cross-repo parity inventory: `mock-platform-parity.test.ts`, platform `gates:018` HTTP mode, `cross-repo-e2e.integration.test.ts`
 
 ### Done when
 
-Cross-repo changes can be rolled out predictably without manual re-debugging of every seam.
+Cross-repo changes can be rolled out predictably without manual re-debugging of every seam. ✅
 
 ## Priority Order
 

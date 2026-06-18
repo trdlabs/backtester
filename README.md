@@ -7,6 +7,7 @@ and fetches historical data through a platform-owned data port (so real `trading
 `trading-mock-platform` are interchangeable).
 
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full MVP architecture and decisions.
+See **[docs/OPERATIONS.md](docs/OPERATIONS.md)** for cross-repo release ordering, CI gates, and local smoke workflow.
 
 ## Status
 
