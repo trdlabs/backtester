@@ -66,19 +66,17 @@ is not yet closed end-to-end.
 
 **Goal:** remove the legacy path.
 
-### Remaining work
+### Completed
 
-- switch the default backend to `research_platform`
-- stop depending on `sp4_mock` for hypothesis backtests
-- clean schema defaults, orchestration branches, read models, and tests
-
-### Constraint
-
-Do this only after `6b-B` is fully green.
+- `BACKTEST_BACKEND` defaults to `research_platform`; `sp4_mock` value no longer accepted
+- `computeParamsHash` simplified — `backend` param removed, always uses research_platform hash
+- sp4_mock branch removed from `hypothesis-build.handler.ts`
+- `AppServices.defaultPlatformRun` added; `research-run-cycle` enqueues hypothesis.build tasks with it
+- 141 test files / 1422 tests green, typecheck clean
 
 ### Done when
 
-Only the real backtester path remains for hypothesis backtests.
+Only the real backtester path remains for hypothesis backtests. ✅
 
 ## Feature 4: Historical Data API Hardening
 
