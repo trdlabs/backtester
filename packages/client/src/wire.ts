@@ -52,6 +52,12 @@ export interface BacktestRunRequest {
   readonly engine?: BacktestEngine;
 }
 
+/** Typed request body for POST /v1/modules/validate. */
+export interface ModuleValidateRequest {
+  readonly moduleBundle?: ModuleBundle;
+  readonly engine?: BacktestEngine;
+}
+
 export interface RunSubmitRequest extends Omit<BacktestRunRequest, 'runId'> {
   readonly runId?: string;
   readonly moduleBundle?: ModuleBundle;
