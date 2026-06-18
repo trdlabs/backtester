@@ -74,6 +74,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       ? new MockPlatformDataPort({
           baseUrl:   config.mockPlatformUrl,
           pageLimit: config.dataApiPageLimit,
+          ...(config.mockPlatformToken ? { opsToken: config.mockPlatformToken } : {}),
         })
       : new FixtureDataPort(config.fixturesDir));
   const artifactStore = overrides.artifactStore ?? new FileArtifactStore(config.artifactsDir);

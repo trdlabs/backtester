@@ -74,6 +74,8 @@ export interface MockPlatformDataPortOptions {
   readonly fetchImpl?: FetchLike;
   /** Rows per page when fetching bars. Default 500. */
   readonly pageLimit?: number;
+  /** Bearer token for mock-platform auth (MOCK_OPS_TOKENS-verified). */
+  readonly opsToken?: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -219,7 +221,10 @@ export class MockPlatformDataPort implements BacktesterDataPort {
 
   constructor(opts: MockPlatformDataPortOptions) {
     this.base = opts.baseUrl.replace(/\/+$/, '');
-    this.fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+    const rawFetch = opts.fetchImpl ?? globalThis.fetch;
+    this.fetchImpl = opts.opsToken
+      ? (url, init) => rawFetch(url, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), Authorization: `Bearer ${opts.opsToken}` } })
+      : rawFetch;
     this.pageLimit = opts.pageLimit ?? 500;
   }
 

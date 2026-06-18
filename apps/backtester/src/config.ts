@@ -54,6 +54,8 @@ export interface AppConfig {
   readonly dataApiToken?: string;
   /** Base URL of trading-mock-platform (required when dataSource === 'mock'). */
   readonly mockPlatformUrl?: string;
+  /** Bearer token for mock-platform auth (MOCK_OPS_TOKENS-verified). */
+  readonly mockPlatformToken?: string;
   readonly dataApiPageLimit: number;
   /** Postgres connection string. When set, the service uses PgJobStore; otherwise in-memory. */
   readonly databaseUrl?: string;
@@ -111,7 +113,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
                                                'fixture',
     ...(env.BACKTESTER_DATA_API_URL       ? { dataApiUrl:       env.BACKTESTER_DATA_API_URL }       : {}),
     ...(env.BACKTESTER_DATA_API_TOKEN     ? { dataApiToken:     env.BACKTESTER_DATA_API_TOKEN }     : {}),
-    ...(env.BACKTESTER_MOCK_PLATFORM_URL  ? { mockPlatformUrl:  env.BACKTESTER_MOCK_PLATFORM_URL }  : {}),
+    ...(env.BACKTESTER_MOCK_PLATFORM_URL   ? { mockPlatformUrl:   env.BACKTESTER_MOCK_PLATFORM_URL }   : {}),
+    ...(env.BACKTESTER_MOCK_PLATFORM_TOKEN ? { mockPlatformToken: env.BACKTESTER_MOCK_PLATFORM_TOKEN } : {}),
     dataApiPageLimit: Number(env.BACKTESTER_DATA_API_PAGE_LIMIT ?? 1000),
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
     defaultQueueTimeoutMs: Number(env.BACKTESTER_QUEUE_TIMEOUT_MS ?? 6 * 60 * 60 * 1000),
