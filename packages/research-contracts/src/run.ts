@@ -18,7 +18,7 @@ export interface RunPeriod {
   readonly to: string; // ISO-8601 UTC
 }
 
-export type ModuleKind = 'strategy';
+export type ModuleKind = 'strategy' | 'overlay';
 
 export type BacktestEngine = 'momentum' | 'overlay';
 

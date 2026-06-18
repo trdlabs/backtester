@@ -6,6 +6,7 @@
   - Slice 1–5
   - Slice `6a`
   - Slice `6b-A`
+  - Feature 1: Client Contract Alignment (`ModuleKind` expanded to `'strategy' | 'overlay'`, `BacktestEngine` exported, `BacktestRunRequest` aligned with research-contracts)
 - `trading-lab`
   - backtester adapter introduced
   - `research_platform` path introduced

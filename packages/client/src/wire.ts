@@ -15,7 +15,7 @@ export interface RunPeriod {
   readonly to: string;
 }
 
-export type ModuleKind = 'strategy';
+export type ModuleKind = 'strategy' | 'overlay';
 
 export interface ModuleManifest {
   readonly id: string;
@@ -30,6 +30,8 @@ export interface ModuleBundle {
   readonly files: Readonly<Record<string, string>>;
 }
 
+export type BacktestEngine = 'momentum' | 'overlay';
+
 export interface BacktestRunRequest {
   readonly runId: string;
   readonly mode: RunMode;
@@ -41,6 +43,13 @@ export interface BacktestRunRequest {
   readonly params?: Record<string, unknown>;
   readonly seed: number;
   readonly metrics: readonly string[];
+  readonly overlayRefs?: readonly Ref[];
+  readonly riskProfileRef?: Ref;
+  readonly executionProfileRef?: Ref;
+  readonly parameterGrid?: object;
+  readonly robustnessChecks?: readonly string[];
+  readonly artifacts?: readonly string[];
+  readonly engine?: BacktestEngine;
 }
 
 export interface RunSubmitRequest extends Omit<BacktestRunRequest, 'runId'> {
