@@ -10,6 +10,7 @@ import type {
   ValidationReport,
 } from '@trading/research-contracts';
 import { ARTIFACT_CONTRACT_VERSION, CONTRACT_VERSION, METRIC_CATALOG } from '@trading/research-contracts';
+import { validateBundle } from '../sandbox/bundle';
 import type { BacktesterDataPort } from '../data/reader';
 import type { ArtifactStore } from '../artifacts/store';
 import { toStatusView, type JobStore } from '../jobs/job-store';
@@ -36,6 +37,15 @@ function unauthorized(reply: FastifyReply): FastifyReply {
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const app = Fastify({ logger: false });
 
+  app.setErrorHandler((error: Error & { code?: string; statusCode?: number }, _req, reply) => {
+    if (error.code?.startsWith('FST_ERR_CTP') || error.statusCode === 400) {
+      return reply
+        .code(400)
+        .send({ category: 'validation_error', code: 'validation_error', message: error.message });
+    }
+    return reply.code(error.statusCode ?? 500).send({ message: error.message });
+  });
+
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
     if (!req.url.startsWith('/v1/')) return;
     const header = req.headers.authorization;
@@ -61,6 +71,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const issues: ValidationIssue[] = [];
     if (!body || typeof body !== 'object') {
       issues.push({ code: 'schema_invalid', severity: 'error', message: 'body must be an object' });
+      return { status: 'rejected', issues, executed: false };
+    }
+    if (body.moduleBundle !== undefined) {
+      for (const i of validateBundle(body.moduleBundle)) {
+        issues.push({ code: i.code, severity: 'error', message: i.message });
+      }
     }
     return { status: issues.length > 0 ? 'rejected' : 'accepted', issues, executed: false };
   });
