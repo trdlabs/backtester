@@ -30,25 +30,20 @@ The full user flow
 
 is not yet closed end-to-end.
 
-## Feature 1: Client Contract Alignment
+## Feature 1: Client Contract Alignment ✅ DONE
 
 **Goal:** remove the contract gap between `trading-backtester` and `trading-lab`.
 
-### Remaining work
+### Completed
 
-- extend `@trading-backtester/client` for the overlay bundle contract
-- align vendored wire types with the server expectation
-- keep client parity / guard tests green
-
-### Concrete tasks
-
-- expand `ModuleKind` in the client wire to support `'overlay'`
-- keep submit-side wire compatible with `engine:'overlay'`
-- update vendored types in `trading-lab` if needed
+- `ModuleKind` and `BacktestEngine` include `'overlay'` and are exported
+- `ModuleValidateRequest` interface added (`moduleBundle?` + `engine?`) — typed POST /v1/modules/validate contract
+- `BacktesterClient.validateModule` accepts `ModuleValidateRequest` instead of `unknown`
+- client-parity tests: explicit `Equal<>` guards for `BacktestEngine` and `ModuleKind` parity, compile-time @ts-expect-error guard on `validateModule`
 
 ### Done when
 
-`trading-lab` can type-safely submit a real overlay bundle to `trading-backtester`.
+`trading-lab` can type-safely submit a real overlay bundle to `trading-backtester`. ✅
 
 ## Feature 2: Trading-Lab 6b-B Cutover
 
