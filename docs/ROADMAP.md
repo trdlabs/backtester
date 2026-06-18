@@ -45,40 +45,22 @@ is not yet closed end-to-end.
 
 `trading-lab` can type-safely submit a real overlay bundle to `trading-backtester`. ✅
 
-## Feature 2: Trading-Lab 6b-B Cutover
+## Feature 2: Trading-Lab 6b-B Cutover ✅ DONE
 
 **Goal:** finish the real overlay backtest flow through `trading-backtester`.
 
-### Remaining work
+### Completed
 
-- remove synthetic `baselineOnlyComparison`
-- use the real `comparison` returned by the backtester
-- submit the real untrusted overlay bundle instead of the temporary lossy bridge
-- finish the orchestration path end-to-end
-
-### Sub-features
-
-1. Result bridge
-- map the new backtester overlay comparison into the SDK shape used by `trading-lab`
-
-2. Submit bridge
-- after the client fix, send a real overlay bundle contract
-
-3. Orchestration flow
-- finish `runPlatformBacktest`
-- finish the `hypothesis-build` `research_platform` path
-- verify resume / poll / result persistence
-
-4. `trading-lab` E2E
-- hypothesis build
-- run submit
-- polling
-- result mapping
-- evaluation persistence
+- `submitOverlayRun` sends `engine: 'overlay'` in `RunSubmitRequest`
+- `toSdkComparison()` maps `BtComparisonSummary` (`variants[].metricDeltas`) → `ComparisonSummaryDTO` flat `{baseline, variant, deltas}` records
+- `toSdkSummary` detects `comparison` presence and sets `runKind: 'baseline-vs-variant'`
+- `BacktesterClientLike.validateModule` typed to `BtModuleValidateRequest` (was `unknown`)
+- `runPlatformBacktest` orchestration fully covered: validate → submit → persist → poll → resolve
+- 141 test files / 1439 tests green, typecheck clean
 
 ### Done when
 
-`trading-lab` can submit a hypothesis to `trading-backtester` and persist a valid backtest result.
+`trading-lab` can submit a hypothesis to `trading-backtester` and persist a valid backtest result. ✅
 
 ## Feature 3: sp4_mock Retirement (6b-C)
 
