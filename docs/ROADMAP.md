@@ -82,16 +82,18 @@ Only the real backtester path remains for hypothesis backtests. ✅
 
 **Goal:** make the real platform data path mandatory and reliable.
 
-### Remaining work
+### Completed
 
-- verify that `trading-platform` and `trading-mock-platform` expose equivalent historical-data contracts
-- verify deployment and config for backtester HTTP data source
-- run parity between fixture/in-process and platform/mock-platform HTTP paths
-- document auth, availability, paging, and drift behavior
+- `mock-platform-parity.test.ts` — parity gate: proves `MockPlatformDataPort` produces byte-identical
+  materialized rows (`datasetFingerprint`) compared to `FixtureDataPort` when fed the same underlying data
+- `createHistoricalHttpApp` added to `trading-platform` — Hono adapter exposing `GET /historical/coverage`,
+  `/historical/discover`, `/historical/bars`, `/historical/funding`, `/historical/open-interest`,
+  mirroring the `trading-mock-platform` contract so `MockPlatformDataPort` works against both backends
+- `verify_historical_http_app.mjs` added to `gates:historical` in `trading-platform`
 
 ### Done when
 
-The backtester reads historical data through the platform contract, not through temporary local modes.
+The backtester reads historical data through the platform contract, not through temporary local modes. ✅
 
 ## Feature 5: End-to-End Product Flow
 
