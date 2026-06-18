@@ -24,7 +24,18 @@ const checks: [
   Equal<Client.DatasetDescriptor, RC.DatasetDescriptor>,
   Equal<Client.CompletionEvent, RC.CompletionEvent>,
   Equal<Client.Ref, RC.Ref>,
-] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true];
+  Equal<Client.BacktestEngine, RC.BacktestEngine>,
+  Equal<Client.ModuleKind, RC.ModuleKind>,
+] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true];
+
+// Compile-time guard: validateModule must only accept ModuleValidateRequest.
+// This function is never called at runtime — it exists solely for the type check.
+// If `@ts-expect-error` becomes unused, validateModule drifted back to `unknown`.
+function _validateModuleIsTyped(): void {
+  const c = null as unknown as Client.BacktesterClient;
+  // @ts-expect-error excess property — validateModule must reject unknown-shaped objects
+  c.validateModule({ notAValidField: 'bad' });
+}
 
 describe('@trading-backtester/client ↔ @trading/research-contracts parity', () => {
   it('vendored client wire types are structurally identical to the contracts', () => {

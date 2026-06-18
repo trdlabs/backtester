@@ -9,6 +9,7 @@ import type {
   ArtifactPage,
   CapabilityDescriptor,
   DatasetDescriptor,
+  ModuleValidateRequest,
   RunJobHandle,
   RunResultSummary,
   RunStatusView,
@@ -125,7 +126,7 @@ export class BacktesterClient {
     return body.datasets;
   }
 
-  validateModule(req: unknown): Promise<ValidationReport> {
+  validateModule(req: ModuleValidateRequest): Promise<ValidationReport> {
     return this.request('POST', '/v1/modules/validate', req);
   }
 
