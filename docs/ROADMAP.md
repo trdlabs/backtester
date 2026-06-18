@@ -109,21 +109,24 @@ The backtester reads historical data through the platform contract, not through 
 6. `trading-lab` persists comparison and evaluation
 7. UI / read models expose the outcome to the user
 
-### Remaining work
+### Completed
 
-- integration tests across all three systems
-- failure-mode coverage for:
-  - validation reject ✅ (inline bundle validation + HTTP error normalization in `validation-reject.test.ts`)
-  - sandbox failure ✅ (non-Docker failure modes in `sandbox-failure.test.ts`: `missing_module`, `sandbox_module_error` pre-Docker guard, `runner_failure`)
-  - timeout ✅ (`run_deadline_exceeded` covered in `deadline-reaping.test.ts`)
-  - missing dataset ✅ (`missing_dataset` covered in `deadline-reaping.test.ts`)
-  - queue expiry ✅ (`queue_deadline_exceeded` covered in `deadline-reaping.test.ts`)
-  - non-completed terminal runs ✅ (GET /result and GET /artifacts for all terminal states in `terminal-result-api.test.ts`)
-- artifact access verification ✅ (artifact manifest + paged artifact endpoint covered in `api.e2e.test.ts`)
+- `cross-repo-e2e.integration.test.ts` in `trading-lab` — opt-in gate (`RUN_CROSS_REPO_E2E=true`) proving
+  lab → backtester → mock-platform: mock-platform dataset refs (`SYMBOL:timeframe`), adapter submit+poll,
+  and full `hypothesis.build` handler flow to `evaluated` + evaluation decision
+- `docker-compose.demo.yml` wires mock-platform + backtester + lab worker/ingress (demo stack)
+- failure-mode coverage:
+  - validation reject ✅ (`validation-reject.test.ts`)
+  - sandbox failure ✅ (`sandbox-failure.test.ts`)
+  - timeout ✅ (`deadline-reaping.test.ts`)
+  - missing dataset ✅ (`deadline-reaping.test.ts`)
+  - queue expiry ✅ (`deadline-reaping.test.ts`)
+  - non-completed terminal runs ✅ (`terminal-result-api.test.ts`)
+- artifact access verification ✅ (`api.e2e.test.ts`)
 
 ### Done when
 
-The “hypothesis to backtest result” user flow works end-to-end.
+The “hypothesis to backtest result” user flow works end-to-end. ✅
 
 ## Feature 6: Operationalization
 
