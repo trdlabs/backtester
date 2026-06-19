@@ -2,7 +2,7 @@
 // платформенным (lifted) 017/019 acceptance-gate. Чистый host-код — Docker НЕ требуется.
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ModuleBundle } from '@trading/research-contracts';
 import { platformContractContext } from '@trading/research-contracts/research';
@@ -44,6 +44,10 @@ describe('materialize inline bundle → temp bundleDir + 017/019 acceptance-gate
       expect(result.status).toBe('accepted'); // 017-манифест + целостность OK
       expect(result.issues).toEqual([]);
       expect(result.bundleHash).toBe(loaded.descriptor.bundleHash);
+
+      // Sandbox containers run as nobody — bundle tree must be world-readable.
+      expect(statSync(bundleDir).mode & 0o777).toBe(0o755);
+      expect(statSync(join(bundleDir, inline.entry)).mode & 0o777).toBe(0o644);
 
       await cleanup();
       expect(existsSync(bundleDir)).toBe(false);

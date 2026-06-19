@@ -9,7 +9,7 @@
 // БЕЗ submit/worker-обвязки — только материализация (валидация — забота вызывающего через
 // `loadBundle` + `validateBundle`). Никакого исполнения тела модуля здесь нет.
 
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 import type { ModuleBundle as InlineModuleBundle } from '@trading/research-contracts';
@@ -35,7 +35,17 @@ interface RuntimeManifestView {
   readonly bundleContractVersion?: unknown;
 }
 
-/** Гард обхода: путь должен быть относительным и не выходить за пределы bundleDir. */
+/** Recursively widen a materialized tree to world `r`/`X` (dirs traversable, files readable). */
+async function makeWorldReadable(path: string): Promise<void> {
+  const info = await stat(path);
+  await chmod(path, info.isDirectory() ? 0o755 : 0o644);
+  if (info.isDirectory()) {
+    for (const entry of await readdir(path)) {
+      await makeWorldReadable(join(path, entry));
+    }
+  }
+}
+
 function assertSafeRelativePath(path: string): void {
   if (isAbsolute(path)) {
     throw new Error(`materializeBundle: absolute payload path is not allowed: ${path}`);
@@ -117,6 +127,10 @@ export async function materializeBundle(inline: InlineModuleBundle): Promise<Mat
     };
 
     await writeFile(join(bundleDir, 'bundle.json'), JSON.stringify(descriptor, null, 2), 'utf8');
+
+    // Sandbox containers run as an unprivileged user against a :ro mount — bundle dirs must be
+    // world-readable (mkdtemp defaults to 0700).
+    await makeWorldReadable(bundleDir);
 
     return { bundleDir, cleanup };
   } catch (e) {

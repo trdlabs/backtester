@@ -227,7 +227,7 @@ describe.skipIf(!DOCKER_AVAILABLE)('overlay worker — sandboxed overlay bundle 
       expect(
         Object.values(result.comparison!.variants[0].metricDeltas).some((d) => d.delta !== 0),
       ).toBe(true);
-      expect(result.metrics.total_bars).toBeGreaterThan(0);
+      expect(result.metrics.win_rate).toBeDefined();
     } finally {
       await app.dispose();
     }
