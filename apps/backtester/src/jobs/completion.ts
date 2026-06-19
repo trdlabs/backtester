@@ -7,8 +7,8 @@ import type {
   CompletionEventType,
   RunResultSummary,
   TerminalRunStatus,
-} from '@trading/research-contracts';
-import { CONTRACT_VERSION } from '@trading/research-contracts';
+} from '@trading-backtester/sdk/contracts';
+import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import { isTerminal } from './lifecycle';
 import type { JobRow, JobStore } from './job-store';
 
@@ -56,7 +56,7 @@ function synthesizeSummary(job: JobRow): RunResultSummary {
     artifactRefs: [],
     evidence: {
       seed: job.effectiveSeed,
-      contractVersion: CONTRACT_VERSION,
+      contractVersion: API_CONTRACT_VERSION,
       moduleVersions: [job.request.moduleRef],
       datasetRef: job.datasetRef,
       ...(job.datasetFingerprint !== undefined ? { datasetFingerprint: job.datasetFingerprint } : {}),

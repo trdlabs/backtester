@@ -58,6 +58,45 @@ trading-lab ──platformClient──────────▶ trading-platfo
 
 ---
 
+## 1a. Public SDK (`packages/sdk`)
+
+`packages/sdk` — **`@trading-backtester/sdk`** (Apache-2.0) — is the canonical public package for
+external consumers. It is installed from a GitHub Release tarball (no npm registry). Five subpath
+exports — the root `.` plus four named subpaths:
+
+| Subpath | Contents |
+|---|---|
+| `.` (root) | `SDK_VERSION`, `SDK_CAPABILITIES`, supported contract versions (identity only) |
+| `/contracts` | Core type contracts, JSON schema assets (`allSchemaAssets()`), determinism core (`canonical-json`, content hashing) |
+| `/builder` | `createModuleManifest`, `createModuleBundle`, `computeInlineBundleHash`, `preflightValidateBundle` |
+| `/client` | `BacktesterClient` HTTP client and error types |
+| `/artifacts` | `isContentHash` and artifact guard utilities |
+
+The determinism core (`canonical-json`, content hashing) lives in the SDK; the service
+(`apps/backtester/src/`) consumes it via thin re-export wrappers. This is the **only** package
+intended for external publication.
+
+**Package status:**
+- `packages/sdk` (`@trading-backtester/sdk`) — canonical public SDK. A manual GitHub Actions
+  release workflow (`.github/workflows/sdk-release.yml`) exists; **`0.1.0` has NOT been published
+  yet** by this plan.
+- `packages/client` (`@trading-backtester/client`) — **frozen** pending the separate
+  `trading-lab` cutover; still present, not a wrapper around the SDK.
+- `packages/research-contracts` (`@trading/research-contracts`) — **private**; provides
+  `HistoricalDatasetReader`, canonical rows, engine context/decisions/indicators/market-tape types
+  used by the engine and the historical data port. Not published externally.
+- **No live execution or exchange credentials** were introduced at any stage; the SDK is a pure
+  authoring and API-integration library (research-only invariant intact).
+
+```
+packages/sdk                  # @trading-backtester/sdk (public, Apache-2.0) — /contracts /builder /client /artifacts
+packages/research-contracts   # @trading/research-contracts (private) — historical types, engine context
+packages/client               # @trading-backtester/client (frozen, git/path dep) — pending trading-lab cutover
+apps/backtester               # the service (imports SDK via workspace:*)
+```
+
+---
+
 ## 2. Reuse map — what to lift, re-front, or leave behind
 
 | Source (`trading-platform`) | Disposition | Notes |

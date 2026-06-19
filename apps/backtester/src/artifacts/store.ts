@@ -11,8 +11,8 @@ import type {
   ArtifactManifest,
   ArtifactReference,
   ContentHash,
-} from '@trading/research-contracts';
-import { ARTIFACT_CONTRACT_VERSION, CONTRACT_VERSION } from '@trading/research-contracts';
+} from '@trading-backtester/sdk/artifacts';
+import { API_CONTRACT_VERSION, ARTIFACT_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import { canonicalJson } from '../determinism/canonical-json';
 import { contentRef } from '../determinism/hash';
 import type { BacktestResult } from '../runner/run-backtest';
@@ -128,7 +128,7 @@ export async function persistRunArtifacts(
   return {
     manifest: {
       runId: result.runId,
-      contractVersion: CONTRACT_VERSION,
+      contractVersion: API_CONTRACT_VERSION,
       artifactContractVersion: ARTIFACT_CONTRACT_VERSION,
       descriptors,
     },

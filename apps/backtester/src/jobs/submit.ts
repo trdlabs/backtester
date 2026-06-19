@@ -1,6 +1,7 @@
 // Submit service — validate, fingerprint, idempotent insert, accepted -> queued.
 
-import type { ContentHash, RunJobHandle, RunSubmitRequest } from '@trading/research-contracts';
+import type { ContentHash } from '@trading-backtester/sdk/artifacts';
+import type { RunJobHandle, RunSubmitRequest } from '@trading-backtester/sdk/contracts';
 import { METRIC_CATALOG } from '@trading/research-contracts';
 import { METRIC_CATALOG as OVERLAY_METRIC_CATALOG } from '@trading/research-contracts/research';
 import { validateBundle } from '../sandbox/bundle';

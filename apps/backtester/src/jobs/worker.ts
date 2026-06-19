@@ -4,14 +4,13 @@
 // the trusted momentum executor. Sandbox limit/▶failures map to a clean terminal status + terminal_code
 // (never a service crash).
 
+import type { ArtifactManifest, ContentHash } from '@trading-backtester/sdk/artifacts';
 import type {
-  ArtifactManifest,
   BacktestRunRequest,
-  ContentHash,
   RunPeriod,
   RunResultSummary,
-} from '@trading/research-contracts';
-import { CONTRACT_VERSION } from '@trading/research-contracts';
+} from '@trading-backtester/sdk/contracts';
+import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import { contentRef } from '../determinism/hash';
 import { persistRunArtifacts, type ArtifactStore } from '../artifacts/store';
 import { persistOverlayArtifacts } from '../artifacts/overlay-store';
@@ -227,7 +226,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         artifactRefs: persisted.artifactRefs,
         evidence: {
           seed: request.seed,
-          contractVersion: CONTRACT_VERSION,
+          contractVersion: API_CONTRACT_VERSION,
           moduleVersions: [request.moduleRef],
           datasetRef: request.datasetRef,
           datasetFingerprint: dsFingerprint,

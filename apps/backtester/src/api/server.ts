@@ -2,14 +2,15 @@
 // Bearer auth on every /v1 route, fail-closed. See docs/ARCHITECTURE.md §4.
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import type { ArtifactPage } from '@trading-backtester/sdk/artifacts';
 import type {
-  ArtifactPage,
   CapabilityDescriptor,
   RunSubmitRequest,
   ValidationIssue,
   ValidationReport,
-} from '@trading/research-contracts';
-import { ARTIFACT_CONTRACT_VERSION, CONTRACT_VERSION, METRIC_CATALOG } from '@trading/research-contracts';
+} from '@trading-backtester/sdk/contracts';
+import { API_CONTRACT_VERSION, ARTIFACT_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
+import { METRIC_CATALOG } from '@trading/research-contracts';
 import { validateBundle } from '../sandbox/bundle';
 import type { BacktesterDataPort } from '../data/reader';
 import type { ArtifactStore } from '../artifacts/store';
@@ -57,7 +58,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.get('/health', async () => ({ status: 'ok' }));
 
   app.get('/v1/capabilities', async (): Promise<CapabilityDescriptor> => ({
-    contractVersion: CONTRACT_VERSION,
+    contractVersion: API_CONTRACT_VERSION,
     artifactContractVersion: ARTIFACT_CONTRACT_VERSION,
     supportedMetrics: [...METRIC_CATALOG],
     supportedModes: ['research', 'review', 'promotion'],

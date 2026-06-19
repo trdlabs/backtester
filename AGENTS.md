@@ -29,8 +29,18 @@
 
 ## Структура
 - `apps/backtester/` — сам сервис: `src/`, `test/`, `migrations/`, `fixtures/`, `sandbox-harness/`
-- `packages/research-contracts/` — контракты research-интерфейса
-- `packages/client/` — клиент (`@trading-backtester/client`, его использует trading-lab)
+- `packages/sdk/` — **`@trading-backtester/sdk`** (Apache-2.0) — канонический публичный пакет с
+  4 subpath-экспортами (`/contracts`, `/builder`, `/client`, `/artifacts`). Устанавливается через
+  GitHub Release `.tgz` (без npm-регистри). Workflow для релиза есть
+  (`.github/workflows/sdk-release.yml`), но **версия `0.1.0` ещё не опубликована**.
+  Ядро детерминизма (`canonical-json`, хэширование) живёт в SDK; сервис потребляет его через
+  тонкие re-export обёртки. Живых кредов и биржевого исполнения нет — SDK чисто для авторинга и
+  интеграции с API.
+- `packages/research-contracts/` — `@trading/research-contracts` — **приватный** пакет для
+  исторических/engine-only типов (`HistoricalDatasetReader`, canonical rows, engine
+  context/decisions/indicators/market-tape). Остаётся приватным.
+- `packages/client/` — `@trading-backtester/client` — **заморожен** до отдельного cutover в
+  `trading-lab`; ещё не удалён и не является обёрткой над SDK.
 - `docs/ARCHITECTURE.md` — полная MVP-архитектура и решения (ADR)
 
 ## Команды

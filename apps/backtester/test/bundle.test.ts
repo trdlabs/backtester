@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ModuleBundle } from '@trading/research-contracts';
 import { BUNDLE_CONTRACT_VERSION } from '@trading/research-contracts';
+import { computeInlineBundleHash } from '@trading-backtester/sdk/builder';
 import { bundleHash, validateBundle } from '../src/sandbox/bundle';
 
 const SRC = 'export function signals(c){ return c.map(()=>false); }';
@@ -20,6 +21,12 @@ describe('bundle content-addressing', () => {
     expect(bundleHash(bundle())).toMatch(/^sha256:/);
     const other = bundle({ files: { 'module.mjs': SRC + '\n// changed' } });
     expect(bundleHash(other)).not.toBe(bundleHash(bundle()));
+  });
+
+  it('byte-parity: SDK computeInlineBundleHash matches the service registry hash', () => {
+    // Proof the moved canonical core changed no bytes: the SDK builder and the service
+    // registry must produce the identical content hash for the same bundle.
+    expect(computeInlineBundleHash(bundle())).toBe(bundleHash(bundle()));
   });
 });
 

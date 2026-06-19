@@ -2,8 +2,9 @@
 // canonical JSON) — the same bundle always hashes the same, which is what makes "same bundle → same
 // result_hash" hold and what keys the registry. See ADR §12.5 (variant A: own registry only).
 
-import type { ContentHash, ModuleBundle } from '@trading/research-contracts';
-import { BUNDLE_CONTRACT_VERSION } from '@trading/research-contracts';
+import type { ContentHash } from '@trading-backtester/sdk/artifacts';
+import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
+import { BUNDLE_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import { contentRef } from '../determinism/hash';
 
 export function bundleHash(bundle: ModuleBundle): ContentHash {

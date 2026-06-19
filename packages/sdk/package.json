@@ -1,0 +1,28 @@
+{
+  "name": "@trading-backtester/sdk",
+  "version": "0.1.0",
+  "description": "Standalone authoring, contracts, artifacts and HTTP client SDK for trading-backtester.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "files": ["dist", "schemas", "README.md", "LICENSE"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./contracts": { "types": "./dist/contracts/index.d.ts", "import": "./dist/contracts/index.js" },
+    "./builder": { "types": "./dist/builder/index.d.ts", "import": "./dist/builder/index.js" },
+    "./client": { "types": "./dist/client/index.d.ts", "import": "./dist/client/index.js" },
+    "./artifacts": { "types": "./dist/artifacts/index.d.ts", "import": "./dist/artifacts/index.js" }
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run test",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "decimal.js": "^10.4.3"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

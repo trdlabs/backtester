@@ -10,6 +10,7 @@
     "start:data-api": "tsx src/data-api-main.ts"
   },
   "dependencies": {
+    "@trading-backtester/sdk": "workspace:*",
     "@trading/research-contracts": "workspace:*",
     "ajv": "^8.20.0",
     "decimal.js": "^10.4.3",

@@ -26,6 +26,9 @@ importers:
 
   apps/backtester:
     dependencies:
+      '@trading-backtester/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@trading/research-contracts':
         specifier: workspace:*
         version: link:../../packages/research-contracts
@@ -52,6 +55,22 @@ importers:
         version: 5.9.3
 
   packages/research-contracts: {}
+
+  packages/sdk:
+    dependencies:
+      decimal.js:
+        specifier: ^10.4.3
+        version: 10.6.0
+    devDependencies:
+      tsup:
+        specifier: ^8.3.5
+        version: 8.5.1(postcss@8.5.15)(tsx@4.22.4)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.21)
 
 packages:
 

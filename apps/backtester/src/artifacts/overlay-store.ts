@@ -6,8 +6,8 @@
 import type {
   ArtifactDescriptor,
   ArtifactReference,
-} from '@trading/research-contracts';
-import { ARTIFACT_CONTRACT_VERSION, CONTRACT_VERSION } from '@trading/research-contracts';
+} from '@trading-backtester/sdk/artifacts';
+import { API_CONTRACT_VERSION, ARTIFACT_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import type { ArtifactStore, PersistedArtifacts } from './store';
 import type { RunOutcome } from '../engine/artifacts';
 
@@ -70,7 +70,7 @@ export async function persistOverlayArtifacts(
   return {
     manifest: {
       runId: headline.runId,
-      contractVersion: CONTRACT_VERSION,
+      contractVersion: API_CONTRACT_VERSION,
       artifactContractVersion: ARTIFACT_CONTRACT_VERSION,
       descriptors,
     },

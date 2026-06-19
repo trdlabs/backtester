@@ -8,6 +8,7 @@ dist/
 # the drift-guard test asserts the committed manifest hash matches the source.
 /apps/backtester/sandbox-harness-overlay/_engine/
 
+.artifacts/
 .data/
 coverage/
 *.log

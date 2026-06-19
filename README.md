@@ -73,11 +73,36 @@ Slice 6b-B (trading-lab switches from `baselineOnlyComparison` to the real `comp
 submits untrusted overlay bundles through the backtester) and Slice 6b-C (retire `sp4_mock` after the
 new path becomes the default).**
 
+## Public SDK
+
+`packages/sdk` is the canonical public package: **`@trading-backtester/sdk`** (Apache-2.0). It
+ships five subpath exports — the root `.` (for `SDK_VERSION` / capabilities) plus four named
+subpaths (`/contracts`, `/builder`, `/client`, `/artifacts`). Install from a GitHub Release tarball
+— no npm registry required:
+
+```sh
+pnpm add https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trading-backtester-sdk-0.1.0.tgz
+```
+
+A manual GitHub Actions release workflow (`.github/workflows/sdk-release.yml`) exists but **`0.1.0`
+has not been published yet** by this plan.
+
+The determinism core (`canonical-json`, content hashing) lives in the SDK; the service consumes it
+via thin re-export wrappers in `apps/backtester/src/`. `packages/client`
+(`@trading-backtester/client`) remains **frozen** pending the separate `trading-lab` cutover — it is
+not yet removed and is not a wrapper around the SDK. `@trading/research-contracts` remains
+**private** for historical/engine-only types (`HistoricalDatasetReader`, canonical rows, engine
+context/decisions/indicators/market-tape).
+
+**No live execution or exchange credentials were introduced.** The SDK is a pure authoring and
+API-integration library (research-only invariant intact).
+
 ## Layout
 
 ```
-packages/research-contracts   # @trading/research-contracts — shared 017/022 types + historical data port (parity anchor)
-packages/client               # @trading-backtester/client — typed HTTP client (git/path dep for trading-lab; self-contained dist)
+packages/sdk                  # @trading-backtester/sdk — canonical public SDK (contracts/builder/client/artifacts)
+packages/research-contracts   # @trading/research-contracts — shared 017/022 types + historical data port (parity anchor; PRIVATE)
+packages/client               # @trading-backtester/client — typed HTTP client (git/path dep for trading-lab; FROZEN pending cutover)
 apps/backtester               # the service
   src/determinism/            # canonical-json + seeded rng (lifted verbatim from platform 018) + content hashing
   src/runner/                 # minimal deterministic momentum runner (runBacktest seam)
