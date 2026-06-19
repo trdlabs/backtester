@@ -1,0 +1,101 @@
+{
+  "$id": "https://trading-platform/017/overlay-decision.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/OverlayDecision",
+  "definitions": {
+    "OverlayDecision": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/OverlayPassDecision"
+        },
+        {
+          "$ref": "#/definitions/OverlayVetoDecision"
+        },
+        {
+          "$ref": "#/definitions/OverlayPatchDecision"
+        },
+        {
+          "$ref": "#/definitions/OverlayAnnotateDecision"
+        }
+      ],
+      "description": "Замкнутый union решений overlay (FR-007); семантика применения — для будущего runner (D10)."
+    },
+    "OverlayPassDecision": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "pass"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "Не меняет accumulated decision."
+    },
+    "OverlayVetoDecision": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "veto"
+        },
+        "reasonCode": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reasonCode"
+      ],
+      "additionalProperties": false,
+      "description": "Terminal для текущего base decision/hook."
+    },
+    "OverlayPatchDecision": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "patch"
+        },
+        "patch": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "patch"
+      ],
+      "additionalProperties": false,
+      "description": "Структурный patch над решением базовой стратегии; после применения решение снова schema-valid."
+    },
+    "OverlayAnnotateDecision": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "annotate"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "Добавляет только metadata."
+    }
+  },
+  "title": "OverlayDecision"
+}
