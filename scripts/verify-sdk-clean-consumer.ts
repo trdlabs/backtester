@@ -40,7 +40,9 @@ import { allSchemaAssets } from '@trading-backtester/sdk/contracts';
 import { createModuleManifest, createModuleBundle, computeInlineBundleHash } from '@trading-backtester/sdk/builder';
 import { BacktesterClient } from '@trading-backtester/sdk/client';
 import { isContentHash } from '@trading-backtester/sdk/artifacts';
-if (SDK_VERSION !== '0.1.0') process.exit(1);
+import { readFileSync } from 'node:fs';
+const expected = JSON.parse(readFileSync(new URL('./node_modules/@trading-backtester/sdk/package.json', import.meta.url), 'utf8')).version;
+if (SDK_VERSION !== expected) { console.error('SDK_VERSION', SDK_VERSION, '!== package.json', expected); process.exit(1); }
 if (typeof createModuleManifest !== 'function') process.exit(1);
 if (typeof BacktesterClient !== 'function') process.exit(1);
 if (!isContentHash(\`sha256:\${'a'.repeat(64)}\`)) process.exit(1);
