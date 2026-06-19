@@ -79,19 +79,18 @@ intended for external publication.
 **Package status:**
 - `packages/sdk` (`@trading-backtester/sdk`) — canonical public SDK. A manual GitHub Actions
   release workflow (`.github/workflows/sdk-release.yml`) exists; **`0.1.0` has NOT been published
-  yet** by this plan.
-- `packages/client` (`@trading-backtester/client`) — **frozen** pending the separate
-  `trading-lab` cutover; still present, not a wrapper around the SDK.
+  yet** by this plan. `trading-lab` installs from the published GitHub Release tarball.
 - `packages/research-contracts` (`@trading/research-contracts`) — **private**; provides
   `HistoricalDatasetReader`, canonical rows, engine context/decisions/indicators/market-tape types
   used by the engine and the historical data port. Not published externally.
+- `packages/client` (`@trading-backtester/client`) — **removed** (Phase 3). `trading-lab` has cut
+  over to `@trading-backtester/sdk`; the legacy client package is no longer present in this repo.
 - **No live execution or exchange credentials** were introduced at any stage; the SDK is a pure
   authoring and API-integration library (research-only invariant intact).
 
 ```
 packages/sdk                  # @trading-backtester/sdk (public, Apache-2.0) — /contracts /builder /client /artifacts
 packages/research-contracts   # @trading/research-contracts (private) — historical types, engine context
-packages/client               # @trading-backtester/client (frozen, git/path dep) — pending trading-lab cutover
 apps/backtester               # the service (imports SDK via workspace:*)
 ```
 
@@ -451,7 +450,7 @@ The thinnest end-to-end that proves the architecture:
   `terminal_code`, never a service crash.
 - **Slice 4:** Network Research Historical Data API on platform/mock; switch `platformDataClient` to
   HTTP; mock-platform parity.
-- **Slice 5:** trading-lab cutover behind the flag; retire sp4_mock; publish `@trading-backtester/client`.
+- **Slice 5 (complete):** trading-lab cut over to `@trading-backtester/sdk` (published tarball); the legacy `packages/client` was removed from this repo in Phase 3.
 - **Slice 6a (landed):** trusted lift of the full platform overlay engine into `apps/backtester/src/engine/**`
   — baseline + overlay-variant execution and a real `ComparisonSummary`, flag-gated behind
   `BACKTESTER_ENABLE_OVERLAY_ENGINE` and selected by the `engine:'momentum'|'overlay'` request discriminator,

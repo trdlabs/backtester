@@ -39,15 +39,11 @@ server (`createDataApiServer`, what trading-platform / trading-mock-platform imp
 included for dev + parity tests. The materialized tape + `dataset_fingerprint` are **identical** across
 the in-process and HTTP paths, so the golden `result_hash` is unchanged regardless of transport.
 
-**Slice 5 (trading-lab cutover — client boundary)** — `@trading-backtester/client` (this repo,
-`packages/client`): a git/path-dependency-ready typed HTTP client (self-contained dist; vendored wire
-types; **not** published to npm), with a compile-time parity guard against the contracts. In
-`trading-lab`, `HttpBacktesterAdapter` implements `ResearchPlatformPort` over this client behind
-`selectResearchPlatform('backtester')` — so backtest submit/status/result/artifacts flow
-trading-lab → backtesterClient → trading-backtester, independent of the platform client. Additive and
-flag-gated; the `mock`/`mcp` paths and `sp4_mock` are unchanged. The backtester runs strategy-signals
-bundles (not platform overlay modules); full overlay-module execution + retiring `sp4_mock` await
-lifting the platform runner (a later slice).
+**Slice 5 (trading-lab cutover — client boundary)** — `trading-lab` cut over to `@trading-backtester/sdk`
+(the published SDK tarball). `HttpBacktesterAdapter` in `trading-lab` implements `ResearchPlatformPort`
+using `BacktesterClient` from `@trading-backtester/sdk/client` — so backtest submit/status/result/artifacts
+flow trading-lab → BacktesterClient → trading-backtester, independent of the platform client. The legacy
+`packages/client` package was removed from this repo in Phase 3 after the cutover was confirmed.
 
 **Slice 6a (trusted overlay-engine lift)** — the full platform research backtest engine (baseline +
 overlay-variant simulation, overlay composition at `onBarClose`/`onPositionBar`, a real
@@ -59,8 +55,8 @@ overlay). It is a parallel, flag-gated path: a new request discriminator
 gated by `BACKTESTER_ENABLE_OVERLAY_ENGINE` (default **off**) — an `engine:'overlay'` submission while
 disabled is rejected pre-queue with `validation_error`. Overlay runs return a real
 baseline-vs-variant **`comparison`** block (additive/optional on `RunResultSummary`; momentum
-summaries omit it; the `@trading-backtester/client` wire vendors it behind the compile-time parity
-guard). Determinism is byte-for-byte identical to `trading-platform`'s `runBacktest`: the engine reuses
+summaries omit it; `RunResultSummary` and `ComparisonSummary` from
+`@trading-backtester/sdk/contracts` carry it). Determinism is byte-for-byte identical to `trading-platform`'s `runBacktest`: the engine reuses
 the verbatim `src/determinism/{canonical-json,rng}`, and the lift's overlay `result_hash` is
 **platform-derived** and pinned (`baseline sha256:0be9931c…`, `variant sha256:e381659c…`). Parity is
 enforced by the platform's `scripts/verify_018_{baseline,overlay_variant,determinism}.mjs` run in
@@ -88,9 +84,7 @@ A manual GitHub Actions release workflow (`.github/workflows/sdk-release.yml`) e
 has not been published yet** by this plan.
 
 The determinism core (`canonical-json`, content hashing) lives in the SDK; the service consumes it
-via thin re-export wrappers in `apps/backtester/src/`. `packages/client`
-(`@trading-backtester/client`) remains **frozen** pending the separate `trading-lab` cutover — it is
-not yet removed and is not a wrapper around the SDK. `@trading/research-contracts` remains
+via thin re-export wrappers in `apps/backtester/src/`. `@trading/research-contracts` remains
 **private** for historical/engine-only types (`HistoricalDatasetReader`, canonical rows, engine
 context/decisions/indicators/market-tape).
 
@@ -102,7 +96,6 @@ API-integration library (research-only invariant intact).
 ```
 packages/sdk                  # @trading-backtester/sdk — canonical public SDK (contracts/builder/client/artifacts)
 packages/research-contracts   # @trading/research-contracts — shared 017/022 types + historical data port (parity anchor; PRIVATE)
-packages/client               # @trading-backtester/client — typed HTTP client (git/path dep for trading-lab; FROZEN pending cutover)
 apps/backtester               # the service
   src/determinism/            # canonical-json + seeded rng (lifted verbatim from platform 018) + content hashing
   src/runner/                 # minimal deterministic momentum runner (runBacktest seam)

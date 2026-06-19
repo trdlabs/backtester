@@ -1,10 +1,7 @@
-// Exercises the published @trading-backtester/sdk client against a REAL running app over HTTP (the same
-// path trading-lab's HttpBacktesterAdapter uses). Imported from source to avoid a build step in tests.
-//
-// TEMPORARY DUPLICATE: this intentionally mirrors apps/backtester/test/client.test.ts during the
-// compatibility window so both the legacy and SDK clients are exercised against identical HTTP
-// behavior. Once trading-lab cuts over to @trading-backtester/sdk/client, delete the legacy
-// client.test.ts (and packages/client) and keep this file (Phase 3 of the SDK plan).
+// Canonical client integration test: exercises the @trading-backtester/sdk client against a REAL
+// running app over HTTP (the same path trading-lab's HttpBacktesterAdapter uses). Imported from
+// source to avoid a build step in tests. The legacy packages/client and its test were removed in
+// Phase 3 of the SDK initiative; this file is the sole client integration test going forward.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AppHandles } from '../src/app';
@@ -17,7 +14,7 @@ import { buildTestApp, runBody, testDeps } from './helpers';
 
 const GOLDEN_RESULT_HASH = 'sha256:eff10116147933c96d92ae50071ef66339467fb69545c38855dcd50c2c0b43ba';
 
-describe('@trading-backtester/client over HTTP (SDK client)', () => {
+describe('@trading-backtester/sdk client over HTTP', () => {
   let app: AppHandles;
   let client: BacktesterClient;
 

@@ -39,8 +39,6 @@
 - `packages/research-contracts/` — `@trading/research-contracts` — **приватный** пакет для
   исторических/engine-only типов (`HistoricalDatasetReader`, canonical rows, engine
   context/decisions/indicators/market-tape). Остаётся приватным.
-- `packages/client/` — `@trading-backtester/client` — **заморожен** до отдельного cutover в
-  `trading-lab`; ещё не удалён и не является обёрткой над SDK.
 - `docs/ARCHITECTURE.md` — полная MVP-архитектура и решения (ADR)
 
 ## Команды
