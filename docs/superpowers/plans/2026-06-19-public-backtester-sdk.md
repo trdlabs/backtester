@@ -563,12 +563,30 @@ Run and expect missing authoring types.
 - [ ] **Step 2: Define the exact current executable ABIs**
 
 Create `contracts/authoring.ts` by deriving the public authoring-facing subset
-**explicitly from `packages/research-contracts/src/research/context.ts`**:
-`StrategyContext`, the bar/candle and point-in-time shapes, the closed decision
-vocabularies (`StrategyDecision`, `OverlayDecision`) and the lifecycle hooks.
-Copy only those names; the file must not import or transitively reference
-engine-only types (portfolio, execution, indicator, market-tape), storage rows
-or sandbox IPC/session models. The exported top-level shapes must include:
+**explicitly from `research/context.ts` (`StrategyContext`, the bar/point-in-time
+shapes), the hook-facing types of `research/indicators.ts` and
+`research/market-tape.ts` (`SourceField`, `IndicatorRequest`, the indicator value
+types, and `PointInTimeMarketApi` + its point/reading types) and the closed
+decision vocabularies of `research/decision.ts` (`StrategyDecision`,
+`OverlayDecision`)**. Copy these hook-facing shapes structurally identical so
+authored modules stay assignable to the engine context. The file must NOT copy
+engine *implementation* types: portfolio, execution, the indicator
+catalog/validation types (`IndicatorDefinition`, `IndicatorCatalog`,
+`IndicatorValidationResult`, etc.), the market-tape dataset/builder/coverage
+types, or sandbox IPC/session models.
+
+**Momentum `Candle` (approved decision):** the momentum bundle receives
+`SymbolSeries.candles: readonly ReaderRow[]` where `ReaderRow =
+historical.ts::CanonicalRow`. The public `Candle` is published as the EXACT
+`CanonicalRow`/`ReaderRow` shape (`symbol`, `minute_ts`, OHLCV, `turnover`, the
+optional OI/funding/taker columns and their `has_*` flags). This is the single
+deliberate exception to "canonical rows stay private" (spec §6/decision 7): only
+the row *shape* is published — `HistoricalDatasetReader`, its query/paging DTOs
+and the data API stay private. Do NOT widen `Candle` to the on-disk
+`research/canonical-row.ts::CanonicalRow` (which adds `schema_version`/`liq_*`);
+match `historical.ts` exactly.
+
+The exported top-level shapes must include:
 
 ```ts
 export type MomentumSignals = (

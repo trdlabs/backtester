@@ -102,7 +102,10 @@ sibling checkout, registry token or dependency on `trading-platform`.
    vendor duplicate public wire DTOs.
 7. **No public `@trading/research-contracts`.** Its backtester-owned public DTOs
    move into the SDK. Platform historical and engine-only types remain private
-   until their own boundary is designed.
+   until their own boundary is designed — with one deliberate exception: the
+   momentum authoring `Candle` row *shape* (structurally the canonical reader
+   row) is published because the momentum ABI hands that row to authored code.
+   The reader interface, query/paging DTOs and the data API stay private.
 8. **GitHub Release assets.** The package is installed by exact public `.tgz`
    URL; no npm registry is required.
 9. **Apache-2.0.** The public SDK carries an explicit permissive license with a
@@ -215,8 +218,15 @@ package.
 The first SDK release does not publish the entire current
 `@trading/research-contracts` package. These remain private:
 
-- platform-owned `HistoricalDatasetReader`, canonical market rows and data API
-  transport DTOs;
+- platform-owned `HistoricalDatasetReader`, its range/one-symbol query DTOs and
+  the historical-rows-page / data-API transport DTOs;
+  - **Exception:** the momentum authoring `Candle` is published in `/contracts`
+    as a public authoring type. It is structurally the canonical reader row
+    (`historical.ts::CanonicalRow` ≡ `ReaderRow`: `symbol`, `minute_ts`, OHLCV,
+    `turnover`, and the optional OI/funding/taker columns with `has_*` flags),
+    because the momentum ABI passes that exact row to untrusted authored code via
+    `signals(candles, seed)`. Only this row *shape* is published — the reader
+    interface, queries, paging and the data-API itself stay private;
 - engine-only portfolio, execution, indicator and market-tape structures;
 - internal sandbox IPC/session models;
 - storage rows and job-store representations.
@@ -317,7 +327,13 @@ The SDK exports TypeScript authoring types for these shapes. They are derived
 explicitly from `packages/research-contracts/src/research/context.ts`
 (`StrategyContext`, the bar/point-in-time shapes, and the closed decision
 vocabularies) and must not pull in engine-only types — portfolio, execution,
-indicator, market-tape, storage rows or sandbox IPC models stay private. The
+indicator, market-tape, storage rows or sandbox IPC models stay private — with
+one deliberate exception: the momentum `Candle`, the published canonical
+reader-row shape (see §6). The hook-facing indicator and point-in-time market
+*interface* types that `StrategyContext` exposes (`IndicatorApi`,
+`PointInTimeMarketApi` and their point/reading types) are published; the
+indicator catalog/validation and market-tape dataset/builder/coverage types are
+not. The
 selected `RunSubmitRequest.engine` determines which ABI authoritative validation
 and the sandbox use. Preflight receives the same engine explicitly and checks manifest,
 layout and declared ABI compatibility. It does not import the entrypoint and

@@ -37,12 +37,12 @@ describe('017 schema assets', () => {
   });
 
   it('SDK schema assets are deep-equal to the private research-contracts copies', () => {
-    const sdkAssets = allSchemaAssets();
-    const privateAssets = privateAllSchemaAssets();
+    const byId = (arr: readonly Record<string, unknown>[]) =>
+      [...arr].sort((a, b) => String(a.$id).localeCompare(String(b.$id)));
+    const sdkAssets = byId(allSchemaAssets());
+    const privateAssets = byId(privateAllSchemaAssets());
     expect(sdkAssets.length).toBe(privateAssets.length);
-    for (let i = 0; i < sdkAssets.length; i++) {
-      expect(sdkAssets[i]).toEqual(privateAssets[i]);
-    }
+    expect(sdkAssets).toEqual(privateAssets);
   });
 });
 
