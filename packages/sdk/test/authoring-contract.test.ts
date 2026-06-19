@@ -7,8 +7,11 @@ import type {
 } from '../src/contracts/index';
 import { allSchemaAssets, SCHEMA_IDS } from '../src/contracts/index';
 import { API_CONTRACT_VERSION } from '../src/contracts/index';
-import { allSchemaAssets as privateAllSchemaAssets } from '@trading/research-contracts/research';
-import { CONTRACT_VERSION } from '@trading/research-contracts';
+// Imported by RELATIVE SOURCE PATH (not the package specifier) so the public SDK package.json
+// carries NO dependency on the private @trading/research-contracts package. This is a temporary
+// coexistence parity guard, deleted after the trading-lab cutover.
+import { allSchemaAssets as privateAllSchemaAssets } from '../../research-contracts/src/research/index';
+import { CONTRACT_VERSION } from '../../research-contracts/src/index';
 
 describe('authoring ABI', () => {
   it('types the momentum function', () => {

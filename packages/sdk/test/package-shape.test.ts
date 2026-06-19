@@ -8,6 +8,10 @@ interface PackageJson {
   license?: string;
   exports: Record<string, unknown>;
   files: string[];
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
 }
 
 const pkg = JSON.parse(
@@ -28,6 +32,25 @@ describe('@trading-backtester/sdk package shape', () => {
       './contracts',
     ]);
     expect(pkg.files.sort()).toEqual(['LICENSE', 'README.md', 'dist', 'schemas']);
+  });
+
+  it('has no workspace/sibling/private dependency in any group (standalone manifest)', () => {
+    const groups = [
+      pkg.dependencies,
+      pkg.devDependencies,
+      pkg.peerDependencies,
+      pkg.optionalDependencies,
+    ];
+    for (const group of groups) {
+      for (const [name, spec] of Object.entries(group ?? {})) {
+        expect(name, `dependency ${name} references the private package`).not.toBe(
+          '@trading/research-contracts',
+        );
+        for (const forbidden of ['workspace:', 'file:', 'link:', '../']) {
+          expect(spec.includes(forbidden), `${name} uses forbidden specifier ${spec}`).toBe(false);
+        }
+      }
+    }
   });
 
   it('documents the migration boundary honestly', () => {
