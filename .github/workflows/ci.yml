@@ -18,3 +18,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - name: Build and inspect public SDK
+        run: |
+          pnpm sdk:build
+          pnpm sdk:pack
+          pnpm sdk:verify
+          SDK_VERSION="$(node -p "require('./packages/sdk/package.json').version")"
+          pnpm exec tsx scripts/verify-sdk-clean-consumer.ts ".artifacts/sdk/trading-backtester-sdk-$SDK_VERSION.tgz"
