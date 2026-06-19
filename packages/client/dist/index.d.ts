@@ -7,7 +7,7 @@ interface RunPeriod {
     readonly from: string;
     readonly to: string;
 }
-type ModuleKind = 'strategy';
+type ModuleKind = 'strategy' | 'overlay';
 interface ModuleManifest {
     readonly id: string;
     readonly version: string;
@@ -19,6 +19,7 @@ interface ModuleBundle {
     readonly entry: string;
     readonly files: Readonly<Record<string, string>>;
 }
+type BacktestEngine = 'momentum' | 'overlay';
 interface BacktestRunRequest {
     readonly runId: string;
     readonly mode: RunMode;
@@ -30,6 +31,18 @@ interface BacktestRunRequest {
     readonly params?: Record<string, unknown>;
     readonly seed: number;
     readonly metrics: readonly string[];
+    readonly overlayRefs?: readonly Ref[];
+    readonly riskProfileRef?: Ref;
+    readonly executionProfileRef?: Ref;
+    readonly parameterGrid?: object;
+    readonly robustnessChecks?: readonly string[];
+    readonly artifacts?: readonly string[];
+    readonly engine?: BacktestEngine;
+}
+/** Typed request body for POST /v1/modules/validate. */
+interface ModuleValidateRequest {
+    readonly moduleBundle?: ModuleBundle;
+    readonly engine?: BacktestEngine;
 }
 interface RunSubmitRequest extends Omit<BacktestRunRequest, 'runId'> {
     readonly runId?: string;
@@ -90,6 +103,28 @@ interface RunEvidence {
     readonly datasetFingerprint?: string;
     readonly bundleHash?: ContentHash;
 }
+interface MetricDelta {
+    readonly baseline: number;
+    readonly variant: number;
+    readonly delta: number;
+}
+interface OverlayEffectsSummary {
+    readonly pass: number;
+    readonly annotate: number;
+    readonly patch: number;
+    readonly veto: number;
+}
+interface ComparisonVariant {
+    readonly runId: string;
+    readonly overlayRefs: readonly Ref[];
+    readonly metricDeltas: Readonly<Record<string, MetricDelta>>;
+    readonly tradeOutcomeChanged: boolean;
+    readonly overlayEffectsSummary: OverlayEffectsSummary;
+}
+interface ComparisonSummary {
+    readonly baselineRunId: string;
+    readonly variants: readonly ComparisonVariant[];
+}
 interface RunResultSummary {
     readonly runId: string;
     readonly status: RunStatus;
@@ -97,6 +132,8 @@ interface RunResultSummary {
     readonly artifactRefs: readonly ArtifactReference[];
     readonly evidence: RunEvidence;
     readonly resultHash?: ContentHash;
+    /** Real baseline-vs-variant comparison (overlay-engine runs only; omitted for single-run/momentum summaries). */
+    readonly comparison?: ComparisonSummary;
 }
 interface RunTimelineEntry {
     readonly status: RunStatus;
@@ -214,7 +251,7 @@ declare class BacktesterClient {
     private raise;
     getCapabilities(): Promise<CapabilityDescriptor>;
     listDatasets(): Promise<DatasetDescriptor[]>;
-    validateModule(req: unknown): Promise<ValidationReport>;
+    validateModule(req: ModuleValidateRequest): Promise<ValidationReport>;
     submitRun(req: RunSubmitRequest): Promise<RunJobHandle>;
     getRunStatus(runId: string): Promise<RunStatusView>;
     /** Throws BacktesterConflictError (409) when the run has not produced a result yet. */
@@ -226,4 +263,4 @@ declare class BacktesterClient {
     awaitCompletion(runId: string, opts?: AwaitCompletionOptions): Promise<RunStatusView>;
 }
 
-export { ARTIFACT_CONTRACT_VERSION, type ArtifactAvailability, type ArtifactDescriptor, type ArtifactManifest, type ArtifactPage, type ArtifactReference, type AwaitCompletionOptions, BUNDLE_CONTRACT_VERSION, type BacktestRunRequest, BacktesterAuthError, BacktesterClient, type BacktesterClientOptions, BacktesterConflictError, BacktesterError, BacktesterNotFoundError, BacktesterValidationError, CONTRACT_VERSION, type CapabilityDescriptor, type CompletionEvent, type CompletionEventType, type ContentHash, type DatasetDescriptor, type FetchLike, type FetchLikeInit, type FetchLikeResponse, type GatewayError, type GatewayErrorCategory, HISTORICAL_DATA_CONTRACT_VERSION, type ModuleBundle, type ModuleKind, type ModuleManifest, type NonTerminalRunStatus, type ReadArtifactOptions, type Ref, type RunEvidence, type RunJobHandle, type RunMode, type RunPeriod, type RunResultSummary, type RunStatus, type RunStatusView, type RunSubmitRequest, type RunTimelineEntry, type TerminalRunStatus, type ValidationIssue, type ValidationReport, type ValidationStatus };
+export { ARTIFACT_CONTRACT_VERSION, type ArtifactAvailability, type ArtifactDescriptor, type ArtifactManifest, type ArtifactPage, type ArtifactReference, type AwaitCompletionOptions, BUNDLE_CONTRACT_VERSION, type BacktestEngine, type BacktestRunRequest, BacktesterAuthError, BacktesterClient, type BacktesterClientOptions, BacktesterConflictError, BacktesterError, BacktesterNotFoundError, BacktesterValidationError, CONTRACT_VERSION, type CapabilityDescriptor, type ComparisonSummary, type ComparisonVariant, type CompletionEvent, type CompletionEventType, type ContentHash, type DatasetDescriptor, type FetchLike, type FetchLikeInit, type FetchLikeResponse, type GatewayError, type GatewayErrorCategory, HISTORICAL_DATA_CONTRACT_VERSION, type MetricDelta, type ModuleBundle, type ModuleKind, type ModuleManifest, type ModuleValidateRequest, type NonTerminalRunStatus, type OverlayEffectsSummary, type ReadArtifactOptions, type Ref, type RunEvidence, type RunJobHandle, type RunMode, type RunPeriod, type RunResultSummary, type RunStatus, type RunStatusView, type RunSubmitRequest, type RunTimelineEntry, type TerminalRunStatus, type ValidationIssue, type ValidationReport, type ValidationStatus };
