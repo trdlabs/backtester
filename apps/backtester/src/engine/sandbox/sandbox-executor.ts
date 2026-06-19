@@ -78,17 +78,26 @@ export class SandboxModuleExecutor implements ModuleExecutor {
   }
 
   private record(err: SessionError, ctx: StrategyContext): void {
+    const moduleRef = { id: this.bundle.manifest.id, version: this.bundle.manifest.version };
+    // bounded (≤ maxStderrBytes + truncation-маркер) + redacted (0 секретов/env/abs-путей).
+    const detail = boundedRedactedDetail(err.detail, this.policy.limits.maxStderrBytes);
     this.collectedErrors.push({
       code: err.code,
       severity: 'error',
-      moduleRef: { id: this.bundle.manifest.id, version: this.bundle.manifest.version },
+      moduleRef,
       runId: ctx.run.runId,
       hook: err.hook as LifecycleHook | undefined,
       symbol: ctx.symbol,
       barIndex: err.barIndex,
-      // bounded (≤ maxStderrBytes + truncation-маркер) + redacted (0 секретов/env/abs-путей).
-      detail: boundedRedactedDetail(err.detail, this.policy.limits.maxStderrBytes),
+      detail,
     });
+    // Surface the fail-closed sandbox error: otherwise it is silent (the host returns [] and the run
+    // continues DEGRADED — the variant behaves like baseline → all-zero metric deltas downstream,
+    // which is hard to attribute). Detail is already bounded + redacted, so this is safe to log.
+    console.warn(
+      `[sandbox] fail-closed module=${moduleRef.id}@${moduleRef.version} hook=${err.hook ?? '?'}` +
+        ` symbol=${ctx.symbol} run=${ctx.run.runId} code=${err.code} detail=${detail}`,
+    );
   }
 
   initStrategy(_module: StrategyModule, ctx: StrategyContext): void {
