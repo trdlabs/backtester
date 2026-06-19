@@ -12,6 +12,7 @@ import type {
   CapabilityDescriptor,
   DatasetDescriptor,
   ModuleValidateRequest,
+  RegistryDescriptor,
   RunJobHandle,
   RunResultSummary,
   RunStatusView,
@@ -117,6 +118,10 @@ export class BacktesterClient {
       default:
         throw new BacktesterError(res.status, code, message, category, payload);
     }
+  }
+
+  discoverRegistry(): Promise<RegistryDescriptor> {
+    return this.request('GET', '/v1/registry');
   }
 
   getCapabilities(): Promise<CapabilityDescriptor> {
