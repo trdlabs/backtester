@@ -45,9 +45,10 @@ export const TRUSTED_REGISTRY_DEFINITION: RegistryDefinition = {
       baselineRef: { id: shortAfterPump.manifest.id, version: shortAfterPump.manifest.version },
       riskProfileRef: { id: DEFAULT_RISK.id, version: DEFAULT_RISK.version },
       executionProfileRef: { id: DEFAULT_EXEC.id, version: DEFAULT_EXEC.version },
-      // EXACT array — no `.filter()`. A metric not in the overlay catalog is a definition bug and
-      // MUST make `validateRegistryDefinition` throw (fail-fast), not be silently dropped.
-      metrics: ['pnl', 'max_drawdown', 'win_rate', 'sharpe'],
+      // The full advertised overlay catalog: a preset is a COMPLETE, self-sufficient run scaffold, so
+      // a consumer that submits against it gets every metric the research comparison/evaluation needs
+      // (total_trades / profit_factor / top_trade_contribution_pct) without having to ask for more.
+      metrics: [...OVERLAY_METRIC_CATALOG],
     },
   ],
 };
