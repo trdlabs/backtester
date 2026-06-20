@@ -6,7 +6,7 @@ import { METRIC_CATALOG } from '@trading/research-contracts';
 import { METRIC_CATALOG as OVERLAY_METRIC_CATALOG } from '@trading/research-contracts/research';
 import { validateBundle } from '../sandbox/bundle';
 import type { BundleStore } from '../sandbox/bundle-store';
-import { requestFingerprint } from './fingerprint';
+import { requestFingerprint, storedRequestFingerprint } from './fingerprint';
 import { toHandle, type JobEventRow, type JobStore, type NewJob } from './job-store';
 
 export class SubmitError extends Error {
@@ -148,7 +148,7 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promi
 
   const { job, created } = await deps.store.insertOrGet(newJob);
   if (!created) {
-    if (job.requestFingerprint !== fingerprint) {
+    if (storedRequestFingerprint(job.request, job.bundleHash ?? null) !== fingerprint) {
       throw new SubmitError(409, 'resume_token_conflict', 'resume token reused with a different request');
     }
     return { handle: toHandle(job, true), created: false };

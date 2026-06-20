@@ -1,4 +1,4 @@
-export const SDK_VERSION = '0.1.0' as const;
+export const SDK_VERSION = '0.2.0' as const;
 export const API_CONTRACT_VERSION = '017.2' as const;
 export const ARTIFACT_CONTRACT_VERSION = '022.1' as const;
 export const BUNDLE_CONTRACT_VERSION = '019.1' as const;

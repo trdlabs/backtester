@@ -18,6 +18,7 @@ import { toStatusView, type JobStore } from '../jobs/job-store';
 import { isTerminal } from '../jobs/lifecycle';
 import { publishCompletion, reapAndPublish, type CompletionDeps } from '../jobs/completion';
 import { submitRun, SubmitError, type SubmitDeps } from '../jobs/submit';
+import { buildRegistryDescriptor } from './registry-route.js';
 
 export interface ServerDeps extends SubmitDeps, CompletionDeps {
   store: JobStore;
@@ -64,6 +65,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     supportedModes: ['research', 'review', 'promotion'],
     maxConcurrency: deps.maxConcurrency,
   }));
+
+  app.get('/v1/registry', async () => buildRegistryDescriptor());
 
   app.get('/v1/datasets', async () => ({ datasets: await deps.dataPort.listDatasets() }));
 

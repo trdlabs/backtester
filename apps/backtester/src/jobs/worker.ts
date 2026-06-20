@@ -14,16 +14,13 @@ import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import { contentRef } from '../determinism/hash';
 import { persistRunArtifacts, type ArtifactStore } from '../artifacts/store';
 import { persistOverlayArtifacts } from '../artifacts/overlay-store';
-import { DEFAULT_EXEC, DEFAULT_RISK } from '../engine/profiles';
-import { earlyExitShortAfterPump } from '../engine/examples/early-exit-short-after-pump.overlay';
-import { shortAfterPump } from '../engine/examples/short-after-pump.strategy';
 import { datasetFingerprint, materialize, type BacktesterDataPort } from '../data/reader';
 import { buildOverlayDataset } from '../engine/data-adapter';
 import { runOverlayBacktest } from '../engine/run-overlay';
-import { buildTrustedRegistry } from '../engine/trusted-registry';
+import { buildInlineOverlayRegistry, buildTrustedRegistry } from '../engine/trusted-registry';
 import { loadBundle, type ModuleBundle as SandboxModuleBundle } from '../engine/sandbox/bundle';
 import { materializeBundle } from '../engine/sandbox/bundle-materialize';
-import { createExecutorRouter, createModuleRegistry, type ExecutorRouter } from '../engine/sandbox/routing';
+import { createExecutorRouter, type ExecutorRouter } from '../engine/sandbox/routing';
 import { createSandboxPolicyRegistry } from '../engine/sandbox-policy';
 import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
@@ -144,13 +141,9 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
 
       let registry = buildTrustedRegistry();
       if (claimed.bundleHash !== undefined) {
-        registry = createModuleRegistry({
-          strategies: [shortAfterPump],
-          overlays: [earlyExitShortAfterPump],
-          overlayBundles: [sandboxBundle!.bundle],
-          riskProfiles: [DEFAULT_RISK],
-          executionProfiles: [DEFAULT_EXEC],
-        });
+        // Build the inline execution registry from the SAME canonical definition that `/v1/registry`
+        // advertises, adding only the submitted overlay bundle — so discovery and execution can't drift.
+        registry = buildInlineOverlayRegistry([sandboxBundle!.bundle]);
         sandboxRouter = overlayRouterFor(deps);
       }
 

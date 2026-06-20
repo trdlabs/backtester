@@ -13,7 +13,7 @@
     "build:sandbox-harness-overlay": "node apps/backtester/scripts/build-sandbox-harness-overlay.mjs",
     "sdk:build": "pnpm --filter @trading-backtester/sdk build",
     "sdk:pack": "mkdir -p .artifacts/sdk && pnpm --filter @trading-backtester/sdk pack --pack-destination $PWD/.artifacts/sdk",
-    "sdk:verify": "tsx scripts/verify-sdk-package.ts .artifacts/sdk/trading-backtester-sdk-0.1.0.tgz",
+    "sdk:verify": "tsx scripts/verify-sdk-package.ts \".artifacts/sdk/trading-backtester-sdk-$(node -p \"require('./packages/sdk/package.json').version\").tgz\"",
     "pretypecheck": "pnpm sdk:build",
     "pretest": "pnpm sdk:build && pnpm run build:sandbox-harness-overlay",
     "test": "vitest run",
