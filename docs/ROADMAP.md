@@ -4,31 +4,27 @@
 
 - `trading-backtester`
   - Slice 1–5
-  - Slice `6a`
-  - Slice `6b-A`
+  - Slice `6a`, `6b-A` (sandboxed overlay execution — live)
   - Feature 1: Client Contract Alignment (`ModuleKind` expanded to `'strategy' | 'overlay'`, `BacktestEngine` exported, `BacktestRunRequest` aligned with research-contracts)
+  - Public standalone `@trading-backtester/sdk`: `sdk-v0.1.0` (Phase 1) and `sdk-v0.2.0` (registry discovery) published; legacy `packages/client` removed
+  - Overlay-Run Registry Discovery: `GET /v1/registry` + canonical `TRUSTED_REGISTRY_DEFINITION` (single source for discovery **and** inline overlay execution) + self-sufficient `default-overlay` preset + request-fingerprint completeness
 - `trading-lab`
-  - backtester adapter introduced
-  - `research_platform` path introduced
-  - `6b-B` not finished
+  - backtester adapter introduced; `research_platform` is the default path (`sp4_mock` retired on the write/submit path; still readable for legacy rows)
+  - SDK cutover to `@trading-backtester/sdk@0.2.0`
+  - `6b-B` finished: consumes the real `comparison`; preset-driven `submitOverlayRun` with a discriminated `target` (`registry_preset | baseline_ref`)
+  - submitted overlay bundles execute on the backtester (overlay metadata projected through `toBacktesterBundle`)
 - `trading-platform` / `trading-mock-platform`
-  - further work needed for full production-like historical-data path and final cutover
+  - mock-platform historical-data path proven end-to-end; the real `trading-platform` production data path + final cutover from mock still need hardening
 
 ## Current State
 
-The backtester already supports:
-
-- trusted overlay engine
-- sandboxed overlay execution
-- async run lifecycle
-- `status` / `result` / `artifacts`
-- deterministic parity gates
+The backtester supports the trusted **and** sandboxed overlay engine, async run lifecycle, `status` / `result` / `artifacts`, deterministic parity gates, and registry discovery.
 
 The full user flow
 
-`trading-lab -> trading-backtester -> trading-platform/mock-platform`
+`trading-lab -> trading-backtester -> trading-mock-platform`
 
-is not yet closed end-to-end.
+is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts` (hypothesis → preset-driven overlay run → `completed` with a real comparison → `evaluated`). The remaining gap is the **real `trading-platform`** production data path; today's E2E runs against `trading-mock-platform`.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
@@ -143,40 +139,43 @@ The “hypothesis to backtest result” user flow works end-to-end. ✅
 
 Cross-repo changes can be rolled out predictably without manual re-debugging of every seam. ✅
 
-## Priority Order
+## Feature 7: Overlay-Run Registry Discovery ✅ DONE
 
-### Phase A
+**Goal:** let `trading-lab` discover and submit a *complete* overlay run without hardcoding the backtester's internal trusted modules — closing the “incomplete request → engine rejects” gap.
 
-1. `trading-backtester`: client wire follow-up
-2. `trading-lab`: finish `6b-B` submit/result flow
-3. `trading-lab`: make unit / integration / E2E green
+### Completed
 
-### Phase B
+- `GET /v1/registry` discovery endpoint + `RegistryDescriptor` / `OverlayRunPreset` DTOs in `@trading-backtester/sdk@0.2.0` (`discoverRegistry()` client method)
+- canonical `TRUSTED_REGISTRY_DEFINITION` — single source feeding **both** discovery and the inline overlay-execution registry (no discovery/execution drift; guarded by `registry-execution-consistency.test.ts`)
+- self-sufficient `default-overlay` preset (advertises the full overlay metric catalog)
+- `requestFingerprint` completeness + stored-fingerprint recompute (no false 409 on pre-deploy replay; catches changed run-affecting fields)
+- `trading-lab`: discriminated `SubmitOverlayRunOptions.target`; per-adapter support (HTTP = preset only, MCP = baseline_ref only, mock = both); `toBacktesterBundle` projects the rich 017 overlay manifest so submitted overlays execute
 
-4. `trading-platform` / `trading-mock-platform`: harden the data path
-5. run cross-repo E2E
-6. switch the default path
+### Done when
 
-### Phase C
+`trading-lab` discovers a preset, submits its own overlay bundle against it, and the run reaches `completed` with a real comparison. ✅
 
-7. `6b-C`: retire `sp4_mock`
-8. clean legacy code, tests, and docs
-9. finish operational docs and CI polish
+## Remaining Work
 
-## Critical Path
+The core product flow is closed. What's left:
 
-The three blockers that matter most are:
+### Phase A — real platform data path
 
-1. client-contract gap in `trading-backtester`
-2. unfinished `6b-B` in `trading-lab`
-3. final cross-repo E2E verification with `trading-platform` / `trading-mock-platform`
+1. `trading-platform`: harden the production historical-data path (today the proven E2E runs against `trading-mock-platform`)
+2. run the cross-repo E2E against the **real** `trading-platform`, then make it the default backend
+
+### Phase B — internal hygiene (no consumer impact)
+
+3. SDK Phase 3 Part B: migrate ~16 service files off root `@trading/research-contracts` public-wire imports → SDK, then strip the `run.ts` / `comparison.ts` duplicates
+4. once legacy `sp4_mock`-backed rows are migrated/aged out, drop `'sp4_mock'` from `BacktestRun.backend` (kept today only for read back-compat) and remove the residual test fixtures
+5. operational docs + CI polish
 
 ## Definition of Done
 
-The system is “working” when:
+The system is “working” when (✅ except the real-platform data path):
 
-- `trading-lab` submits hypothesis backtests to `trading-backtester` by default
-- `trading-backtester` executes the overlay path with sandboxing
-- results and artifacts come back correctly
-- historical data comes through the platform or mock-platform contract
-- `sp4_mock` is no longer needed
+- `trading-lab` submits hypothesis backtests to `trading-backtester` by default ✅
+- `trading-backtester` executes the overlay path with sandboxing ✅
+- results and artifacts come back correctly ✅
+- historical data comes through the **real** platform contract (mock proven; real-platform hardening pending)
+- `sp4_mock` is no longer written (✅; type member retained for legacy read back-compat)
