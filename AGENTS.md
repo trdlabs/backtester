@@ -31,8 +31,9 @@
 - `apps/backtester/` — сам сервис: `src/`, `test/`, `migrations/`, `fixtures/`, `sandbox-harness/`
 - `packages/sdk/` — **`@trading-backtester/sdk`** (Apache-2.0) — канонический публичный пакет с
   4 subpath-экспортами (`/contracts`, `/builder`, `/client`, `/artifacts`). Устанавливается через
-  GitHub Release `.tgz` (без npm-регистри). Workflow для релиза есть
-  (`.github/workflows/sdk-release.yml`), но **версия `0.1.0` ещё не опубликована**.
+  GitHub Release `.tgz` (без npm-регистри) через `.github/workflows/sdk-release.yml`.
+  Опубликованы **`sdk-v0.1.0`** и **`sdk-v0.2.0`** (последняя добавляет registry-discovery:
+  `GET /v1/registry` + `discoverRegistry()`).
   Ядро детерминизма (`canonical-json`, хэширование) живёт в SDK; сервис потребляет его через
   тонкие re-export обёртки. Живых кредов и биржевого исполнения нет — SDK чисто для авторинга и
   интеграции с API.
