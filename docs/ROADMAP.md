@@ -164,11 +164,11 @@ The core product flow is closed. What's left:
 1. `trading-platform`: harden the production historical-data path (today the proven E2E runs against `trading-mock-platform`)
 2. run the cross-repo E2E against the **real** `trading-platform`, then make it the default backend
 
-### Phase B — internal hygiene (no consumer impact)
+### Phase B — internal hygiene (no consumer impact) — mostly done
 
-3. SDK Phase 3 Part B: migrate ~16 service files off root `@trading/research-contracts` public-wire imports → SDK, then strip the `run.ts` / `comparison.ts` duplicates
-4. once legacy `sp4_mock`-backed rows are migrated/aged out, drop `'sp4_mock'` from `BacktestRun.backend` (kept today only for read back-compat) and remove the residual test fixtures
-5. operational docs + CI polish
+3. ✅ **DONE** (PR #26) — SDK Phase 3 Part B: `research-contracts/src/{run.ts,comparison.ts}` are now thin type-only re-exports from `@trading-backtester/sdk` (the single definition source); 18 import sites + `/research` subpath unchanged.
+4. **(open, gated)** once legacy `sp4_mock`-backed rows are migrated/aged out, drop `'sp4_mock'` from `BacktestRun.backend` (kept today only for read back-compat) and remove the residual test fixtures.
+5. ✅ **DONE** (PR #27) — operational docs (`OPERATIONS.md`: SDK distribution + `/v1/registry`) refreshed; CI actions bumped to Node-24 (`checkout`/`setup-node` v5).
 
 ## Definition of Done
 
