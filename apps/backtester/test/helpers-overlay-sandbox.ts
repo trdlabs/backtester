@@ -28,6 +28,15 @@ import {
 } from '../src/engine/sandbox/routing.js';
 import { createSandboxPolicyRegistry } from '../src/engine/sandbox-policy.js';
 
+// Per-call container-name disambiguator (test-only). Two parallel vitest files reuse the same
+// fixture `runId` (`us2-variant`) + module + symbol, so the deterministic session container name
+// collides when their sandbox phases overlap. Each router build gets a distinct suffix — unique
+// across workers (`process.pid`) AND within a worker (monotonic counter), so even a determinism
+// re-run that builds two overlay deps never shares a docker name. Prod passes no suffix and keeps
+// the deterministic FR-024 name (its `runId` is unique by construction).
+let sandboxContainerSeq = 0;
+const nextContainerSuffix = (): string => `t${process.pid}-${(sandboxContainerSeq += 1)}`;
+
 /**
  * Materialize an inline `ModuleBundle` to disk (world-readable for sandbox `nobody`).
  */
@@ -83,7 +92,7 @@ export function buildSandboxOverlayDeps(dirs: SandboxOverlayDirs): SandboxOverla
   const router = createExecutorRouter({
     sandboxPolicies: createSandboxPolicyRegistry([policy]),
     sandboxPolicyRef: { id: policy.id, version: policy.version },
-    sandboxDeps: { harnessDir: config.overlaySandbox.harnessDir },
+    sandboxDeps: { harnessDir: config.overlaySandbox.harnessDir, containerSuffix: nextContainerSuffix() },
   });
 
   return { registry, router };
@@ -116,7 +125,7 @@ export function buildSandboxStrategyBaselineDeps(dirs: SandboxStrategyDirs): San
   const router = createExecutorRouter({
     sandboxPolicies: createSandboxPolicyRegistry([policy]),
     sandboxPolicyRef: { id: policy.id, version: policy.version },
-    sandboxDeps: { harnessDir: config.overlaySandbox.harnessDir },
+    sandboxDeps: { harnessDir: config.overlaySandbox.harnessDir, containerSuffix: nextContainerSuffix() },
   });
 
   return { registry, router };

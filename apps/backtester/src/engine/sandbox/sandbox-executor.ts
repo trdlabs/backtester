@@ -27,6 +27,10 @@ import { type SandboxErrorArtifact, boundedRedactedDetail } from './errors.js';
 export interface SandboxExecutorDeps {
   readonly driver?: DockerDriver;
   readonly harnessDir?: string; // абсолютный путь к dist/src/research/sandbox-harness
+  // Опциональный disambiguator имени контейнера, прокидываемый в SessionConfig. Прод НЕ задаёт
+  // (см. SessionConfig.containerSuffix) — только тесты, чтобы параллельные файлы с одинаковым
+  // runId/символом не создавали одноимённые контейнеры.
+  readonly containerSuffix?: string;
 }
 
 /** Каталог собранного harness по умолчанию (dist/src/research/sandbox-harness). */
@@ -40,6 +44,7 @@ export class SandboxModuleExecutor implements ModuleExecutor {
   private readonly revalidator = new DecisionRevalidator();
   private readonly driver: DockerDriver;
   private readonly harnessDir: string;
+  private readonly containerSuffix?: string;
   private readonly collectedErrors: SandboxErrorArtifact[] = [];
 
   constructor(
@@ -49,6 +54,7 @@ export class SandboxModuleExecutor implements ModuleExecutor {
   ) {
     this.driver = deps?.driver ?? new DockerDriver();
     this.harnessDir = deps?.harnessDir ?? defaultHarnessDir();
+    this.containerSuffix = deps?.containerSuffix;
   }
 
   /** Накопленные ошибки исполнения (для verify/диагностики US6). */
@@ -68,6 +74,7 @@ export class SandboxModuleExecutor implements ModuleExecutor {
           seed: ctx.run.seed,
           params: ctx.params,
           kind: this.bundle.manifest.kind === 'overlay' ? 'overlay' : 'strategy',
+          containerSuffix: this.containerSuffix,
         },
         this.driver,
         this.harnessDir,

@@ -41,6 +41,10 @@ export interface SessionConfig {
   readonly seed: number;
   readonly params: Readonly<Record<string, unknown>>;
   readonly kind: 'strategy' | 'overlay';
+  // Опциональный disambiguator имени контейнера. Прод НЕ задаёт (имя детерминировано по FR-024 —
+  // runId уникален по построению). Используется только тестами, где несколько параллельных файлов
+  // переиспользуют один и тот же runId/символ и иначе создавали бы одноимённые контейнеры.
+  readonly containerSuffix?: string;
 }
 
 /** Сессия sandbox-исполнения одного модуля на одном символе. */
@@ -77,7 +81,13 @@ export class SandboxSession {
   /** Открыть контейнер и проинициализировать harness (загрузка bundle + инстанцирование). */
   open(): HookResult {
     const { manifest, descriptor, bundleDir } = this.bundle;
-    const name = sessionContainerName(this.cfg.runId, manifest.id, manifest.version, this.cfg.symbol);
+    const name = sessionContainerName(
+      this.cfg.runId,
+      manifest.id,
+      manifest.version,
+      this.cfg.symbol,
+      this.cfg.containerSuffix,
+    );
     try {
       this.container = this.driver.spawnSession(this.policy, { name, bundleDir, harnessDir: this.harnessDir });
     } catch (e) {
