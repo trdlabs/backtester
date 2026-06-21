@@ -10,7 +10,7 @@ How to verify, release, and roll out changes across `trading-backtester`, `tradi
 | `trading-platform` | Canonical research engine, historical data writer, contract gates (`gates:017`…`gates:037`) |
 | `trading-mock-platform` | Credential-free ops-read + historical replay for local/demo stacks |
 | `trading-backtester` | Async research job service; HTTP client boundary for `trading-lab` |
-| `trading-lab` | Hypothesis orchestration; submits runs via `@trading-backtester/client` |
+| `trading-lab` | Hypothesis orchestration; submits preset-driven overlay runs via `@trading-backtester/sdk` |
 
 ## Release ordering
 
@@ -19,12 +19,28 @@ When a change spans repositories, land in this order:
 1. **`trading-platform`** — contract / schema / historical API changes first (`npm run check:035` or your slice gate).
 2. **`trading-mock-platform`** — refresh vendored SDK + snapshot parity if platform contracts moved (`pnpm check:ci`).
 3. **`trading-backtester`**
-   - `packages/research-contracts` (if types changed)
-   - `packages/client` (rebuild dist; trading-lab depends on `file:../trading-backtester/packages/client`)
+   - `packages/research-contracts` (if types changed) — wire types are now re-exported from `packages/sdk`, the single definition source (see `docs/superpowers/specs/2026-06-21-research-contracts-wire-dedup-design.md`)
    - service + tests (`pnpm check`)
-4. **`trading-lab`** — adapter / handler wiring last (`pnpm check`); bump client path dep only after backtester client dist is committed.
+   - **publish a new SDK release** if the public contract changed (see *SDK distribution & discovery* below). `packages/client` was removed (PR #22); consumers no longer use a `file:` path dep.
+4. **`trading-lab`** — adapter / handler wiring last (`pnpm check`); re-pin `@trading-backtester/sdk` to the new release tarball URL and commit the lockfile **only after** the SDK release is published.
 
-Tag or note the **client dist SHA** in the backtester PR when wire types change — lab CI does not rebuild the client for you.
+When the public contract changes, **bump and publish `sdk-vX.Y.Z` before** landing the lab cutover — lab pins an exact GitHub Release tarball, not a sibling checkout.
+
+## SDK distribution & discovery
+
+The public `@trading-backtester/sdk` (`packages/sdk`) ships as an **immutable GitHub Release tarball** — no npmjs, no sibling checkouts.
+
+- **Publish:** `gh workflow run sdk-release.yml -f version=X.Y.Z` (manual `workflow_dispatch`). Fail-closed: it refuses to overwrite an existing tag/release. The job runs `pnpm check`, builds + packs + verifies the SDK, attaches `.tgz` + `.sha256` + `manifest.json`, and creates tag `sdk-vX.Y.Z`. `packages/sdk/package.json`'s version MUST equal the input.
+- **Consume:** pin the exact asset URL `…/releases/download/sdk-vX.Y.Z/trading-backtester-sdk-X.Y.Z.tgz` in `package.json` and commit the resulting `pnpm-lock.yaml` (URL + integrity). A clean-clone install needs no sibling checkout.
+- **Versioning:** `SDK_VERSION` (the package version, e.g. `0.2.0`) is independent of `API_CONTRACT_VERSION` (the wire version, e.g. `017.2`). An additive SDK change bumps `SDK_VERSION` only.
+
+### Registry discovery (`GET /v1/registry`)
+
+The backtester publishes its trusted modules + run presets so a consumer submits a **complete** overlay run without hardcoding internal module ids:
+
+- `GET /v1/registry` (bearer-auth) → `RegistryDescriptor`: baselines, overlays, risk/exec profiles, metric catalogs, and `overlayRunPresets`. SDK method: `client.discoverRegistry()`.
+- A consumer picks a preset (a complete baseline + risk + exec + metrics scaffold) and submits its own overlay bundle against it (`SubmitOverlayRunOptions.target = { kind: 'registry_preset' }`). The `default-overlay` preset advertises the full overlay metric catalog (self-sufficient).
+- Single source: both `/v1/registry` and the inline overlay-execution registry derive from `TRUSTED_REGISTRY_DEFINITION` (`engine/registry-definition.ts`) — guarded by `registry-execution-consistency.test.ts`.
 
 ## Per-repo CI gates (default PR / push)
 
@@ -59,7 +75,7 @@ Tag or note the **client dist SHA** in the backtester PR when wire types change 
 
 | Variable | Purpose |
 |----------|---------|
-| `TRADING_PLATFORM_INTEGRATION` | `backtester` in demo (not `mock` / `sp4_mock`) |
+| `TRADING_PLATFORM_INTEGRATION` | `backtester` in demo (or `mcp` for the platform path; `sp4_mock` is retired) |
 | `BACKTESTER_API_URL` | In compose: `http://backtester:8080`; on host: `http://127.0.0.1:${BACKTESTER_HOST_PORT}` |
 | `BACKTESTER_API_TOKEN` | Same as `BACKTESTER_AUTH_TOKEN` in backtester |
 | `LAB_OPS_READ_URL` / `LAB_OPS_READ_TOKEN` | Mock-platform ops-read for bot results |
