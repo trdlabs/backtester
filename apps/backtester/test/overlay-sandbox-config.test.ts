@@ -72,4 +72,10 @@ describe('overlaySandbox config', () => {
       /both .* or neither/i,
     );
   });
+
+  it('fails fast on half-config (mountpoint set, volume missing)', () => {
+    expect(() =>
+      loadConfig({ BACKTESTER_SANDBOX_OVERLAY_VOLUME_MOUNTPOINT: '/sandbox-shared' }),
+    ).toThrow(/both .* or neither/i);
+  });
 });
