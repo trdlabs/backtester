@@ -1,35 +1,16 @@
 // Historical market-data contract — the shape the backtester's `platformDataClient` speaks.
 //
-// Mirrors trading-platform `src/contracts/historical/{canonical-row,historical-dataset-reader}.ts`.
-// A `ReaderRow` carries every data kind as columns with `has_*` presence flags (present-zero is
-// distinguished from missing). The reader is credential-free and streaming. For Slice 1 the only
-// implementation is an in-process fixture reader; a networked "Research Historical Data API" adapter
-// implements the same interface later (real vs mock interchangeable at the interface).
+// SINGLE SOURCE OF TRUTH = the platform SDK's `CanonicalRowV2` (`@trading-platform/sdk/historical`).
+// `CanonicalRow` is that row minus `schema_version` (the engine stamps the version downstream);
+// `ReaderRow` is its alias. We import rather than re-declare the columns, so the backtester can
+// never drift from the platform contract. The reader is credential-free and streaming. For Slice 1
+// the only implementation is an in-process fixture reader; a networked "Research Historical Data API"
+// adapter implements the same interface later (real vs mock interchangeable at the interface).
+
+import type { CanonicalRowV2 } from '@trading-platform/sdk/historical';
 
 /** One minute-aligned canonical market row (cross-source aggregate; no per-venue columns). */
-export interface CanonicalRow {
-  readonly symbol: string;
-  /** Minute-aligned epoch ms (UTC): `minute_ts % 60_000 === 0`. */
-  readonly minute_ts: number;
-  readonly open: number;
-  readonly high: number;
-  readonly low: number;
-  readonly close: number;
-  readonly volume: number;
-  readonly turnover: number;
-  readonly oi_total_usd: number | null;
-  readonly funding_rate: number | null;
-  /** Total long liquidations for the bucket `[minute_ts, minute_ts+60_000)`; null if has_liquidations=false. */
-  readonly liq_long_usd: number | null;
-  /** Total short liquidations for the bucket `[minute_ts, minute_ts+60_000)`; null if has_liquidations=false. */
-  readonly liq_short_usd: number | null;
-  readonly has_oi: boolean;
-  readonly has_funding: boolean;
-  readonly has_liquidations: boolean;
-  readonly taker_buy_volume_usd: number | null;
-  readonly taker_sell_volume_usd: number | null;
-  readonly has_taker_flow: boolean;
-}
+export type CanonicalRow = Omit<CanonicalRowV2, 'schema_version'>;
 
 export type ReaderRow = CanonicalRow;
 

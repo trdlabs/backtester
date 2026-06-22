@@ -17,6 +17,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
-    "@trading-backtester/sdk": "workspace:*"
+    "@trading-backtester/sdk": "workspace:*",
+    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz"
   }
 }
