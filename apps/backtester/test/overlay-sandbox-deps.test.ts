@@ -1,6 +1,6 @@
 // apps/backtester/test/overlay-sandbox-deps.test.ts
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { overlaySandboxDeps, bundleBaseDir } from '../src/jobs/worker.js';
