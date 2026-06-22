@@ -72,8 +72,17 @@ function assertSafeRelativePath(path: string): void {
  *
  * Возвращает `{ bundleDir, cleanup }`; `cleanup()` рекурсивно удаляет временную директорию.
  */
-export async function materializeBundle(inline: InlineModuleBundle): Promise<MaterializedBundle> {
-  const bundleDir = await mkdtemp(join(tmpdir(), 'btx-bundle-'));
+export async function materializeBundle(
+  inline: InlineModuleBundle,
+  baseDir?: string,
+): Promise<MaterializedBundle> {
+  if (baseDir !== undefined) {
+    // Volume mode: the bundle must live under the shared-volume mountpoint so the daemon can resolve
+    // it by volume name under DooD. Ensure the parent exists and is traversable by the sandbox user.
+    await mkdir(baseDir, { recursive: true });
+    await chmod(baseDir, 0o755);
+  }
+  const bundleDir = await mkdtemp(join(baseDir ?? tmpdir(), 'btx-bundle-'));
   const cleanup = async (): Promise<void> => {
     await rm(bundleDir, { recursive: true, force: true });
   };
