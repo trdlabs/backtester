@@ -38,4 +38,12 @@ describe('toMountSource', () => {
     const cfg = { mode: 'volume', volume: 'btx-sandbox', mountpoint: '/sandbox-shared' } as const;
     expect(() => toMountSource(cfg, '/sandbox-shared')).toThrow(/under the volume mountpoint/i);
   });
+  it('volume mode → throws on dotdot traversal', () => {
+    const cfg = { mode: 'volume', volume: 'btx-sandbox', mountpoint: '/sandbox-shared' } as const;
+    expect(() => toMountSource(cfg, '/sandbox-shared/../other')).toThrow(/under the volume mountpoint/i);
+  });
+  it('volume mode → throws when the mountpoint is not absolute', () => {
+    const cfg = { mode: 'volume', volume: 'btx-sandbox', mountpoint: 'sandbox-shared' } as const;
+    expect(() => toMountSource(cfg, 'sandbox-shared/foo')).toThrow(/absolute path/i);
+  });
 });

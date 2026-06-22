@@ -31,6 +31,9 @@ export function mountConfigFor(volume: string | undefined, mountpoint: string | 
 /** Turn a dir on the backtester's filesystem into the MountSource for the sandbox `docker run`. */
 export function toMountSource(cfg: MountConfig, dir: string): MountSource {
   if (cfg.mode === 'bind') return { kind: 'bind', hostPath: dir };
+  if (!isAbsolute(cfg.mountpoint)) {
+    throw new Error(`toMountSource: volume mountpoint must be an absolute path, got ${cfg.mountpoint}`);
+  }
   const sub = relative(cfg.mountpoint, dir);
   if (sub === '' || sub.startsWith('..') || isAbsolute(sub)) {
     throw new Error(`toMountSource: ${dir} is not under the volume mountpoint ${cfg.mountpoint}`);
