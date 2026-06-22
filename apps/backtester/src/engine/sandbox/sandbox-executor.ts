@@ -20,6 +20,7 @@ import type { ModuleBundle } from './bundle.js';
 import type { SandboxPolicy } from '../sandbox-policy.js';
 import { DockerDriver } from './docker-driver.js';
 import { SandboxSession, type SessionError } from './sandbox-session.js';
+import type { MountConfig } from './mounts.js';
 import { DecisionRevalidator } from './decision-revalidator.js';
 import { type SandboxErrorArtifact, boundedRedactedDetail } from './errors.js';
 
@@ -31,6 +32,7 @@ export interface SandboxExecutorDeps {
   // (см. SessionConfig.containerSuffix) — только тесты, чтобы параллельные файлы с одинаковым
   // runId/символом не создавали одноимённые контейнеры.
   readonly containerSuffix?: string;
+  readonly mount?: MountConfig; // bind (default) | volume (DooD). Threaded into each SandboxSession.
 }
 
 /** Каталог собранного harness по умолчанию (dist/src/research/sandbox-harness). */
@@ -45,6 +47,7 @@ export class SandboxModuleExecutor implements ModuleExecutor {
   private readonly driver: DockerDriver;
   private readonly harnessDir: string;
   private readonly containerSuffix?: string;
+  private readonly mount: MountConfig;
   private readonly collectedErrors: SandboxErrorArtifact[] = [];
 
   constructor(
@@ -55,6 +58,7 @@ export class SandboxModuleExecutor implements ModuleExecutor {
     this.driver = deps?.driver ?? new DockerDriver();
     this.harnessDir = deps?.harnessDir ?? defaultHarnessDir();
     this.containerSuffix = deps?.containerSuffix;
+    this.mount = deps?.mount ?? { mode: 'bind' };
   }
 
   /** Накопленные ошибки исполнения (для verify/диагностики US6). */
@@ -78,6 +82,7 @@ export class SandboxModuleExecutor implements ModuleExecutor {
         },
         this.driver,
         this.harnessDir,
+        this.mount,
       );
       this.sessions.set(ctx.symbol, s);
     }

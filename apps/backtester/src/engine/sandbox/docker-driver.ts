@@ -10,6 +10,7 @@
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { SandboxPolicy } from '../sandbox-policy.js';
+import type { MountSource } from './mounts.js';
 
 /** Спавненный контейнер: процесс docker-CLI + сырые fd его stdio (для синхронного NDJSON-IPC). */
 export interface SpawnedContainer {
@@ -20,11 +21,11 @@ export interface SpawnedContainer {
   readonly stderrFd: number;
 }
 
-/** Параметры запуска контейнера сессии. */
+/** Параметры запуска контейнера сессии: имя + источники mount'ов bundle/harness. */
 export interface DockerRunOptions {
   readonly name: string;
-  readonly bundleDir: string; // host abs path — монтируется :ro в /sandbox/bundle
-  readonly harnessDir: string; // host abs path — монтируется :ro в /sandbox/harness
+  readonly bundle: MountSource;   // → /sandbox/bundle:ro
+  readonly harness: MountSource;  // → /sandbox/harness:ro
 }
 
 /** Привести произвольную строку к допустимому фрагменту docker-имени ([a-zA-Z0-9_.-]). */
@@ -47,44 +48,35 @@ export function sessionContainerName(
   return dockerSanitize(raw).slice(0, 200);
 }
 
+/** Сформировать `-v host:dst:ro` (bind) или `--mount …,volume-subpath=…,readonly` (volume). */
+function mountArgs(src: MountSource, dst: string): readonly string[] {
+  if (src.kind === 'bind') return ['-v', `${src.hostPath}:${dst}:ro`];
+  return ['--mount', `type=volume,src=${src.volume},dst=${dst},volume-subpath=${src.subpath},readonly`];
+}
+
 /** Построить аргументы `docker run …` из политики (контракт sandbox-ipc-protocol §docker-инвокация). */
 export function buildDockerRunArgs(policy: SandboxPolicy, opts: DockerRunOptions): readonly string[] {
   const { isolation: iso, limits } = policy;
   // NB: НЕ '--rm' — контейнер остаётся в 'exited' до явного `docker rm -f` (close()), чтобы host мог
   // прочитать .State.OOMKilled/.ExitCode для различения sandbox_memory_exceeded vs sandbox_crashed (T031).
   return [
-    'run',
-    '-i',
-    '--name',
-    opts.name,
-    '--network',
-    iso.network, // 'none'
+    'run', '-i',
+    '--name', opts.name,
+    '--network', iso.network,
     '--read-only',
-    '--tmpfs',
-    `/tmp:rw,noexec,nosuid,size=${iso.tmpfsSizeBytes}`,
-    '--memory',
-    String(limits.memoryBytes),
-    '--memory-swap',
-    String(limits.memoryBytes), // = memory ⇒ без swap
-    '--cpus',
-    String(limits.cpus),
-    '--pids-limit',
-    String(iso.pidsLimit),
-    '--cap-drop',
-    'ALL',
-    '--security-opt',
-    'no-new-privileges',
-    '--user',
-    iso.user,
+    '--tmpfs', `/tmp:rw,noexec,nosuid,size=${iso.tmpfsSizeBytes}`,
+    '--memory', String(limits.memoryBytes),
+    '--memory-swap', String(limits.memoryBytes),
+    '--cpus', String(limits.cpus),
+    '--pids-limit', String(iso.pidsLimit),
+    '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges',
+    '--user', iso.user,
     // env НЕ пробрасывается (нет -e) ⇒ секреты не наследуются (FR-017)
-    '-v',
-    `${opts.bundleDir}:/sandbox/bundle:ro`,
-    '-v',
-    `${opts.harnessDir}:/sandbox/harness:ro`,
+    ...mountArgs(opts.bundle, '/sandbox/bundle'),
+    ...mountArgs(opts.harness, '/sandbox/harness'),
     iso.image,
-    'node',
-    '--disallow-code-generation-from-strings',
-    '/sandbox/harness/entry.mjs',
+    'node', '--disallow-code-generation-from-strings', '/sandbox/harness/entry.mjs',
   ];
 }
 

@@ -13,6 +13,7 @@ import { DockerDriver, type SpawnedContainer, sessionContainerName } from './doc
 import { SyncIpcChannel } from './ipc.js';
 import { serializeContext, plainBar } from './context-serializer.js';
 import type { SandboxValidationCode } from './errors.js';
+import { toMountSource, type MountConfig } from './mounts.js';
 
 /** Ошибка одного вызова (стабильный код + bounded detail + хук-контекст). */
 export interface SessionError {
@@ -64,6 +65,7 @@ export class SandboxSession {
     private readonly cfg: SessionConfig,
     private readonly driver: DockerDriver,
     private readonly harnessDir: string,
+    private readonly mount: MountConfig = { mode: 'bind' },
   ) {}
 
   /** Был ли зафиксирован сбой (для агрегации в executor). */
@@ -89,7 +91,13 @@ export class SandboxSession {
       this.cfg.containerSuffix,
     );
     try {
-      this.container = this.driver.spawnSession(this.policy, { name, bundleDir, harnessDir: this.harnessDir });
+      const bundleMount = toMountSource(this.mount, bundleDir);
+      const harnessMount = toMountSource(this.mount, this.harnessDir);
+      this.container = this.driver.spawnSession(this.policy, {
+        name,
+        bundle: bundleMount,
+        harness: harnessMount,
+      });
     } catch (e) {
       return this.fail({ code: 'sandbox_crashed', detail: `docker spawn failed: ${(e as Error).message}` });
     }
