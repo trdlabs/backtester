@@ -166,6 +166,34 @@ The HTTP path is parity-tested against the in-process reader (identical material
 `dataset_fingerprint`). Tests that target an **external** data API are gated on
 `BACKTESTER_TEST_DATA_API_URL` and **skip** (never fail) when it is unset/unreachable.
 
+### Real historical data — cutover (Phase C)
+
+`BACKTESTER_DATA_SOURCE=real` (or `mock`) routes the backtester through the canonical
+`/historical/rows` endpoint (historical.2 — full `CanonicalRowV2` rows) via the in-process
+`RowsDataPort`. `real` and `mock` share one implementation and **one URL env**: `mock` targets
+`trading-mock-platform`, `real` targets the live `start-historical-http` platform. They differ only
+semantically.
+
+```bash
+# point the backtester at a real (or mock) platform serving /historical/rows
+BACKTESTER_DATA_SOURCE=real \
+BACKTESTER_MOCK_PLATFORM_URL=http://89.124.86.84:8088 \
+BACKTESTER_MOCK_PLATFORM_TOKEN=<token> \
+pnpm start
+```
+
+| Env | Value | Effect |
+|---|---|---|
+| `BACKTESTER_DATA_SOURCE` | `real` / `mock` | use `RowsDataPort` (canonical `/historical/rows`) |
+| `BACKTESTER_DATA_SOURCE` | `http` | use the legacy Research Historical Data API client |
+| `BACKTESTER_DATA_SOURCE` | unset / other | **default** `fixture` (in-process; safe for CI/local) |
+| `BACKTESTER_MOCK_PLATFORM_URL` | `http://<host>:8088` | platform base URL for `real`/`mock` |
+| `BACKTESTER_MOCK_PLATFORM_TOKEN` | bearer token | optional auth for the platform |
+
+The code default stays `fixture` (CI/local stay hermetic). Demo/prod deployments (VPS
+`89.124.86.84`) set the env to flip onto the real path — done only after Phases A/B/C land green
+(A, B merged; C is the consuming branch).
+
 ### Overlay engine (Slice 6a)
 
 Set `BACKTESTER_ENABLE_OVERLAY_ENGINE=true` to enable the lifted overlay engine — runs submitted with

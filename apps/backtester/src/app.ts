@@ -70,7 +70,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
           ...(config.dataApiToken ? { token: config.dataApiToken } : {}),
           pageLimit: config.dataApiPageLimit,
         })
-      : config.dataSource === 'mock' && config.mockPlatformUrl
+      : (config.dataSource === 'mock' || config.dataSource === 'real') && config.mockPlatformUrl
       ? new RowsDataPort({
           baseUrl:   config.mockPlatformUrl,
           pageLimit: config.dataApiPageLimit,

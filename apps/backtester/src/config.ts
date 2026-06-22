@@ -46,8 +46,14 @@ export interface AppConfig {
   readonly artifactsDir: string;
   /** Content-addressed module-bundle registry root. */
   readonly bundlesDir: string;
-  /** Historical data source: in-process fixture reader, or the networked Research Historical Data API. */
-  readonly dataSource: 'fixture' | 'http' | 'mock';
+  /**
+   * Historical data source: in-process fixture reader, the networked Research Historical Data API
+   * (`http`), or the canonical `/historical/rows` rows port (`mock`/`real`). `mock` and `real` are
+   * semantically distinct but share one implementation (RowsDataPort) and one URL env
+   * (BACKTESTER_MOCK_PLATFORM_URL): `mock` points at trading-mock-platform, `real` at the live
+   * `start-historical-http` platform. The code default stays `fixture` (safe for CI/local).
+   */
+  readonly dataSource: 'fixture' | 'http' | 'mock' | 'real';
   /** Base URL of the Research Historical Data API (required when dataSource === 'http'). */
   readonly dataApiUrl?: string;
   /** Optional bearer token for the data API (NOT exchange credentials). */
@@ -110,6 +116,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dataSource:
       env.BACKTESTER_DATA_SOURCE === 'http'  ? 'http'    :
       env.BACKTESTER_DATA_SOURCE === 'mock'  ? 'mock'    :
+      env.BACKTESTER_DATA_SOURCE === 'real'  ? 'real'    :
                                                'fixture',
     ...(env.BACKTESTER_DATA_API_URL       ? { dataApiUrl:       env.BACKTESTER_DATA_API_URL }       : {}),
     ...(env.BACKTESTER_DATA_API_TOKEN     ? { dataApiToken:     env.BACKTESTER_DATA_API_TOKEN }     : {}),
