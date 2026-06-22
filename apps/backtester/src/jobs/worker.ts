@@ -18,10 +18,14 @@ import { datasetFingerprint, materialize, type BacktesterDataPort } from '../dat
 import { buildOverlayDataset } from '../engine/data-adapter';
 import { runOverlayBacktest } from '../engine/run-overlay';
 import { buildInlineOverlayRegistry, buildTrustedRegistry } from '../engine/trusted-registry';
+import { join } from 'node:path';
 import { loadBundle, type ModuleBundle as SandboxModuleBundle } from '../engine/sandbox/bundle';
 import { materializeBundle } from '../engine/sandbox/bundle-materialize';
+import { mountConfigFor } from '../engine/sandbox/mounts';
+import { ensureHarnessInVolume } from '../engine/sandbox/harness-volume';
 import { createExecutorRouter, type ExecutorRouter } from '../engine/sandbox/routing';
 import { createSandboxPolicyRegistry } from '../engine/sandbox-policy';
+import type { SandboxExecutorDeps } from '../engine/sandbox/sandbox-executor';
 import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
 import { TrustedMomentumExecutor, type ModuleExecutor } from '../runner/module-executor';
@@ -63,7 +67,7 @@ async function sandboxBundleFor(deps: WorkerDeps, hash: ContentHash): Promise<Sa
   }
   const bundle = await deps.bundleStore.get(hash);
   if (!bundle) throw new RunnerError('missing_module', `unknown bundle: ${hash}`);
-  const materialized = await materializeBundle(bundle);
+  const materialized = await materializeBundle(bundle, bundleBaseDir(deps.overlaySandbox));
   return { bundle: loadBundle(materialized.bundleDir), cleanup: materialized.cleanup };
 }
 
@@ -85,8 +89,22 @@ function overlayRouterFor(deps: WorkerDeps): ExecutorRouter {
   return createExecutorRouter({
     sandboxPolicies: createSandboxPolicyRegistry([policy]),
     sandboxPolicyRef: { id: policy.id, version: policy.version },
-    sandboxDeps: { harnessDir: deps.overlaySandbox.harnessDir },
+    sandboxDeps: overlaySandboxDeps(deps.overlaySandbox),
   });
+}
+
+/** Per-run base dir for materialized bundles: under the shared volume in volume mode, else tmpdir. */
+export function bundleBaseDir(s: OverlaySandboxSettings): string | undefined {
+  const mount = mountConfigFor(s.volume, s.volumeMountpoint);
+  return mount.mode === 'volume' ? join(mount.mountpoint, 'bundles') : undefined;
+}
+
+/** Sandbox executor deps for the overlay router: bind (dev) or volume (DooD). */
+export function overlaySandboxDeps(s: OverlaySandboxSettings): SandboxExecutorDeps {
+  const mount = mountConfigFor(s.volume, s.volumeMountpoint);
+  if (mount.mode === 'bind') return { harnessDir: s.harnessDir };
+  const harnessDir = ensureHarnessInVolume(s.harnessDir, mount.mountpoint);
+  return { harnessDir, mount };
 }
 
 /** Claim and run one queued job. Returns the (now terminal) row, or undefined if the queue was empty. */
