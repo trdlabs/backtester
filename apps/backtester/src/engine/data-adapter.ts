@@ -2,12 +2,12 @@
 //
 // `buildOverlayDataset(port, sel)` opens a `HistoricalDatasetReader` for `sel.datasetRef`, streams the
 // half-open window `[from, to)` for `sel.symbols`, maps each data-layer `CanonicalRow` (root contract,
-// no `schema_version`/liquidations) into an engine `CanonicalRowV2` (research contract), and hands the
-// rows to `marketTapeFromCanonicalRows` to materialize a `MarketTapeDataset`.
+// no `schema_version`) into an engine `CanonicalRowV2` (research contract), and hands the rows to
+// `marketTapeFromCanonicalRows` to materialize a `MarketTapeDataset`.
 //
-// The backtester carries no liquidations: every mapped row sets `liq_long_usd`/`liq_short_usd` to null
-// and `has_liquidations` to false. Everything else copies 1:1 — `turnover` is a CanonicalRowV2 field
-// and is carried through verbatim.
+// `ReaderRow` now carries the full `CanonicalRowV2` field set (liquidations included), so the mapping
+// adds only `schema_version: 2` and copies every column 1:1 — liquidations, taker flow, and turnover
+// are all carried through verbatim. Sources without liquidation data set them to null/false.
 
 import type {
   MarketTapeDataset,
@@ -28,8 +28,8 @@ export interface OverlayDatasetSelector {
   readonly period: { readonly from: string; readonly to: string };
 }
 
-/** Map one data-layer `CanonicalRow` → engine `CanonicalRowV2` (add schema_version + null liquidations). */
-function toCanonicalRowV2(r: ReaderRow): CanonicalRowV2 {
+/** Map one data-layer `CanonicalRow` → engine `CanonicalRowV2` (add schema_version; carry every field). */
+export function toCanonicalRowV2(r: ReaderRow): CanonicalRowV2 {
   return {
     schema_version: 2,
     minute_ts: r.minute_ts,
@@ -44,10 +44,9 @@ function toCanonicalRowV2(r: ReaderRow): CanonicalRowV2 {
     has_oi: r.has_oi,
     funding_rate: r.funding_rate,
     has_funding: r.has_funding,
-    // The backtester carries no liquidations — always absent.
-    liq_long_usd: null,
-    liq_short_usd: null,
-    has_liquidations: false,
+    liq_long_usd: r.liq_long_usd,
+    liq_short_usd: r.liq_short_usd,
+    has_liquidations: r.has_liquidations,
     taker_buy_volume_usd: r.taker_buy_volume_usd,
     taker_sell_volume_usd: r.taker_sell_volume_usd,
     has_taker_flow: r.has_taker_flow,

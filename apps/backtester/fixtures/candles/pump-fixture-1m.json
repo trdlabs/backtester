@@ -15,7 +15,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -32,7 +32,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -49,7 +49,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -66,7 +66,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -83,7 +83,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -100,7 +100,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -117,7 +117,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -134,7 +134,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -151,7 +151,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -168,7 +168,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -185,7 +185,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -202,7 +202,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -219,7 +219,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -236,7 +236,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -253,7 +253,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -270,7 +270,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -287,7 +287,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -304,7 +304,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -321,7 +321,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -338,7 +338,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -355,7 +355,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -372,7 +372,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -389,7 +389,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -406,7 +406,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -423,7 +423,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -440,7 +440,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -457,7 +457,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -474,7 +474,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -491,7 +491,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     },
@@ -508,7 +508,7 @@
       "has_oi": false,
       "funding_rate": null,
       "has_funding": false,
-      "taker_buy_volume_usd": null,
+      "liq_long_usd": null, "liq_short_usd": null, "has_liquidations": false, "taker_buy_volume_usd": null,
       "taker_sell_volume_usd": null,
       "has_taker_flow": false
     }

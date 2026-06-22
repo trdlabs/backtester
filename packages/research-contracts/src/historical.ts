@@ -18,9 +18,14 @@ export interface CanonicalRow {
   readonly volume: number;
   readonly turnover: number;
   readonly oi_total_usd: number | null;
-  readonly has_oi: boolean;
   readonly funding_rate: number | null;
+  /** Total long liquidations for the bucket `[minute_ts, minute_ts+60_000)`; null if has_liquidations=false. */
+  readonly liq_long_usd: number | null;
+  /** Total short liquidations for the bucket `[minute_ts, minute_ts+60_000)`; null if has_liquidations=false. */
+  readonly liq_short_usd: number | null;
+  readonly has_oi: boolean;
   readonly has_funding: boolean;
+  readonly has_liquidations: boolean;
   readonly taker_buy_volume_usd: number | null;
   readonly taker_sell_volume_usd: number | null;
   readonly has_taker_flow: boolean;
