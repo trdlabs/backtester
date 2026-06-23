@@ -1,23 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, statSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative } from 'node:path';
 import { ensureHarnessInVolume } from '../src/engine/sandbox/harness-volume.js';
 
+function makeHarness(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'btx-harness-src-'));
+  writeFileSync(join(dir, 'entry.mjs'), '// entry\n');
+  mkdirSync(join(dir, '_engine'));
+  writeFileSync(join(dir, '_engine', 'engine.js'), 'export const x = 1;\n');
+  return dir;
+}
+
 describe('ensureHarnessInVolume', () => {
-  it('materializes the harness into the volume and is idempotent', () => {
-    const harnessDir = mkdtempSync(resolve(tmpdir(), 'bt-harness-src-'));
-    mkdirSync(join(harnessDir, 'sub'), { recursive: true });
-    writeFileSync(join(harnessDir, 'entry.mjs'), 'export const x = 1;\n');
-    writeFileSync(join(harnessDir, 'sub', 'f.txt'), 'hi\n');
-    const mountpoint = mkdtempSync(resolve(tmpdir(), 'bt-mount-'));
+  it('copies the harness tree under <mountpoint>/harness/<hash>, world-readable', () => {
+    const src = makeHarness();
+    const mp = mkdtempSync(join(tmpdir(), 'btx-mp-'));
+    const dest = ensureHarnessInVolume(src, mp);
 
-    const dest1 = ensureHarnessInVolume(harnessDir, mountpoint);
-    expect(existsSync(join(dest1, 'entry.mjs'))).toBe(true);
-    expect(readFileSync(join(dest1, 'sub', 'f.txt'), 'utf8')).toBe('hi\n');
+    expect(dest.startsWith(join(mp, 'harness'))).toBe(true);
+    expect(relative(mp, dest).startsWith('..')).toBe(false); // under the mountpoint
+    expect(readFileSync(join(dest, 'entry.mjs'), 'utf8')).toContain('// entry');
+    expect(readFileSync(join(dest, '_engine', 'engine.js'), 'utf8')).toContain('export const x');
+    expect(statSync(join(mp, 'harness')).mode & 0o777).toBe(0o755);
+    expect(statSync(dest).mode & 0o777).toBe(0o755);
+    expect(statSync(join(dest, 'entry.mjs')).mode & 0o777).toBe(0o644);
+  });
 
-    // Second call: dest already exists -> idempotent no-op, same path.
-    const dest2 = ensureHarnessInVolume(harnessDir, mountpoint);
-    expect(dest2).toBe(dest1);
+  it('is idempotent and stable: same source → same dest path on a second call', () => {
+    const src = makeHarness();
+    const mp = mkdtempSync(join(tmpdir(), 'btx-mp-'));
+    const a = ensureHarnessInVolume(src, mp);
+    const b = ensureHarnessInVolume(src, mp);
+    expect(a).toBe(b);
+    expect(existsSync(a)).toBe(true);
   });
 });
