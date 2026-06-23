@@ -116,6 +116,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         }
       : {}),
   };
+  const workerConcurrencyRaw = Number(env.WORKER_CONCURRENCY ?? 4);
+  const workerConcurrency = Number.isFinite(workerConcurrencyRaw)
+    ? Math.max(1, Math.floor(workerConcurrencyRaw))
+    : 4;
   return {
     host: env.BACKTESTER_HOST ?? '127.0.0.1',
     port: Number(env.BACKTESTER_PORT ?? 8080),
@@ -137,7 +141,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     defaultQueueTimeoutMs: Number(env.BACKTESTER_QUEUE_TIMEOUT_MS ?? 6 * 60 * 60 * 1000),
     defaultRunTimeoutMs: Number(env.BACKTESTER_RUN_TIMEOUT_MS ?? 2 * 60 * 60 * 1000),
     autoWorker: (env.BACKTESTER_AUTO_WORKER ?? 'true') !== 'false',
-    workerConcurrency: Math.max(1, Number(env.WORKER_CONCURRENCY ?? 4)),
+    workerConcurrency,
     enableOverlayEngine: env.BACKTESTER_ENABLE_OVERLAY_ENGINE === 'true',
     sandbox: {
       harnessDir: env.BACKTESTER_SANDBOX_HARNESS_DIR ?? resolve(HERE, '../sandbox-harness'),

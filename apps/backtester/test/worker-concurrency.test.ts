@@ -16,6 +16,10 @@ describe('WORKER_CONCURRENCY config', () => {
     const cfg = loadConfig({ ...process.env, WORKER_CONCURRENCY: '0' });
     expect(cfg.workerConcurrency).toBe(1);
   });
+  it('falls back to 4 on a non-numeric value', () => {
+    const cfg = loadConfig({ ...process.env, WORKER_CONCURRENCY: 'garbage' });
+    expect(cfg.workerConcurrency).toBe(4);
+  });
 });
 
 /** Submit N distinct-seed momentum jobs, drain, return a {seed -> resultHash} map. */
