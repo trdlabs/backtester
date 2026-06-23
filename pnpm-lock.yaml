@@ -29,6 +29,9 @@ importers:
       '@trading-backtester/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
+      '@trading-platform/sdk':
+        specifier: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.5.0/trading-platform-sdk-0.5.0.tgz
+        version: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.5.0/trading-platform-sdk-0.5.0.tgz
       '@trading/research-contracts':
         specifier: workspace:*
         version: link:../../packages/research-contracts
@@ -51,8 +54,8 @@ importers:
         specifier: workspace:*
         version: link:../sdk
       '@trading-platform/sdk':
-        specifier: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz
-        version: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz
+        specifier: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.5.0/trading-platform-sdk-0.5.0.tgz
+        version: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.5.0/trading-platform-sdk-0.5.0.tgz
 
   packages/sdk:
     dependencies:
@@ -694,9 +697,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz':
-    resolution: {integrity: sha512-X8tfAEZ2zxnDUxvsg3auPH8wSMTTFAXRlf/s0l9Flck0oWYCRq57q6tz1HxU41Ole6z4as+Xti/OgLF6VjVvFA==, tarball: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz}
-    version: 0.4.0
+  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.5.0/trading-platform-sdk-0.5.0.tgz':
+    resolution: {integrity: sha512-RJlvkRlzvZ73DzoPEf+xfJBUXV+kuXKeRFcQdOCHA6GQJec0tbJ0YxhYb9qjbb9M2Vg+ECuUOd1Te5nliRWeZg==, tarball: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.5.0/trading-platform-sdk-0.5.0.tgz}
+    version: 0.5.0
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
@@ -1637,7 +1640,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.0':
     optional: true
 
-  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz':
+  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.5.0/trading-platform-sdk-0.5.0.tgz':
     dependencies:
       decimal.js: 10.6.0
 

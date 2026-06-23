@@ -4,7 +4,16 @@
 // per-kind merge is needed: each row maps 1:1 to ReaderRow (dropping only `schema_version`).
 // historical.2-only: if the platform reports an older contract or no available `rows` resource,
 // openDataset returns undefined (no fallback to the legacy three-endpoint merge).
+//
+// This is a THIN adapter over the SDK's `HistoricalClient` (@trading-platform/sdk/historical):
+// fetch / pagination / cursor / bearer-token are all owned by the SDK client; this module only
+// maps the wire DTOs (CanonicalRowV2, coverage/discover responses) into the backtester's
+// ReaderRow / DatasetDescriptor shapes and enforces the historical.2 guard.
 
+import {
+  HistoricalClient,
+  type CanonicalRowV2,
+} from '@trading-platform/sdk/historical';
 import type {
   DatasetDescriptor,
   HistoricalDatasetReader,
@@ -13,44 +22,6 @@ import type {
   ReaderRow,
 } from '@trading/research-contracts';
 import type { BacktesterDataPort } from './reader';
-
-// ── Wire types: mirrors the platform historical.2 contract (no cross-repo import) ──
-
-/** CanonicalRowV2 = ReaderRow + schema_version. The 18 ReaderRow fields are copied verbatim. */
-interface CanonicalRowV2 extends ReaderRow {
-  readonly schema_version: number;
-}
-
-interface PageEnvelope<T> {
-  readonly items: readonly T[];
-  readonly nextCursor: string | null;
-}
-
-interface CoverageEntry {
-  readonly symbol: string;
-  readonly timeframe: string;
-  readonly fromMs: number;
-  readonly toMs: number;
-  readonly barCount: number;
-  readonly availability: string;
-}
-
-interface CoverageSnapshot {
-  readonly entries: readonly CoverageEntry[];
-  readonly availability: string;
-}
-
-interface ResourceDescriptor {
-  readonly name: string;
-  readonly availability: string;
-}
-
-interface DiscoverResponse {
-  readonly historicalContractVersion: string;
-  readonly symbols: readonly string[];
-  readonly timeframes: readonly string[];
-  readonly resources: readonly ResourceDescriptor[];
-}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -82,29 +53,17 @@ function toReaderRow(row: CanonicalRowV2): ReaderRow {
 
 export class RowsReader implements HistoricalDatasetReader {
   constructor(
-    private readonly base: string,
+    private readonly client: HistoricalClient,
     private readonly symbol: string,
-    private readonly pageLimit: number,
-    private readonly fetchImpl: FetchLike,
   ) {}
 
   async *queryRange(q: RangeQuery): AsyncIterable<ReaderRow[]> {
-    let cursor: string | null = null;
-    for (;;) {
-      const params = new URLSearchParams({
-        symbols: this.symbol,
-        fromMs:  String(q.tsFrom),
-        toMs:    String(q.tsTo),
-        limit:   String(this.pageLimit),
-      });
-      if (cursor) params.set('cursor', cursor);
-
-      const res = await this.fetchImpl(`${this.base}/historical/rows?${params.toString()}`);
-      if (!res.ok) throw new Error(`platform /historical/rows: HTTP ${res.status}`);
-      const page = (await res.json()) as PageEnvelope<CanonicalRowV2>;
-      if (page.items.length > 0) yield page.items.map(toReaderRow);
-      cursor = page.nextCursor;
-      if (!cursor) return;
+    for await (const page of this.client.queryRows({
+      symbols: [this.symbol],
+      fromMs: q.tsFrom,
+      toMs: q.tsTo,
+    })) {
+      yield page.map(toReaderRow);
     }
   }
 
@@ -116,23 +75,19 @@ export class RowsReader implements HistoricalDatasetReader {
 // ── RowsDataPort ──────────────────────────────────────────────────────────────
 
 export class RowsDataPort implements BacktesterDataPort {
-  private readonly base: string;
-  private readonly fetchImpl: FetchLike;
-  private readonly pageLimit: number;
+  private readonly client: HistoricalClient;
 
   constructor(opts: RowsDataPortOptions) {
-    this.base = opts.baseUrl.replace(/\/+$/, '');
-    const rawFetch = opts.fetchImpl ?? globalThis.fetch;
-    this.fetchImpl = opts.token
-      ? (url, init) => rawFetch(url, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), Authorization: `Bearer ${opts.token}` } })
-      : rawFetch;
-    this.pageLimit = opts.pageLimit ?? 1000;
+    this.client = new HistoricalClient({
+      baseUrl: opts.baseUrl,
+      fetchImpl: opts.fetchImpl,
+      pageLimit: opts.pageLimit ?? 1000,
+      token: opts.token,
+    });
   }
 
   async listDatasets(): Promise<DatasetDescriptor[]> {
-    const res = await this.fetchImpl(`${this.base}/historical/coverage`);
-    if (!res.ok) throw new Error(`platform /historical/coverage: HTTP ${res.status}`);
-    const snapshot = (await res.json()) as CoverageSnapshot;
+    const snapshot = await this.client.coverage();
     if (snapshot.availability === 'unavailable') return [];
     return snapshot.entries
       .filter((e) => e.availability === 'available' && e.barCount > 0)
@@ -152,9 +107,12 @@ export class RowsDataPort implements BacktesterDataPort {
     const timeframe = ref.slice(colonIdx + 1);
     if (!symbol || !timeframe) return undefined;
 
-    const res = await this.fetchImpl(`${this.base}/historical/discover`);
-    if (!res.ok) return undefined;
-    const descriptor = (await res.json()) as DiscoverResponse;
+    let descriptor;
+    try {
+      descriptor = await this.client.discover();
+    } catch {
+      return undefined;
+    }
 
     // historical.2-only: refuse to read anything else (no legacy merge fallback).
     if (descriptor.historicalContractVersion !== 'historical.2') return undefined;
@@ -164,6 +122,6 @@ export class RowsDataPort implements BacktesterDataPort {
     if (!descriptor.symbols.includes(symbol)) return undefined;
     if (!descriptor.timeframes.includes(timeframe)) return undefined;
 
-    return new RowsReader(this.base, symbol, this.pageLimit, this.fetchImpl);
+    return new RowsReader(this.client, symbol);
   }
 }
