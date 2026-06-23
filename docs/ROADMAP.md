@@ -207,22 +207,27 @@ fine-grained untrusted runs become the dominant cost.
 ### Baseline measurements
 
 Repeatable harness: `apps/backtester/test/bench-sandbox-perf.test.ts`
-(`RUN_BENCH=1 pnpm exec vitest run apps/backtester/test/bench-sandbox-perf.test.ts`) — real pinned image +
-built harness, Docker-gated, **network-free** (hand-built host ctx; no data port → no `@trading-platform/sdk`).
+(`RUN_BENCH=1 pnpm exec vitest run …`) — real pinned image + built harness, Docker-gated, **network-free**
+(hand-built host ctx; no data port → no `@trading-platform/sdk`). CI: `.github/workflows/bench-sandbox.yml`
+(push a `bench/**` branch). Both runs are host-process → docker daemon, **bind mode** (NOT DooD).
 
-_Measured 2026-06-23 on the WSL2 dev stand (Docker 29.5.3, `node:24-bookworm-slim`, DooD; cpus 1 / mem 128 MiB):_
+_Measured 2026-06-23 (`node:24-bookworm-slim`, cpus 1 / mem 128 MiB):_
 
-| Cost | p50 | mean | p95 | p99 | max |
-|---|---|---|---|---|---|
-| **cold-start** `open()` (docker run + node boot + bundle init) | **4.14 s** | 4.08 s | 6.02 s | — | 6.02 s |
-| **per-bar round-trip** (`callHook`; incl. harness 4-indicator recompute) | **8.5 ms** | 13.3 ms | 34.6 ms | 95 ms | 244 ms |
+| Cost (p50) | WSL2 dev stand (Docker 29.5.3) | **Native Linux** (GH Actions `ubuntu-latest`) | gap |
+|---|---|---|---|
+| **cold-start** `open()` (docker run + node boot + bundle init) | 4.14 s (max 6.0) | **135 ms** (mean 140, max 191) | ~30× |
+| **per-bar round-trip** (`callHook`; incl. harness 4-indicator recompute) | 8.5 ms (mean 13, p99 95) | **1.17 ms** (mean 1.22, p99 1.5) | ~7× |
 
-Implications: cold-start is paid **once per symbol per run** (~4 s here — inflated by WSL2/DooD; native
-Linux/CI will be lower). Per-bar round-trip at 8.5 ms p50 ⇒ a 30-day 1 m run ≈ **~366 s/symbol serial**, which
-also blows the 30 s `wallTimeMsPerSession` budget at ~3.5k bars — so today a long fine-grained untrusted run
-cannot complete without a raised budget. Both numbers confirm the scaling concern and rank the ladder:
-warm-pool (#3) attacks the 4 s cold-start; IPC batching (#4) attacks the per-bar tax; dataset cache (#1) +
-parallel runs (#2) cut redundant work across the many-analyses fan-out.
+The WSL2 figures are dominated by its VM/9p-filesystem container-start + pipe overhead (**not** networking — the
+sandbox is `--network none`); native Linux is the real structural cost.
+
+**Revised read (native Linux = the prod-relevant number):**
+- cold-start **135 ms**, paid once per symbol per run → modest (e.g. 150 containers ≈ 20 s total). Warm-pool (#3)
+  becomes a dev-ergonomics win (WSL2's 4 s) + an extreme-scale optimization, not urgent for prod volumes.
+- per-bar **1.17 ms** ⇒ a 30-day 1 m run ≈ **~51 s/symbol** (vs 366 s on WSL2); the 30 s `wallTimeMsPerSession`
+  budget now covers ~25 k bars (~18 days @ 1 m). IPC batching (#4) matters only for very long 1 m runs / higher cadence.
+- ⇒ for "many analyses × many strategies" on native Linux the cheap levers **#1 (dataset cache) + #2 (parallel
+  runs)** carry the load; #3/#4 are reserved for extreme scale. The WSL2 dev stand overstates the cost ~7–30×.
 
 ### Done when
 
