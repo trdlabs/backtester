@@ -52,6 +52,8 @@ export interface WorkerDeps extends CompletionDeps {
   bundleStore?: BundleStore;
   sandbox?: SandboxConfig;
   overlaySandbox: OverlaySandboxSettings;
+  /** When set, the worker claims with a lease and owner-guards its terminal transitions. */
+  lease?: { workerId: string; ttlMs: number; maxAttempts: number };
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -111,7 +113,10 @@ export function overlaySandboxDeps(s: OverlaySandboxSettings): SandboxExecutorDe
 
 /** Claim and run one queued job. Returns the (now terminal) row, or undefined if the queue was empty. */
 export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | undefined> {
-  const claimed = await deps.store.claimNextQueued(deps.clock());
+  const claimed = await deps.store.claimNextQueued(
+    deps.clock(),
+    deps.lease ? { workerId: deps.lease.workerId, ttlMs: deps.lease.ttlMs } : undefined,
+  );
   if (!claimed) return undefined;
   const runId = claimed.runId;
 
@@ -277,7 +282,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       resultHash,
       artifactManifest: manifest,
       datasetFingerprint: dsFingerprint,
-    });
+    }, deps.lease?.workerId);
   } catch (err) {
     const code = err instanceof RunnerError ? err.code : 'runner_failure';
     const terminalStatus = err instanceof RunnerError ? err.terminalStatus : 'failed';
@@ -286,7 +291,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       atMs: now,
       terminalAtMs: now,
       terminalCode: code,
-    });
+    }, deps.lease?.workerId);
   } finally {
     await executor?.close?.();
     sandboxRouter?.closeAll();

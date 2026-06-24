@@ -30,6 +30,11 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     defaultRunTimeoutMs: 3_600_000,
     autoWorker: false,
     workerConcurrency: 1,
+    workerId: 'test-worker',
+    workerLeaseTtlMs: 30_000,
+    workerHeartbeatMs: 10_000,
+    workerMaxAttempts: 3,
+    workerPollMs: 500,
     enableOverlayEngine: false,
     sandbox: {
       harnessDir: HARNESS_DIR,

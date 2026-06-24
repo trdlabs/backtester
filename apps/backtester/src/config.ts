@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { hostname } from 'node:os';
 
 import {
   DEFAULT_SANDBOX,
@@ -76,6 +77,16 @@ export interface AppConfig {
   readonly autoWorker: boolean;
   /** Max backtests run concurrently by the in-process worker pool (>= 1; 1 = serial). */
   readonly workerConcurrency: number;
+  /** Stable id of this worker process (lease owner); default `${hostname}:${pid}`. */
+  readonly workerId: string;
+  /** Lease TTL (ms) set on claim; clamped to >= 3 * workerHeartbeatMs. */
+  readonly workerLeaseTtlMs: number;
+  /** Heartbeat interval (ms): workers renew their in-flight leases this often. */
+  readonly workerHeartbeatMs: number;
+  /** Max claim attempts before a repeatedly-orphaned job is failed (poison). */
+  readonly workerMaxAttempts: number;
+  /** Idle poll interval (ms) when the queue is empty. */
+  readonly workerPollMs: number;
   /** Enable the lifted overlay engine path (engine:'overlay' runs). Default off until the verify_018 parity gate is green. */
   readonly enableOverlayEngine: boolean;
   readonly sandbox: SandboxSettings;
@@ -120,6 +131,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const workerConcurrency = Number.isFinite(workerConcurrencyRaw)
     ? Math.max(1, Math.floor(workerConcurrencyRaw))
     : 4;
+  const heartbeat = Math.max(1000, Math.floor(Number(env.WORKER_HEARTBEAT_MS ?? 10_000)) || 10_000);
+  const leaseTtl = Math.max(
+    3 * heartbeat,
+    Math.floor(Number(env.WORKER_LEASE_TTL_MS ?? 30_000)) || 30_000,
+  );
+  const maxAttempts = Math.max(1, Math.floor(Number(env.WORKER_MAX_ATTEMPTS ?? 3)) || 3);
+  const pollMs = Math.max(50, Math.floor(Number(env.WORKER_POLL_MS ?? 500)) || 500);
+  const workerId = env.WORKER_ID ?? `${hostname()}:${process.pid}`;
   return {
     host: env.BACKTESTER_HOST ?? '127.0.0.1',
     port: Number(env.BACKTESTER_PORT ?? 8080),
@@ -142,6 +161,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     defaultRunTimeoutMs: Number(env.BACKTESTER_RUN_TIMEOUT_MS ?? 2 * 60 * 60 * 1000),
     autoWorker: (env.BACKTESTER_AUTO_WORKER ?? 'true') !== 'false',
     workerConcurrency,
+    workerId,
+    workerLeaseTtlMs: leaseTtl,
+    workerHeartbeatMs: heartbeat,
+    workerMaxAttempts: maxAttempts,
+    workerPollMs: pollMs,
     enableOverlayEngine: env.BACKTESTER_ENABLE_OVERLAY_ENGINE === 'true',
     sandbox: {
       harnessDir: env.BACKTESTER_SANDBOX_HARNESS_DIR ?? resolve(HERE, '../sandbox-harness'),
