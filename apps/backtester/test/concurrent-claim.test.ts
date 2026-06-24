@@ -43,7 +43,11 @@ for (const factory of STORE_FACTORIES) {
         expect((await store.list({ status: 'running' })).length).toBe(n);
 
         // Lease assertions: every claimed job has a non-null leasedBy and attempts === 1.
+        // Assert on the RETURNED row directly (Pg returns lease fields via RETURNING j.*).
         for (const job of claimed) {
+          expect(job.leasedBy).toBeTruthy();
+          expect(job.attempts).toBe(1);
+          // Cross-check against the persisted row.
           const row = await store.get(job.runId);
           expect(row?.leasedBy).toBeTruthy();
           expect(row?.attempts).toBe(1);

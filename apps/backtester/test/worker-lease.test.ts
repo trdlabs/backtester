@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { InMemoryJobStore, type NewJob } from '../src/jobs/job-store.js';
+import { InMemoryJobStore, type JobStore, type NewJob } from '../src/jobs/job-store.js';
+import { PG_AVAILABLE, STORE_FACTORIES } from './store-factories.js';
 
 function newJob(runId: string): NewJob {
   return {
@@ -8,7 +9,7 @@ function newJob(runId: string): NewJob {
     runTimeoutMs: 3_600_000, acceptedAtMs: 1000,
   };
 }
-async function enqueue(store: InMemoryJobStore, runId: string) {
+async function enqueue(store: JobStore, runId: string) {
   await store.insertOrGet(newJob(runId));
   await store.transition(runId, 'accepted', 'queued', { atMs: 1000, queuedAtMs: 1000 });
 }
@@ -43,5 +44,26 @@ describe('store lease', () => {
     expect(wrong).toBe(false);
     const right = await store.transition('r1', 'running', 'completed', { atMs: 6000 }, 'w1');
     expect(right).toBe(true);
+  });
+});
+
+const pgFactory = STORE_FACTORIES.find((f) => f.name === 'postgres')!;
+
+describe.skipIf(!PG_AVAILABLE)('renewLease [postgres]', () => {
+  it('renewLease extends leaseExpiresAt and is scoped to the worker', async () => {
+    const { store, teardown } = await pgFactory.create();
+    try {
+      await enqueue(store, 'r1');
+      await store.claimNextQueued(5000, { workerId: 'w1', ttlMs: 30_000 });
+
+      await store.renewLease('w1', 99_000);
+      expect((await store.get('r1'))?.leaseExpiresAt).toBe(99_000);
+
+      // Different worker — must not change the lease.
+      await store.renewLease('w2', 123_000);
+      expect((await store.get('r1'))?.leaseExpiresAt).toBe(99_000);
+    } finally {
+      await teardown();
+    }
   });
 });

@@ -237,7 +237,7 @@ export class PgJobStore implements JobStore {
          run_deadline_ms = $1::bigint + j.run_timeout_ms,
          leased_by = $3,
          lease_expires_at = CASE WHEN $3::text IS NULL THEN NULL ELSE $1::bigint + $4::bigint END,
-         attempts = j.attempts + 1,
+         attempts = CASE WHEN $3::text IS NULL THEN j.attempts ELSE j.attempts + 1 END,
          timeline_json = j.timeline_json || $2::jsonb
        FROM next WHERE j.run_id = next.run_id
        RETURNING j.*`,
