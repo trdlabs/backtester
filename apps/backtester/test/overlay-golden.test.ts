@@ -54,20 +54,20 @@ describe('overlay parity — platform-derived result_hash goldens (Slice 6a CP3)
 
   it('overlay baseline result_hash equals the platform-derived golden', async () => {
     const req = loadRequest('baseline.json');
-    const out = runOverlayBacktest(req, await overlayDeps(req));
+    const out = await runOverlayBacktest(req, await overlayDeps(req));
     expect(contentRef(out)).toBe(GB);
   });
 
   it('overlay variant result_hash equals the platform-derived golden', async () => {
     const req = loadRequest('variant.json');
-    const out = runOverlayBacktest(req, await overlayDeps(req));
+    const out = await runOverlayBacktest(req, await overlayDeps(req));
     expect(contentRef(out)).toBe(GV);
   });
 
   it('overlay output is byte-identical on replay', async () => {
     const req = loadRequest('variant.json');
-    const a = runOverlayBacktest(req, await overlayDeps(req));
-    const b = runOverlayBacktest(req, await overlayDeps(req));
+    const a = await runOverlayBacktest(req, await overlayDeps(req));
+    const b = await runOverlayBacktest(req, await overlayDeps(req));
     expect(contentRef(a)).toBe(contentRef(b));
   });
 });

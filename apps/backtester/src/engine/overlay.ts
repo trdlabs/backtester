@@ -47,7 +47,7 @@ export interface OverlayComposition {
 }
 
 /** Источник `OverlayDecision` для overlay'я (lazy — вызывается до veto). */
-export type OverlayDecisionSource = (overlay: ResolvedOverlay) => OverlayDecision | null;
+export type OverlayDecisionSource = (overlay: ResolvedOverlay) => Promise<OverlayDecision | null>;
 
 /** Композитор overlay'ев (stateless относительно входа; единый schema-registry для ревалидации). */
 export class OverlayComposer {
@@ -55,17 +55,17 @@ export class OverlayComposer {
    * Применить overlay'и к `base` строго в их порядке. `getDecision` вызывается лениво (на veto
    * последующие overlay'и не опрашиваются).
    */
-  compose(
+  async compose(
     base: StrategyDecision,
     overlays: readonly ResolvedOverlay[],
     getDecision: OverlayDecisionSource,
-  ): OverlayComposition {
+  ): Promise<OverlayComposition> {
     let accumulated: StrategyDecision = base;
     const effects: OverlayEffect[] = [];
 
     for (const overlay of overlays) {
       const overlayRef = { id: overlay.manifest.id, version: overlay.manifest.version };
-      const decision = getDecision(overlay);
+      const decision = await getDecision(overlay);
       if (decision === null) continue;
 
       switch (decision.kind) {

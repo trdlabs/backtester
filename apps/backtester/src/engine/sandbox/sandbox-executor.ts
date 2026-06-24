@@ -112,25 +112,25 @@ export class SandboxModuleExecutor implements ModuleExecutor {
     );
   }
 
-  initStrategy(_module: StrategyModule, ctx: StrategyContext): void {
+  async initStrategy(_module: StrategyModule, ctx: StrategyContext): Promise<void> {
     const s = this.sessionFor(ctx);
-    const opened = s.open();
+    const opened = await s.open();
     if (!opened.ok) {
       if (opened.error !== undefined) this.record(opened.error, ctx);
       return;
     }
     if (this.bundle.manifest.hooks.includes('init')) {
-      const r = s.callHook('init', ctx);
+      const r = await s.callHook('init', ctx);
       if (!r.ok && r.error !== undefined) this.record(r.error, ctx);
     }
   }
 
-  executeStrategyHook(
+  async executeStrategyHook(
     _module: StrategyModule,
     hook: LifecycleHook,
     ctx: StrategyContext,
-  ): readonly StrategyDecision[] {
-    const r = this.sessionFor(ctx).callHook(hook, ctx);
+  ): Promise<readonly StrategyDecision[]> {
+    const r = await this.sessionFor(ctx).callHook(hook, ctx);
     if (!r.ok) {
       if (r.error !== undefined) this.record(r.error, ctx);
       return [];
@@ -143,8 +143,8 @@ export class SandboxModuleExecutor implements ModuleExecutor {
     return rv.decisions;
   }
 
-  executeOverlayApply(_overlay: HypothesisOverlayModule, ctx: StrategyContext): readonly OverlayDecision[] {
-    const r = this.sessionFor(ctx).callHook('apply', ctx);
+  async executeOverlayApply(_overlay: HypothesisOverlayModule, ctx: StrategyContext): Promise<readonly OverlayDecision[]> {
+    const r = await this.sessionFor(ctx).callHook('apply', ctx);
     if (!r.ok) {
       if (r.error !== undefined) this.record(r.error, ctx);
       return [];
@@ -157,10 +157,10 @@ export class SandboxModuleExecutor implements ModuleExecutor {
     return rv.decisions;
   }
 
-  disposeStrategy(_module: StrategyModule, ctx: StrategyContext): void {
+  async disposeStrategy(_module: StrategyModule, ctx: StrategyContext): Promise<void> {
     const s = this.sessions.get(ctx.symbol);
     if (s !== undefined && this.bundle.manifest.hooks.includes('dispose')) {
-      const r = s.callHook('dispose', ctx);
+      const r = await s.callHook('dispose', ctx);
       if (!r.ok && r.error !== undefined) this.record(r.error, ctx);
     }
   }

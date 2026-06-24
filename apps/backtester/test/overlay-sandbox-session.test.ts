@@ -62,7 +62,7 @@ describe.skipIf(!DOCKER_AVAILABLE)('overlay sandbox session (real container)', (
       const { registry, router } = buildSandboxOverlayDeps({ eeDir: ee.bundleDir });
 
       try {
-        const out = runOverlayBacktest(req, { registry, router, marketTape });
+        const out = await runOverlayBacktest(req, { registry, router, marketTape });
 
         expect(out.status).toBe('completed');
         if (out.status === 'completed') {

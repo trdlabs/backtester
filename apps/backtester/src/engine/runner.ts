@@ -295,7 +295,7 @@ interface SimEngine {
 }
 
 /** Детерминированный проход одного символа (внутри-барный порядок R8) с overlay-композицией. */
-function runSymbol(
+async function runSymbol(
   symbol: string,
   candles: readonly Readonly<Bar>[],
   builder: PointInTimeContextBuilder,
@@ -304,7 +304,7 @@ function runSymbol(
   portfolio: Portfolio,
   engine: SimEngine,
   acc: RunAccumulators,
-): void {
+): Promise<void> {
   const n = candles.length;
   if (n === 0) return;
   const { router, risk, exec, composer } = engine;
@@ -313,7 +313,7 @@ function runSymbol(
 
   // 019: session-lifecycle через seam. trusted → module.init?(ctx) (поведение 018 неизменно);
   // sandbox → открыть контейнер + init-хук. Вызывается всегда (sandbox-сессия открывается и без 'init').
-  strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
+  await strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
 
   for (let t = 0; t < n; t += 1) {
     const bar = candles[t];
@@ -328,9 +328,9 @@ function runSymbol(
 
     // (3) onBarClose → entry/signal overlay'и → risk → pending(open).
     const ctx = builder.build(t, stateAt(portfolio, bar.close));
-    const base = firstDecision(strategyExec.executeStrategyHook(module, 'onBarClose', ctx));
-    const comp = composer.compose(base, overlays.entry, (o) => {
-      const ds = router.forOverlay(o).executeOverlayApply(o.module, ctx);
+    const base = firstDecision(await strategyExec.executeStrategyHook(module, 'onBarClose', ctx));
+    const comp = await composer.compose(base, overlays.entry, async (o) => {
+      const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctx);
       return ds.length > 0 ? ds[0] : null;
     });
     if (comp.error !== undefined) {
@@ -384,10 +384,10 @@ function runSymbol(
       const ctxPos = builder.build(t, stateAt(portfolio, bar.close));
       const posBase: StrategyDecision =
         module.onPositionBar !== undefined
-          ? firstDecision(strategyExec.executeStrategyHook(module, 'onPositionBar', ctxPos))
+          ? firstDecision(await strategyExec.executeStrategyHook(module, 'onPositionBar', ctxPos))
           : { kind: 'idle' };
-      const compPos = composer.compose(posBase, overlays.post, (o) => {
-        const ds = router.forOverlay(o).executeOverlayApply(o.module, ctxPos);
+      const compPos = await composer.compose(posBase, overlays.post, async (o) => {
+        const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctxPos);
         return ds.length > 0 ? ds[0] : null;
       });
       if (compPos.error !== undefined) {
@@ -462,11 +462,11 @@ function runSymbol(
   if (forced !== null) acc.trades.push(forced);
 
   // 019: dispose через seam (trusted → module.dispose?; sandbox → dispose-хук, если объявлен).
-  strategyExec.disposeStrategy?.(module, builder.build(n - 1, stateAt(portfolio, last.close)));
+  await strategyExec.disposeStrategy?.(module, builder.build(n - 1, stateAt(portfolio, last.close)));
 }
 
 /** Детерминированный closed-candle проход одного таргета → `BacktestRunResult` (research R8). */
-function simulateTarget(
+async function simulateTarget(
   target: RunTarget,
   request: BacktestRunRequest,
   dataset: CandleDataset,
@@ -474,7 +474,7 @@ function simulateTarget(
   riskProfileRef: Ref,
   executionProfileRef: Ref,
   marketTape: MarketTapeDataset | undefined,
-): BacktestRunResult {
+): Promise<BacktestRunResult> {
   const acc: RunAccumulators = {
     decisionRecords: [],
     orders: [],
@@ -504,7 +504,7 @@ function simulateTarget(
       // 023: лента передаётся в builder; ctx.market выставляется по составу ленты (composition-following).
       ...(marketTape !== undefined ? { marketTape } : {}),
     });
-    runSymbol(symbol, candles, builder, target.strategy, overlays, portfolio, engine, acc);
+    await runSymbol(symbol, candles, builder, target.strategy, overlays, portfolio, engine, acc);
     barsProcessed += candles.length;
   }
 
@@ -569,7 +569,7 @@ function assembleResult(
 }
 
 /** Публичный вход runner'а (contracts/runner-api.md). Валидирует, резолвит, симулирует baseline+variant. */
-export function runBacktest(request: BacktestRunRequest, deps: RunDeps): RunOutcome {
+export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): Promise<RunOutcome> {
   // 1. 017 run-request validation (fail-fast). До валидации поля request НЕ читаем (incomplete
   //    request не должен ронять runner до ValidationResult). validateRunRequest не использует
   //    knownStrategyRefs → пустой context безопасен.
@@ -675,7 +675,7 @@ export function runBacktest(request: BacktestRunRequest, deps: RunDeps): RunOutc
   };
 
   try {
-    const baseline = simulateTarget(
+    const baseline = await simulateTarget(
       { kind: 'baseline', runId: request.runId, strategy, overlays: [] },
       request,
       dataset,
@@ -688,7 +688,7 @@ export function runBacktest(request: BacktestRunRequest, deps: RunDeps): RunOutc
     let variant: BacktestRunResult | null = null;
     let comparison: ComparisonSummary | null = null;
     if (resolvedOverlays.length > 0) {
-      variant = simulateTarget(
+      variant = await simulateTarget(
         { kind: 'variant', runId: `${request.runId}::variant`, strategy, overlays: resolvedOverlays },
         request,
         dataset,
