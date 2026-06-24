@@ -260,10 +260,15 @@ export class InMemoryJobStore implements JobStore {
             atMs: nowMs, terminalAtMs: nowMs, terminalCode: 'lease_expired',
           })) reaped.push(job);
         } else if (leaseStale) {
-          // requeue (non-terminal) — clear the lease so a fresh worker can claim it
+          // requeue (non-terminal): clear the lease so a fresh worker can re-claim. Re-fetch the
+          // canonical row after the transition rather than mutating the iterated reference, so this
+          // does not depend on transition()'s in-place-vs-replace mutation strategy.
           if (await this.transition(job.runId, 'running', 'queued', { atMs: nowMs, queuedAtMs: nowMs })) {
-            job.leasedBy = undefined;
-            job.leaseExpiresAt = undefined;
+            const requeued = this.jobs.get(job.runId);
+            if (requeued !== undefined) {
+              requeued.leasedBy = undefined;
+              requeued.leaseExpiresAt = undefined;
+            }
           }
         } else if (runStale) {
           if (await this.transition(job.runId, 'running', 'timed_out', {
