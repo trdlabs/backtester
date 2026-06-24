@@ -316,8 +316,13 @@ export async function runWorkerLoop(
   deps: WorkerDeps,
   opts: { concurrency: number; heartbeatMs: number; pollMs: number; signal: AbortSignal },
 ): Promise<void> {
+  let pendingRenew: Promise<unknown> = Promise.resolve();
   const beat = setInterval(() => {
-    if (deps.lease) void deps.store.renewLease(deps.lease.workerId, deps.clock() + deps.lease.ttlMs);
+    if (deps.lease) {
+      pendingRenew = deps.store
+        .renewLease(deps.lease.workerId, deps.clock() + deps.lease.ttlMs)
+        .catch(() => {}); // ignore post-shutdown errors (pool may be tearing down)
+    }
   }, opts.heartbeatMs);
   try {
     while (!opts.signal.aborted) {
@@ -333,5 +338,6 @@ export async function runWorkerLoop(
     }
   } finally {
     clearInterval(beat);
+    await pendingRenew; // drain the last in-flight heartbeat so it can't reject after the loop resolves
   }
 }

@@ -167,7 +167,6 @@ describe.skipIf(!PG_AVAILABLE)('worker-loop integration [postgres]', () => {
       ac1.abort();
       ac2.abort();
       await Promise.all([loop1, loop2]);
-      await new Promise((r) => setTimeout(r, 50)); // settle trailing fire-and-forget heartbeats
 
       // Per-job equality: the SAME runId yields the SAME resultHash regardless of which worker ran it.
       for (const id of runIds) {
@@ -227,8 +226,6 @@ describe.skipIf(!PG_AVAILABLE)('worker-loop integration [postgres]', () => {
       await waitAllTerminal(store, ['crash-job'], 30_000);
       acB.abort();
       await loopB;
-      // Let any trailing fire-and-forget heartbeat renewLease settle before teardown ends the pool.
-      await new Promise((r) => setTimeout(r, 50));
 
       const row = await store.get('crash-job');
       expect(row?.status).toBe('completed');
