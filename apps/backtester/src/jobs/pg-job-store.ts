@@ -327,7 +327,8 @@ export class PgJobStore implements JobStore {
     );
   }
 
-  async reapDeadlines(nowMs: number): Promise<JobRow[]> {
+  async reapDeadlines(nowMs: number, opts?: { leaseMaxAttempts?: number }): Promise<JobRow[]> {
+    const maxAttempts = opts?.leaseMaxAttempts ?? 3;
     const expired = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
          status = 'expired', terminal_at_ms = $1::bigint, terminal_code = 'queue_deadline_exceeded',
@@ -335,6 +336,25 @@ export class PgJobStore implements JobStore {
        WHERE status = 'queued' AND queue_deadline_ms IS NOT NULL AND $1::bigint > queue_deadline_ms
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'expired', atMs: nowMs }])],
+    );
+    // Poison: expired-lease running jobs at/over the attempts cap → terminal failure.
+    const poisoned = await this.pool.query<JobDbRow>(
+      `UPDATE backtest_job SET
+         status = 'failed', terminal_at_ms = $1::bigint, terminal_code = 'lease_expired',
+         timeline_json = timeline_json || $2::jsonb
+       WHERE status = 'running' AND lease_expires_at IS NOT NULL
+         AND $1::bigint > lease_expires_at AND attempts >= $3
+       RETURNING *`,
+      [nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }]), maxAttempts],
+    );
+    // Requeue: expired-lease running jobs under the cap → back to 'queued', lease cleared (non-terminal).
+    await this.pool.query(
+      `UPDATE backtest_job SET
+         status = 'queued', queued_at_ms = $1::bigint, leased_by = NULL, lease_expires_at = NULL,
+         timeline_json = timeline_json || $2::jsonb
+       WHERE status = 'running' AND lease_expires_at IS NOT NULL
+         AND $1::bigint > lease_expires_at AND attempts < $3`,
+      [nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }]), maxAttempts],
     );
     const timedOut = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
@@ -344,6 +364,6 @@ export class PgJobStore implements JobStore {
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'timed_out', atMs: nowMs }])],
     );
-    return [...expired.rows, ...timedOut.rows].map(rowToJob);
+    return [...expired.rows, ...poisoned.rows, ...timedOut.rows].map(rowToJob);
   }
 }

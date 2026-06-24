@@ -114,7 +114,7 @@ export interface JobStore {
   list(filter?: { status?: RunStatus; correlationId?: string; workflowId?: string }): Promise<JobRow[]>;
   appendEvent(ev: JobEventRow): Promise<void>;
   listEvents(runId: string): Promise<JobEventRow[]>;
-  reapDeadlines(nowMs: number): Promise<JobRow[]>;
+  reapDeadlines(nowMs: number, opts?: { leaseMaxAttempts?: number }): Promise<JobRow[]>;
   /** Outbox: terminal events still pending/failed delivery, oldest first. */
   listDeliverable(limit: number): Promise<JobEventRow[]>;
   markDelivered(eventUid: string, ok: boolean): Promise<void>;
@@ -239,7 +239,8 @@ export class InMemoryJobStore implements JobStore {
     ev.deliveryAttempts = (ev.deliveryAttempts ?? 0) + 1;
   }
 
-  async reapDeadlines(nowMs: number): Promise<JobRow[]> {
+  async reapDeadlines(nowMs: number, opts?: { leaseMaxAttempts?: number }): Promise<JobRow[]> {
+    const maxAttempts = opts?.leaseMaxAttempts ?? 3;
     const reaped: JobRow[] = [];
     for (const job of this.jobs.values()) {
       if (isTerminal(job.status)) continue;
@@ -249,23 +250,25 @@ export class InMemoryJobStore implements JobStore {
         nowMs > job.queueDeadlineMs
       ) {
         if (await this.transition(job.runId, 'queued', 'expired', {
-          atMs: nowMs,
-          terminalAtMs: nowMs,
-          terminalCode: 'queue_deadline_exceeded',
-        })) {
-          reaped.push(job);
-        }
-      } else if (
-        job.status === 'running' &&
-        job.runDeadlineMs !== undefined &&
-        nowMs > job.runDeadlineMs
-      ) {
-        if (await this.transition(job.runId, 'running', 'timed_out', {
-          atMs: nowMs,
-          terminalAtMs: nowMs,
-          terminalCode: 'run_deadline_exceeded',
-        })) {
-          reaped.push(job);
+          atMs: nowMs, terminalAtMs: nowMs, terminalCode: 'queue_deadline_exceeded',
+        })) reaped.push(job);
+      } else if (job.status === 'running') {
+        const leaseStale = job.leaseExpiresAt !== undefined && nowMs > job.leaseExpiresAt;
+        const runStale = job.runDeadlineMs !== undefined && nowMs > job.runDeadlineMs;
+        if (leaseStale && job.attempts >= maxAttempts) {
+          if (await this.transition(job.runId, 'running', 'failed', {
+            atMs: nowMs, terminalAtMs: nowMs, terminalCode: 'lease_expired',
+          })) reaped.push(job);
+        } else if (leaseStale) {
+          // requeue (non-terminal) — clear the lease so a fresh worker can claim it
+          if (await this.transition(job.runId, 'running', 'queued', { atMs: nowMs, queuedAtMs: nowMs })) {
+            job.leasedBy = undefined;
+            job.leaseExpiresAt = undefined;
+          }
+        } else if (runStale) {
+          if (await this.transition(job.runId, 'running', 'timed_out', {
+            atMs: nowMs, terminalAtMs: nowMs, terminalCode: 'run_deadline_exceeded',
+          })) reaped.push(job);
         }
       }
     }

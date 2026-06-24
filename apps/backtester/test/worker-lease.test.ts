@@ -47,6 +47,46 @@ describe('store lease', () => {
   });
 });
 
+describe('store lease — reap/requeue', () => {
+  it('requeues an expired-lease running job under the attempts cap', async () => {
+    const store = new InMemoryJobStore();
+    await store.insertOrGet(newJob('r1'));
+    await store.transition('r1', 'accepted', 'queued', { atMs: 1000, queuedAtMs: 1000 });
+    await store.claimNextQueued(5000, { workerId: 'w1', ttlMs: 1000 }); // lease expires at 6000
+    const reaped = await store.reapDeadlines(10_000, { leaseMaxAttempts: 3 });
+    expect(reaped).toEqual([]); // requeue is non-terminal → not returned
+    const row = await store.get('r1');
+    expect(row?.status).toBe('queued');
+    expect(row?.leasedBy).toBeUndefined();
+    expect(row?.attempts).toBe(1); // attempts is NOT reset; next claim makes it 2
+  });
+
+  it('fails (poison) an expired-lease job at the attempts cap', async () => {
+    const store = new InMemoryJobStore();
+    await store.insertOrGet(newJob('r1'));
+    await store.transition('r1', 'accepted', 'queued', { atMs: 1000, queuedAtMs: 1000 });
+    // claim 3 times (cap=3): each claim increments attempts; re-queue between claims
+    for (let i = 0; i < 3; i += 1) {
+      await store.claimNextQueued(5000 + i, { workerId: 'w1', ttlMs: 500 });
+      if (i < 2) await store.reapDeadlines(10_000 + i, { leaseMaxAttempts: 3 });
+    }
+    const reaped = await store.reapDeadlines(20_000, { leaseMaxAttempts: 3 });
+    expect(reaped.map((r) => r.runId)).toContain('r1');
+    const row = await store.get('r1');
+    expect(row?.status).toBe('failed');
+    expect(row?.terminalCode).toBe('lease_expired');
+  });
+
+  it('leaves a healthy (unexpired-lease) running job untouched', async () => {
+    const store = new InMemoryJobStore();
+    await store.insertOrGet(newJob('r1'));
+    await store.transition('r1', 'accepted', 'queued', { atMs: 1000, queuedAtMs: 1000 });
+    await store.claimNextQueued(5000, { workerId: 'w1', ttlMs: 30_000 }); // expires 35000
+    await store.reapDeadlines(10_000, { leaseMaxAttempts: 3 });
+    expect((await store.get('r1'))?.status).toBe('running');
+  });
+});
+
 const pgFactory = STORE_FACTORIES.find((f) => f.name === 'postgres')!;
 
 describe.skipIf(!PG_AVAILABLE)('renewLease [postgres]', () => {
