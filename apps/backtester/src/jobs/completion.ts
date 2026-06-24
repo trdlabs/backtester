@@ -108,8 +108,11 @@ export async function publishCompletion(deps: CompletionDeps, job: JobRow): Prom
 }
 
 /** Reap queue/run deadline misses and publish their completion events. Returns the reaped rows. */
-export async function reapAndPublish(deps: CompletionDeps): Promise<JobRow[]> {
-  const reaped = await deps.store.reapDeadlines(deps.clock());
+export async function reapAndPublish(
+  deps: CompletionDeps,
+  opts?: { leaseMaxAttempts?: number },
+): Promise<JobRow[]> {
+  const reaped = await deps.store.reapDeadlines(deps.clock(), opts);
   for (const job of reaped) await publishCompletion(deps, job);
   return reaped;
 }

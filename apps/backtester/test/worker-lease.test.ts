@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryJobStore, type JobStore, type NewJob } from '../src/jobs/job-store.js';
+import { reapAndPublish } from '../src/jobs/completion.js';
 import { PG_AVAILABLE, STORE_FACTORIES } from './store-factories.js';
 
 function newJob(runId: string): NewJob {
@@ -84,6 +85,33 @@ describe('store lease — reap/requeue', () => {
     await store.claimNextQueued(5000, { workerId: 'w1', ttlMs: 30_000 }); // expires 35000
     await store.reapDeadlines(10_000, { leaseMaxAttempts: 3 });
     expect((await store.get('r1'))?.status).toBe('running');
+  });
+});
+
+describe('reapAndPublish — leaseMaxAttempts wiring', () => {
+  it('poisons a first-attempt expired-lease job when cap=1', async () => {
+    const store = new InMemoryJobStore();
+    await enqueue(store, 'r1');
+    const t = 5000;
+    await store.claimNextQueued(t, { workerId: 'w1', ttlMs: 500 }); // attempts→1, expires at 5500
+    await reapAndPublish(
+      { store, clock: () => t + 10_000, uid: () => 'u1', postWebhook: async () => {} },
+      { leaseMaxAttempts: 1 },
+    );
+    const row = await store.get('r1');
+    expect(row?.status).toBe('failed');
+    expect(row?.terminalCode).toBe('lease_expired');
+  });
+
+  it('requeues the same first-attempt job when cap defaults to 3', async () => {
+    const store = new InMemoryJobStore();
+    await enqueue(store, 'r2');
+    const t = 5000;
+    await store.claimNextQueued(t, { workerId: 'w1', ttlMs: 500 }); // attempts→1, expires at 5500
+    // Call without opts — store defaults leaseMaxAttempts to 3, so attempts(1) < cap → requeue
+    await reapAndPublish({ store, clock: () => t + 10_000, uid: () => 'u2', postWebhook: async () => {} });
+    const row = await store.get('r2');
+    expect(row?.status).toBe('queued');
   });
 });
 

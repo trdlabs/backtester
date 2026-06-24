@@ -327,7 +327,7 @@ export async function runWorkerLoop(
   try {
     while (!opts.signal.aborted) {
       const processed = await drainQueue(deps, opts.concurrency);
-      await reapAndPublish(deps);
+      await reapAndPublish(deps, { leaseMaxAttempts: deps.lease?.maxAttempts });
       if (opts.signal.aborted) break;
       if (processed === 0) {
         await new Promise<void>((resolve) => {
