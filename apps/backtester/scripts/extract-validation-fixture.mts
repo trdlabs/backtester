@@ -18,31 +18,18 @@ const inCoverage = (t: any) => {
   return t.openedAtMs >= rows[0].minute_ts && t.closedAtMs <= rows[rows.length - 1].minute_ts;
 };
 
-/** Check paper pnlPct matches same_bar_close fill at exact 4 decimal places. */
-const matchesSameBarClose = (t: any): boolean => {
-  const rows = rowsBySymbol[t.symbol];
-  if (!rows) return false;
-  const openRow = rows.find((r) => r.minute_ts === t.openedAtMs);
-  const closeRow = rows.find((r) => r.minute_ts === t.closedAtMs);
-  if (!openRow || !closeRow) return false;
-  const entry = openRow.close;
-  const exit_ = closeRow.close;
-  const calcPct =
-    t.side === 'long'
-      ? ((exit_ - entry) / entry) * 100
-      : ((entry - exit_) / entry) * 100;
-  // toBeCloseTo(..., 4) tolerance = 0.5 * 10^-4
-  return Math.abs(calcPct - Number(t.pnlPct)) < 5e-5;
-};
-
-const cleanTimeExit = allTrades.filter(
-  (t) => t.closeReason === 'time_exit' && inCoverage(t) && matchesSameBarClose(t),
+// Candidates: time_exit trades within row coverage — NO reconcile pre-filter
+const candidates = allTrades.filter(
+  (t) => t.closeReason === 'time_exit' && inCoverage(t),
 );
+
+// Pick up to 3 symbols that have ≥1 candidate
 const picked: string[] = [];
-for (const t of cleanTimeExit) {
+for (const t of candidates) {
   if (picked.length < 3 && !picked.includes(t.symbol)) picked.push(t.symbol);
 }
-const trades = cleanTimeExit
+
+const trades = candidates
   .filter((t) => picked.includes(t.symbol))
   .map((t) => ({
     tradeId: t.tradeId,
@@ -53,10 +40,14 @@ const trades = cleanTimeExit
     pnlPct: String(t.pnlPct),
     closeReason: t.closeReason,
   }));
+
+// Guard: exit BEFORE writing if there's nothing to write
+if (trades.length === 0) {
+  console.error('No time_exit trades found within row coverage — aborting, fixture not written.');
+  process.exit(1);
+}
+
 const rows = Object.fromEntries(picked.map((s) => [s, rowsBySymbol[s]]));
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, JSON.stringify({ trades, rowsBySymbol: rows }, null, 0));
 console.log(`wrote ${OUT}: ${trades.length} trades, ${picked.length} symbols (${picked.join(',')})`);
-if (trades.length === 0) {
-  process.exit(1);
-}

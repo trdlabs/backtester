@@ -91,13 +91,46 @@ export async function replayPnlPct(
     );
   }
 
-  const byOpen = new Map(trades.map((t) => [t.openedAtMs, t]));
+  // Match by entryTs AND side to guard against collisions (Fix 3)
+  const paperByKey = new Map(trades.map((t) => [`${t.openedAtMs}:${t.side}`, t]));
+
   return out.baseline.trades.map((bt) => {
-    const paper = byOpen.get(bt.entryTs);
+    // Determine side from the backtester trade (prefer bt.side, fall back to paper match by ts)
+    const btSide: 'long' | 'short' | undefined =
+      'side' in bt && (bt as any).side ? (bt as any).side : undefined;
+
+    // Try exact key match first (entryTs + side from bt), then fall back to entryTs-only for single-side symbols
+    let paper: PaperTrade | undefined;
+    if (btSide) {
+      paper = paperByKey.get(`${bt.entryTs}:${btSide}`);
+    }
+    if (!paper) {
+      // Fall back: find by entryTs alone — safe when there's only one trade at this ts
+      const candidates = trades.filter((t) => t.openedAtMs === bt.entryTs);
+      if (candidates.length === 1) {
+        paper = candidates[0];
+      } else if (candidates.length > 1) {
+        throw new Error(
+          `replayPnlPct: multiple paper trades at entryTs=${bt.entryTs} for ${symbol} and no side on bt — cannot match unambiguously`,
+        );
+      }
+    }
+    if (!paper) {
+      throw new Error(
+        `replayPnlPct: no paper trade matched bt entryTs=${bt.entryTs} side=${btSide ?? 'unknown'} for ${symbol}`,
+      );
+    }
+
+    // Fix 2: side-aware pnlPct using the matched paper trade's side
+    const backtestPnlPct =
+      paper.side === 'short'
+        ? ((bt.entryFillPrice - bt.exitFillPrice) / bt.entryFillPrice) * 100
+        : ((bt.exitFillPrice - bt.entryFillPrice) / bt.entryFillPrice) * 100;
+
     return {
-      tradeId: paper?.tradeId ?? `bt-${bt.entryTs}`,
-      backtestPnlPct: ((bt.exitFillPrice - bt.entryFillPrice) / bt.entryFillPrice) * 100,
-      paperPnlPct: paper ? Number(paper.pnlPct) : NaN,
+      tradeId: paper.tradeId,
+      backtestPnlPct,
+      paperPnlPct: Number(paper.pnlPct),
     };
   });
 }
