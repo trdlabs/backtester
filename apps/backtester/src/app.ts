@@ -107,7 +107,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     overlaySandbox: config.overlaySandbox,
   };
 
-  const drain = (): Promise<number> => drainQueue(workerDeps);
+  const drain = (): Promise<number> => drainQueue(workerDeps, config.workerConcurrency);
   const reap = (): Promise<unknown> => reapAndPublish(completionDeps);
   const flushOutbox = (): Promise<number> => deliverOutbox(completionDeps);
 

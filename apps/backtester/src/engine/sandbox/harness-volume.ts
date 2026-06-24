@@ -2,7 +2,7 @@
 // mount it by volume name (DooD-safe). Copy once, keyed by a content hash of the harness tree, so the
 // mount is immutable and multiple backtester versions can coexist on one shared volume.
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
 } from 'node:fs';
@@ -50,7 +50,9 @@ export function ensureHarnessInVolume(harnessDir: string, mountpoint: string): s
 
   const dest = join(harnessRoot, hashDir(harnessDir));
   if (!existsSync(dest)) {
-    const tmp = `${dest}.tmp-${process.pid}`;
+    // Unique per call: two concurrent first-time materializations in the same process (same pid)
+    // must not share a temp dir, or their parallel copies would corrupt each other.
+    const tmp = `${dest}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
     rmSync(tmp, { recursive: true, force: true });
     cpSync(harnessDir, tmp, { recursive: true });
     makeWorldReadableSync(tmp);

@@ -4,7 +4,8 @@
 // keeps only the manifest (descriptors + content-hashes). Slice 1 ships a local-filesystem store and
 // an in-memory store (tests); an object-store adapter slots in behind the same interface later.
 
-import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { mkdir, readFile, writeFile, access, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type {
   ArtifactDescriptor,
@@ -37,7 +38,12 @@ export class FileArtifactStore implements ArtifactStore {
   async write(payload: unknown): Promise<ContentHash> {
     const ref = contentRef(payload);
     await mkdir(this.baseDir, { recursive: true });
-    await writeFile(this.pathFor(ref), canonicalJson(payload), 'utf8');
+    const dest = this.pathFor(ref);
+    // Atomic publish: write a unique temp file then rename, so concurrent writers of the same
+    // content-addressed path can never expose a truncated/torn read.
+    const tmp = `${dest}.tmp-${randomBytes(8).toString('hex')}`;
+    await writeFile(tmp, canonicalJson(payload), 'utf8');
+    await rename(tmp, dest);
     return ref;
   }
 

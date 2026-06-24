@@ -36,6 +36,7 @@ import type { OverlaySandboxSettings } from '../config';
 import { publishCompletion, type CompletionDeps } from './completion';
 import type { JobRow, JobStore } from './job-store';
 import { overlayTapeCache, momentumTapeCache, tapeCacheKey } from '../data/tape-cache.js';
+import { runBoundedPool } from './pool.js';
 
 export { RunnerError };
 
@@ -297,9 +298,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
   return finished;
 }
 
-/** Drain every currently-queued job. Returns the number processed. */
-export async function drainQueue(deps: WorkerDeps): Promise<number> {
-  let processed = 0;
-  while ((await processNextQueued(deps)) !== undefined) processed += 1;
-  return processed;
+/** Drain queued jobs with up to `concurrency` runs in flight (default 1 = serial). Returns count processed. */
+export async function drainQueue(deps: WorkerDeps, concurrency = 1): Promise<number> {
+  return runBoundedPool(concurrency, async () => (await processNextQueued(deps)) !== undefined);
 }
