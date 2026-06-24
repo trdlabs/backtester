@@ -5,12 +5,11 @@
 // вызов инжектирует свежий read-only snapshot (state не пересекает границу). Любое нарушение →
 // fail-closed: контейнер убивается, последующие вызовы немедленно возвращают пустой результат + код.
 
-import { closeSync } from 'node:fs';
 import type { StrategyContext } from '@trading/research-contracts/research';
 import type { ModuleBundle } from './bundle.js';
 import type { SandboxPolicy } from '../sandbox-policy.js';
 import { DockerDriver, type SpawnedContainer, sessionContainerName } from './docker-driver.js';
-import { SyncIpcChannel } from './ipc.js';
+import { AsyncIpcChannel } from './async-ipc-channel.js';
 import { serializeContext, plainBar } from './context-serializer.js';
 import type { SandboxValidationCode } from './errors.js';
 import { toMountSource, type MountConfig } from './mounts.js';
@@ -51,7 +50,7 @@ export interface SessionConfig {
 /** Сессия sandbox-исполнения одного модуля на одном символе. */
 export class SandboxSession {
   private container?: SpawnedContainer;
-  private channel?: SyncIpcChannel;
+  private channel?: AsyncIpcChannel;
   private seq = 0;
   private barIndex = -1;
   private lastBarTs: number | undefined;
@@ -81,7 +80,7 @@ export class SandboxSession {
   }
 
   /** Открыть контейнер и проинициализировать harness (загрузка bundle + инстанцирование). */
-  open(): HookResult {
+  async open(): Promise<HookResult> {
     const { manifest, descriptor, bundleDir } = this.bundle;
     const name = sessionContainerName(
       this.cfg.runId,
@@ -101,10 +100,10 @@ export class SandboxSession {
     } catch (e) {
       return this.fail({ code: 'sandbox_crashed', detail: `docker spawn failed: ${(e as Error).message}` });
     }
-    this.channel = new SyncIpcChannel(
-      this.container.stdinFd,
-      this.container.stdoutFd,
-      this.container.stderrFd,
+    this.channel = new AsyncIpcChannel(
+      this.container.child.stdin,
+      this.container.child.stdout,
+      this.container.child.stderr,
       this.policy.limits,
     );
 
@@ -121,7 +120,7 @@ export class SandboxSession {
     });
     // Старт контейнера + загрузка bundle: startup-grace (не compute-квота). Compute-бюджет сессии
     // (wallTimeMsPerSession) стартует ПОСЛЕ успешного init.
-    const outcome = this.channel.receive(Date.now() + CONTAINER_STARTUP_GRACE_MS);
+    const outcome = await this.channel.receive(Date.now() + CONTAINER_STARTUP_GRACE_MS);
     if (outcome.kind === 'ok') {
       this.sessionDeadlineEpoch = Date.now() + this.policy.limits.wallTimeMsPerSession;
       return { ok: true, decisions: [] };
@@ -130,12 +129,12 @@ export class SandboxSession {
   }
 
   /** Вызвать lifecycle-хук модуля внутри сессии; вернуть сырые decisions (ревалидация — в executor). */
-  callHook(hook: string, ctx: StrategyContext): HookResult {
+  async callHook(hook: string, ctx: StrategyContext): Promise<HookResult> {
     if (this.failed) {
       return { ok: false, decisions: [], error: this.lastError };
     }
     if (this.channel === undefined) {
-      const opened = this.open();
+      const opened = await this.open();
       if (!opened.ok) return opened;
     }
     const channel = this.channel;
@@ -168,7 +167,7 @@ export class SandboxSession {
       ...(newLiq !== undefined ? { newLiq } : {}),
     });
 
-    const outcome = channel.receive(this.callDeadline());
+    const outcome = await channel.receive(this.callDeadline());
     if (outcome.kind === 'ok') return { ok: true, decisions: outcome.decisions };
     return this.fail(this.mapFailure(outcome, hook, 'sandbox_crashed'));
   }
@@ -179,10 +178,13 @@ export class SandboxSession {
     if (c === undefined) return;
     this.container = undefined;
     this.channel = undefined;
+    // Close stdin THROUGH the stream (not closeSync on a raw fd): the AsyncIpcChannel holds a
+    // live Writable over child.stdin, so closing the bare fd underneath it left a dangling
+    // socket on a reused fd → EBADF cross-talk into the next session's container.
     try {
-      closeSync(c.stdinFd);
+      c.child.stdin.destroy();
     } catch {
-      /* already closed */
+      /* already torn down */
     }
     this.driver.kill(c.name);
     this.driver.remove(c.name);
@@ -194,7 +196,7 @@ export class SandboxSession {
 
   /** Преобразовать неуспешный receive в SessionError со стабильным кодом. */
   private mapFailure(
-    outcome: Exclude<ReturnType<SyncIpcChannel['receive']>, { kind: 'ok' }>,
+    outcome: Exclude<Awaited<ReturnType<AsyncIpcChannel['receive']>>, { kind: 'ok' }>,
     hook: string,
     eofCode: SandboxValidationCode,
   ): SessionError {

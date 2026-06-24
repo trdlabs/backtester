@@ -16,9 +16,9 @@ export interface OverlayRunDeps {
  * (and its 017 backtest-run-request validation, additionalProperties:false) — `engine` is not a 017
  * field and must never reach the engine or the hashed RunOutcome (platform parity).
  */
-export function runOverlayBacktest(request: BacktestRunRequest, deps: OverlayRunDeps): RunOutcome {
+export async function runOverlayBacktest(request: BacktestRunRequest, deps: OverlayRunDeps): Promise<RunOutcome> {
   const { engine: _engine, ...engineRequest } = request;
-  return runBacktest(engineRequest, {
+  return await runBacktest(engineRequest, {
     registry: deps.registry,
     marketTape: deps.marketTape,
     ...(deps.router ? { router: deps.router } : {}),

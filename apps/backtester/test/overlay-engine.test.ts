@@ -86,7 +86,7 @@ describe('lifted 017 validation runtime', () => {
 describe('runOverlayBacktest — trusted overlay run path (Slice 6a)', () => {
   it('runs baseline (no overlay): completed, no variant/comparison', async () => {
     const req = loadRequest('baseline.json');
-    const out = runOverlayBacktest(req, await overlayDeps(req));
+    const out = await runOverlayBacktest(req, await overlayDeps(req));
     expect(out.status).toBe('completed');
     if (out.status === 'completed') {
       expect(out.variant).toBeNull();
@@ -100,7 +100,7 @@ describe('runOverlayBacktest — trusted overlay run path (Slice 6a)', () => {
     // comparison are explicitly null (not undefined), and whose headline result is the baseline.
     const req = loadRequest('baseline.json');
     expect(req.overlayRefs ?? []).toHaveLength(0);
-    const out = runOverlayBacktest(req, await overlayDeps(req));
+    const out = await runOverlayBacktest(req, await overlayDeps(req));
     expect(out.status).toBe('completed');
     if (out.status === 'completed') {
       expect(out.variant).toBeNull();
@@ -111,7 +111,7 @@ describe('runOverlayBacktest — trusted overlay run path (Slice 6a)', () => {
 
   it('runs overlay-variant: completed with baseline + variant + comparison; overlay early-exit', async () => {
     const req = loadRequest('variant.json');
-    const out = runOverlayBacktest(req, await overlayDeps(req));
+    const out = await runOverlayBacktest(req, await overlayDeps(req));
     expect(out.status).toBe('completed');
     if (out.status === 'completed') {
       expect(out.variant).not.toBeNull();
@@ -124,7 +124,7 @@ describe('runOverlayBacktest — trusted overlay run path (Slice 6a)', () => {
 
   it('strips engine before the engine (engine:overlay request still runs)', async () => {
     const req = { ...loadRequest('variant.json'), engine: 'overlay' as const };
-    const out = runOverlayBacktest(req, await overlayDeps(req));
+    const out = await runOverlayBacktest(req, await overlayDeps(req));
     // would be 'rejected' (additionalProperties:false) if `engine` leaked to 017 validation
     expect(out.status).toBe('completed');
   });

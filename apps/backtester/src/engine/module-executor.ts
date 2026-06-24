@@ -17,19 +17,19 @@ export interface ModuleExecutor {
     module: StrategyModule,
     hook: LifecycleHook,
     ctx: StrategyContext,
-  ): readonly StrategyDecision[];
+  ): Promise<readonly StrategyDecision[]>;
   /** Вызвать overlay `apply`; `[]` если вернул `null`. */
   executeOverlayApply(
     overlay: HypothesisOverlayModule,
     ctx: StrategyContext,
-  ): readonly OverlayDecision[];
+  ): Promise<readonly OverlayDecision[]>;
   /**
    * Session-lifecycle (НОВОЕ, опционально; 019). trusted: делегирует `module.init?`; sandbox: открыть
    * сессию + init-хук. Поведение 018 неизменно (InProcess делегирует ⇒ `check:018` зелёный).
    */
-  initStrategy?(module: StrategyModule, ctx: StrategyContext): void;
+  initStrategy?(module: StrategyModule, ctx: StrategyContext): Promise<void>;
   /** Session-lifecycle (НОВОЕ, опционально; 019). trusted: `module.dispose?`; sandbox: dispose-хук. */
-  disposeStrategy?(module: StrategyModule, ctx: StrategyContext): void;
+  disposeStrategy?(module: StrategyModule, ctx: StrategyContext): Promise<void>;
   /** Teardown исполнителя (НОВОЕ, опционально; 019). trusted: no-op; sandbox: `docker rm -f`. */
   close?(): void;
 }
@@ -53,11 +53,11 @@ function normalizeOverlay(
  * `init`/`dispose` (void) вызываются runner'ом напрямую — они не producing-decision хуки.
  */
 export class InProcessTrustedModuleExecutor implements ModuleExecutor {
-  executeStrategyHook(
+  async executeStrategyHook(
     module: StrategyModule,
     hook: LifecycleHook,
     ctx: StrategyContext,
-  ): readonly StrategyDecision[] {
+  ): Promise<readonly StrategyDecision[]> {
     const fn =
       hook === 'onBarClose'
         ? module.onBarClose
@@ -70,20 +70,20 @@ export class InProcessTrustedModuleExecutor implements ModuleExecutor {
     return normalizeStrategy(fn(ctx));
   }
 
-  executeOverlayApply(
+  async executeOverlayApply(
     overlay: HypothesisOverlayModule,
     ctx: StrategyContext,
-  ): readonly OverlayDecision[] {
+  ): Promise<readonly OverlayDecision[]> {
     return normalizeOverlay(overlay.apply(ctx));
   }
 
   /** trusted: прямой вызов `module.init?` (поведение 018 неизменно). */
-  initStrategy(module: StrategyModule, ctx: StrategyContext): void {
+  async initStrategy(module: StrategyModule, ctx: StrategyContext): Promise<void> {
     module.init?.(ctx);
   }
 
   /** trusted: прямой вызов `module.dispose?` (поведение 018 неизменно). */
-  disposeStrategy(module: StrategyModule, ctx: StrategyContext): void {
+  async disposeStrategy(module: StrategyModule, ctx: StrategyContext): Promise<void> {
     module.dispose?.(ctx);
   }
 

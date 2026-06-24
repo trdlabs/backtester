@@ -31,7 +31,7 @@ describe('runOverlayBacktest router seam', () => {
   it('with NO router is byte-identical to 6a (variant golden)', async () => {
     const registry = buildTrustedRegistry();
     const marketTape = await buildOverlayDataset(new FixtureDataPort(FIXTURES_DIR), selFrom(variantReq));
-    const out = runOverlayBacktest(variantReq, { registry, marketTape }); // NO router → trusted path
+    const out = await runOverlayBacktest(variantReq, { registry, marketTape }); // NO router → trusted path
     expect(contentRef(out)).toBe(GV);
   });
 
@@ -48,7 +48,7 @@ describe('runOverlayBacktest router seam', () => {
       forOverlay: (o) => base.forOverlay(o),
       closeAll: () => base.closeAll(),
     };
-    const out = runOverlayBacktest(variantReq, { registry, marketTape, router: spy });
+    const out = await runOverlayBacktest(variantReq, { registry, marketTape, router: spy });
     // Proves the runner reached into the provided router rather than building its own trusted default.
     expect(forStrategyCalled).toBe(true);
     // Routing through an equivalent trusted router is still byte-identical to 6a.

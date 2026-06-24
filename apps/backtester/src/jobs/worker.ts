@@ -177,7 +177,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         sandboxRouter = overlayRouterFor(deps);
       }
 
-      const outcome = runOverlayBacktest(engineRequest, {
+      const outcome = await runOverlayBacktest(engineRequest, {
         registry,
         marketTape,
         ...(sandboxRouter ? { router: sandboxRouter } : {}),

@@ -5,20 +5,17 @@
 // read-only rootfs, tmpfs, memory/cpus/pids, cap-drop ALL, no-new-privileges, non-root user, env НЕ
 // пробрасывается, bundle/harness только :ro). Имя контейнера — детерминированное (без wall-clock/random).
 //
-// IPC синхронен (018 ModuleExecutor seam синхронен): host читает stdout контейнера через raw-fd
-// (`fs.readSync`), поэтому драйвер отдаёт сырые дескрипторы потоков (см. ipc.ts).
+// IPC асинхронен: AsyncIpcChannel потребляет child.stdin/stdout/stderr напрямую как потоки.
+// Драйвер возвращает живой child-процесс; close() закрывает stdin через сам стрим (child.stdin.destroy()).
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { SandboxPolicy } from '../sandbox-policy.js';
 import type { MountSource } from './mounts.js';
 
-/** Спавненный контейнер: процесс docker-CLI + сырые fd его stdio (для синхронного NDJSON-IPC). */
+/** Спавненный контейнер: имя + живой docker-CLI child-процесс (его стримы потребляет AsyncIpcChannel). */
 export interface SpawnedContainer {
   readonly name: string;
   readonly child: ChildProcessWithoutNullStreams;
-  readonly stdinFd: number;
-  readonly stdoutFd: number;
-  readonly stderrFd: number;
 }
 
 /** Параметры запуска контейнера сессии: имя + источники mount'ов bundle/harness. */
@@ -80,27 +77,15 @@ export function buildDockerRunArgs(policy: SandboxPolicy, opts: DockerRunOptions
   ];
 }
 
-/** Извлечь сырой fd потока (Node v24: через внутренний `_handle.fd`; для синхронного IPC). */
-function rawFd(stream: { readonly fd?: number | null } & Record<string, unknown>, label: string): number {
-  const direct = stream.fd;
-  if (typeof direct === 'number' && direct >= 0) return direct;
-  const handle = (stream as { _handle?: { fd?: number } })._handle;
-  if (handle !== undefined && typeof handle.fd === 'number' && handle.fd >= 0) return handle.fd;
-  throw new Error(`docker-driver: cannot obtain raw fd for ${label}`);
-}
-
 /** Драйвер контейнеров sandbox: spawn + детерминированная очистка через docker-CLI. */
 export class DockerDriver {
-  /** Запустить контейнер сессии; вернуть процесс и сырые fd его stdio. */
+  /** Запустить контейнер сессии; вернуть живой child-процесс (стримы — для AsyncIpcChannel). */
   spawnSession(policy: SandboxPolicy, opts: DockerRunOptions): SpawnedContainer {
     const args = buildDockerRunArgs(policy, opts);
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams;
     return {
       name: opts.name,
       child,
-      stdinFd: rawFd(child.stdin as never, 'stdin'),
-      stdoutFd: rawFd(child.stdout as never, 'stdout'),
-      stderrFd: rawFd(child.stderr as never, 'stderr'),
     };
   }
 

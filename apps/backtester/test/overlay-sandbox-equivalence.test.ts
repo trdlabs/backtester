@@ -103,7 +103,7 @@ describe.skipIf(!DOCKER_AVAILABLE)(
         const marketTape = baselineTape;
 
         // Trusted result (6a in-process path).
-        const trusted = runOverlayBacktest(baselineReq, {
+        const trusted = await runOverlayBacktest(baselineReq, {
           registry: buildTrustedRegistry(),
           marketTape,
         });
@@ -112,7 +112,7 @@ describe.skipIf(!DOCKER_AVAILABLE)(
         const { registry, router } = buildSandboxStrategyBaselineDeps({ spDir: sp.bundleDir });
         let sandboxed;
         try {
-          sandboxed = runOverlayBacktest(baselineReq, { registry, router, marketTape });
+          sandboxed = await runOverlayBacktest(baselineReq, { registry, router, marketTape });
           expect(router.errors()).toEqual([]);
         } finally {
           router.closeAll();
@@ -134,7 +134,7 @@ describe.skipIf(!DOCKER_AVAILABLE)(
         const { registry, router } = buildSandboxOverlayDeps({ eeDir: ee.bundleDir });
         let sandboxed;
         try {
-          sandboxed = runOverlayBacktest(variantReq, { registry, router, marketTape });
+          sandboxed = await runOverlayBacktest(variantReq, { registry, router, marketTape });
           expect(router.errors()).toEqual([]);
         } finally {
           router.closeAll();
@@ -168,7 +168,7 @@ describe.skipIf(!DOCKER_AVAILABLE)(
         const first = buildSandboxOverlayDeps({ eeDir: ee.bundleDir });
         let a;
         try {
-          a = runOverlayBacktest(variantReq, {
+          a = await runOverlayBacktest(variantReq, {
             registry: first.registry,
             router: first.router,
             marketTape,
@@ -181,7 +181,7 @@ describe.skipIf(!DOCKER_AVAILABLE)(
         const second = buildSandboxOverlayDeps({ eeDir: ee.bundleDir });
         let b;
         try {
-          b = runOverlayBacktest(variantReq, {
+          b = await runOverlayBacktest(variantReq, {
             registry: second.registry,
             router: second.router,
             marketTape,

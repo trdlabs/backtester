@@ -67,11 +67,11 @@ describe('sandbox apply observability (fail-close is not silent)', () => {
     vi.restoreAllMocks();
   });
 
-  it('fail-closes to [] AND logs a structured warning when the sandbox cannot start', () => {
+  it('fail-closes to [] AND logs a structured warning when the sandbox cannot start', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const executor = new SandboxModuleExecutor(bundle, DEFAULT_SANDBOX, { driver: new ThrowingDriver() });
 
-    const decisions = executor.executeOverlayApply(overlay, ctx);
+    const decisions = await executor.executeOverlayApply(overlay, ctx);
 
     // Fail-closed: nothing leaks into the host run.
     expect(decisions).toEqual([]);
