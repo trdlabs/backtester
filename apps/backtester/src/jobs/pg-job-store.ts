@@ -43,6 +43,9 @@ interface JobDbRow {
   queue_deadline_ms: string | null;
   run_timeout_ms: string;
   run_deadline_ms: string | null;
+  leased_by: string | null;
+  lease_expires_at: string | null;
+  attempts: string | number;
   accepted_at_ms: string;
   queued_at_ms: string | null;
   started_at_ms: string | null;
@@ -76,6 +79,9 @@ function rowToJob(r: JobDbRow): JobRow {
     queueDeadlineMs: num(r.queue_deadline_ms),
     runTimeoutMs: Number(r.run_timeout_ms),
     runDeadlineMs: num(r.run_deadline_ms),
+    leasedBy: str(r.leased_by),
+    leaseExpiresAt: num(r.lease_expires_at),
+    attempts: Number(r.attempts ?? 0),
     acceptedAtMs: Number(r.accepted_at_ms),
     queuedAtMs: num(r.queued_at_ms),
     startedAtMs: num(r.started_at_ms),

@@ -14,7 +14,7 @@ export const TERMINAL: readonly RunStatus[] = [
 const ALLOWED_TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {
   accepted: ['queued', 'canceled'],
   queued: ['running', 'canceled', 'expired'],
-  running: ['completed', 'failed', 'canceled', 'timed_out'],
+  running: ['completed', 'failed', 'canceled', 'timed_out', 'queued'],
   completed: [],
   failed: [],
   canceled: [],

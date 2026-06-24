@@ -32,6 +32,12 @@ export interface JobRow {
   queueDeadlineMs?: number;
   runTimeoutMs: number;
   runDeadlineMs?: number;
+  /** Worker that currently holds this job (multi-process lease); absent when unclaimed. */
+  leasedBy?: string;
+  /** Epoch ms after which the lease is stale and the job may be requeued. */
+  leaseExpiresAt?: number;
+  /** Number of times this job has been claimed (for bounded requeue / poison detection). */
+  attempts: number;
   acceptedAtMs: number;
   queuedAtMs?: number;
   startedAtMs?: number;
@@ -128,6 +134,7 @@ export class InMemoryJobStore implements JobStore {
     const row: JobRow = {
       ...job,
       status: 'accepted',
+      attempts: 0,
       timeline: [{ status: 'accepted', atMs: job.acceptedAtMs }],
     };
     this.jobs.set(row.runId, row);
