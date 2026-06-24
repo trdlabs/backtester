@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@trading-backtester/sdk": "workspace:*",
-    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.5.0/trading-platform-sdk-0.5.0.tgz",
+    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.7.1/trading-platform-sdk-0.7.1.tgz",
     "@trading/research-contracts": "workspace:*",
     "ajv": "^8.20.0",
     "decimal.js": "^10.4.3",
