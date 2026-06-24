@@ -22,12 +22,17 @@ export interface NextBarOpenFillModel {
   readonly kind: 'next_bar_open';
 }
 
+/** Fill at the close of the decision bar (same bar as onBarClose). */
+export interface SameBarCloseFillModel {
+  readonly kind: 'same_bar_close';
+}
+
 /**
  * Закрытый каталог поддержанных `fillModel.kind` (024, R6). Пре-флайт `runBacktest` отклоняет любой
  * иной kind кодом `unsupported_fill_model_kind` — без молчаливого fallback (конституция XIV).
  * Не-дефолтные fill-модели НЕ реализуются (FR-031); каталог пополняется значением при их появлении.
  */
-export const SUPPORTED_FILL_MODEL_KINDS = ['next_bar_open'] as const;
+export const SUPPORTED_FILL_MODEL_KINDS = ['next_bar_open', 'same_bar_close'] as const;
 
 /**
  * Форма `dcaLimits`/`scaleInLimits` (017 типизирует слоты как `object`; R4). Раздельные поля одной

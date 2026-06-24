@@ -38,6 +38,7 @@ function bpsOf(model: object): number {
 export class ExecutionSimulator {
   private readonly slippageBps: number;
   private readonly feeBps: number;
+  private readonly fillKind: string;
 
   constructor(private readonly profile: ExecutionProfile) {
     // 024 (US4/R6): защитная сетка — `fillModel.kind` ∈ каталог. Недостижимо после пре-флайт-гейта
@@ -46,8 +47,14 @@ export class ExecutionSimulator {
     if (typeof fillKind !== 'string' || !(SUPPORTED_FILL_MODEL_KINDS as readonly string[]).includes(fillKind)) {
       throw new Error(`ExecutionSimulator: unsupported fillModel.kind: ${String(fillKind)}`);
     }
+    this.fillKind = fillKind;
     this.slippageBps = bpsOf(profile.slippageModel);
     this.feeBps = bpsOf(profile.feeModel);
+  }
+
+  /** True when fills settle at the decision bar's close (vs deferring to next bar open). */
+  settlesSameBar(): boolean {
+    return this.fillKind === 'same_bar_close';
   }
 
   /** Цена fill с учётом slippage: buy дороже, sell дешевле (неблагоприятно к стороне). */

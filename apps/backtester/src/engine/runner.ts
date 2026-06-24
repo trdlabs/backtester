@@ -176,20 +176,21 @@ function splitOverlays(overlays: readonly ResolvedOverlay[]): OverlaySplit {
   return { entry, post };
 }
 
-/** Исполнить pending-ордер от `t−1` по `open(t)` (next-bar-open settle). */
+/** Исполнить pending-ордер по `fillBase` (next-bar-open → `bar.open`; same_bar_close → `bar.close`). */
 function settlePending(
   bar: Readonly<Bar>,
   barIndex: number,
   portfolio: Portfolio,
   exec: ExecutionSimulator,
   acc: RunAccumulators,
+  fillBase: number,
 ): void {
   const pending = portfolio.pending;
   if (pending === null) return;
   const order = acc.orders.find((o) => o.id === pending.id);
 
   if (pending.intent === 'open') {
-    const calc = exec.computeOpenFill(pending.side, bar.open, pending.sizingPct ?? 1, portfolio.cash);
+    const calc = exec.computeOpenFill(pending.side, fillBase, pending.sizingPct ?? 1, portfolio.cash);
     portfolio.settleOpen({ fillPrice: calc.fillPrice, fee: calc.fee, size: calc.size, barIndex, ts: bar.ts });
     acc.fills.push({
       orderId: pending.id,
@@ -203,7 +204,7 @@ function settlePending(
     });
   } else if (pending.intent === 'add') {
     // 024 (US1): доливка исполняется по open(t+1) механикой open-fill (R4/§5); вторая позиция не создаётся.
-    const calc = exec.computeOpenFill(pending.side, bar.open, pending.sizingPct ?? 1, portfolio.cash);
+    const calc = exec.computeOpenFill(pending.side, fillBase, pending.sizingPct ?? 1, portfolio.cash);
     portfolio.settleAdd(
       { fillPrice: calc.fillPrice, fee: calc.fee, size: calc.size, barIndex, ts: bar.ts },
       pending.mode ?? 'dca',
@@ -225,7 +226,7 @@ function settlePending(
     const fraction = pending.closeFraction;
     const isPartial = fraction !== undefined;
     const closedSize = portfolio.position === null ? 0 : portfolio.closedSizeAt(fraction ?? 1);
-    const calc = exec.computeCloseFill(pending.side, bar.open, closedSize);
+    const calc = exec.computeCloseFill(pending.side, fillBase, closedSize);
     const reason = pending.closeReason ?? 'strategy_exit';
     const trade = isPartial
       ? portfolio.settlePartialClose({ fillPrice: calc.fillPrice, fee: calc.fee, barIndex, ts: bar.ts }, fraction, reason)
@@ -320,7 +321,7 @@ async function runSymbol(
 
     // (1) Settle pending от t−1 по open(t).
     if (portfolio.pending !== null && portfolio.pending.decisionBarIndex === t - 1) {
-      settlePending(bar, t, portfolio, exec, acc);
+      settlePending(bar, t, portfolio, exec, acc, bar.open);
     }
 
     // (2) Protection-check intrabar t (R7): при хите закрывает остаток и пре-эмптит хуки того же бара.
@@ -442,6 +443,11 @@ async function runSymbol(
         finalDecision: posFinal,
         riskDecision: posRisk,
       });
+    }
+
+    // same_bar_close: settle a pending placed THIS bar at close(t) — no cross-bar deferral, no look-ahead.
+    if (exec.settlesSameBar() && portfolio.pending !== null && portfolio.pending.decisionBarIndex === t) {
+      settlePending(bar, t, portfolio, exec, acc, bar.close);
     }
 
     // (5) EquityPoint — mark-to-market по close бара.
