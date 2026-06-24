@@ -47,7 +47,6 @@ describe('SDK packed package policy', () => {
         'package/dist/builder/index.js', 'package/dist/builder/index.d.ts',
         'package/dist/client/index.js', 'package/dist/client/index.d.ts',
         'package/dist/artifacts/index.js', 'package/dist/artifacts/index.d.ts',
-        'package/schemas/017/module-manifest.schema.json',
       ],
     })).toEqual([]);
   });

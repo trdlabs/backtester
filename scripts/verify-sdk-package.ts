@@ -116,11 +116,8 @@ export function checkPackedPackage(input: CheckPackedPackageInput): string[] {
         errors.push(`missing required file ${required}`);
       }
     }
-    // At least one schema asset
-    const hasSchema = files.some(f => f.startsWith('package/schemas/'));
-    if (!hasSchema) {
-      errors.push('missing required file package/schemas/<asset>');
-    }
+    // 042 FU2: 017-схемы больше не шипятся в backtester SDK — приходят из kernel
+    // @trading-platform/sdk (single source). Требование package/schemas/<asset> снято.
 
     // 3c. Dist entrypoints: check each required export key has import+types present in files
     const exportsObj = packageJson.exports;

@@ -31,7 +31,7 @@ describe('@trading-backtester/sdk package shape', () => {
       './client',
       './contracts',
     ]);
-    expect(pkg.files.sort()).toEqual(['LICENSE', 'README.md', 'dist', 'schemas']);
+    expect(pkg.files.sort()).toEqual(['LICENSE', 'README.md', 'dist']);
   });
 
   it('has no workspace/sibling/private dependency in any group (standalone manifest)', () => {

@@ -6,7 +6,6 @@
   "license": "Apache-2.0",
   "files": [
     "dist",
-    "schemas",
     "README.md",
     "LICENSE"
   ],
@@ -38,7 +37,7 @@
     "prepack": "pnpm build"
   },
   "dependencies": {
-    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.7.1/trading-platform-sdk-0.7.1.tgz",
+    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.7.2/trading-platform-sdk-0.7.2.tgz",
     "decimal.js": "^10.4.3"
   },
   "devDependencies": {
