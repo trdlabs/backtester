@@ -30,14 +30,24 @@ for (const factory of STORE_FACTORIES) {
         // More claimers than jobs, all firing concurrently.
         const now = 1_700_000_100_000;
         const claims = await Promise.all(
-          Array.from({ length: n + 4 }, () => store.claimNextQueued(now)),
+          Array.from({ length: n + 4 }, (_, i) =>
+            store.claimNextQueued(now, { workerId: `w${i}`, ttlMs: 30_000 }),
+          ),
         );
-        const claimedIds = claims.filter((j) => j !== undefined).map((j) => j!.runId);
+        const claimed = claims.filter((j) => j !== undefined) as NonNullable<(typeof claims)[number]>[];
+        const claimedIds = claimed.map((j) => j.runId);
 
         expect(new Set(claimedIds).size).toBe(claimedIds.length); // no job claimed twice
         expect(claimedIds.length).toBe(n); // each job claimed exactly once
         expect((await store.list({ status: 'queued' })).length).toBe(0);
         expect((await store.list({ status: 'running' })).length).toBe(n);
+
+        // Lease assertions: every claimed job has a non-null leasedBy and attempts === 1.
+        for (const job of claimed) {
+          const row = await store.get(job.runId);
+          expect(row?.leasedBy).toBeTruthy();
+          expect(row?.attempts).toBe(1);
+        }
       } finally {
         await teardown();
       }

@@ -176,6 +176,7 @@ export class PgJobStore implements JobStore {
     from: RunStatus,
     to: RunStatus,
     patch: JobRowPatch,
+    expectLeasedBy?: string,
   ): Promise<boolean> {
     if (!canTransition(from, to)) return false;
     const entry: RunTimelineEntry[] = [{ status: to, atMs: patch.atMs }];
@@ -193,7 +194,8 @@ export class PgJobStore implements JobStore {
          dataset_fingerprint    = COALESCE($12, dataset_fingerprint),
          terminal_code          = COALESCE($13, terminal_code),
          timeline_json          = timeline_json || $14::jsonb
-       WHERE run_id = $2 AND status = $3`,
+       WHERE run_id = $2 AND status = $3
+         AND ($15::text IS NULL OR leased_by = $15)`,
       [
         to,
         runId,
@@ -209,12 +211,16 @@ export class PgJobStore implements JobStore {
         patch.datasetFingerprint ?? null,
         patch.terminalCode ?? null,
         JSON.stringify(entry),
+        expectLeasedBy ?? null,
       ],
     );
     return r.rowCount === 1;
   }
 
-  async claimNextQueued(nowMs: number): Promise<JobRow | undefined> {
+  async claimNextQueued(
+    nowMs: number,
+    lease?: { workerId: string; ttlMs: number },
+  ): Promise<JobRow | undefined> {
     const entry: RunTimelineEntry[] = [{ status: 'running', atMs: nowMs }];
     const r = await this.pool.query<JobDbRow>(
       `WITH next AS (
@@ -229,12 +235,23 @@ export class PgJobStore implements JobStore {
          started_at_ms = $1::bigint,
          last_activity_ms = $1::bigint,
          run_deadline_ms = $1::bigint + j.run_timeout_ms,
+         leased_by = $3,
+         lease_expires_at = CASE WHEN $3::text IS NULL THEN NULL ELSE $1::bigint + $4::bigint END,
+         attempts = j.attempts + 1,
          timeline_json = j.timeline_json || $2::jsonb
        FROM next WHERE j.run_id = next.run_id
        RETURNING j.*`,
-      [nowMs, JSON.stringify(entry)],
+      [nowMs, JSON.stringify(entry), lease?.workerId ?? null, lease?.ttlMs ?? 0],
     );
     return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
+  }
+
+  async renewLease(workerId: string, untilMs: number): Promise<void> {
+    await this.pool.query(
+      `UPDATE backtest_job SET lease_expires_at = $2::bigint
+       WHERE status = 'running' AND leased_by = $1`,
+      [workerId, untilMs],
+    );
   }
 
   async list(filter?: {

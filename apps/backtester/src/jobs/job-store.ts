@@ -108,8 +108,9 @@ export interface JobEventRow {
 export interface JobStore {
   insertOrGet(job: NewJob): Promise<{ job: JobRow; created: boolean }>;
   get(runId: string): Promise<JobRow | undefined>;
-  transition(runId: string, from: RunStatus, to: RunStatus, patch: JobRowPatch): Promise<boolean>;
-  claimNextQueued(nowMs: number): Promise<JobRow | undefined>;
+  transition(runId: string, from: RunStatus, to: RunStatus, patch: JobRowPatch, expectLeasedBy?: string): Promise<boolean>;
+  claimNextQueued(nowMs: number, lease?: { workerId: string; ttlMs: number }): Promise<JobRow | undefined>;
+  renewLease(workerId: string, untilMs: number): Promise<void>;
   list(filter?: { status?: RunStatus; correlationId?: string; workflowId?: string }): Promise<JobRow[]>;
   appendEvent(ev: JobEventRow): Promise<void>;
   listEvents(runId: string): Promise<JobEventRow[]>;
@@ -151,9 +152,11 @@ export class InMemoryJobStore implements JobStore {
     from: RunStatus,
     to: RunStatus,
     patch: JobRowPatch,
+    expectLeasedBy?: string,
   ): Promise<boolean> {
     const job = this.jobs.get(runId);
     if (!job || job.status !== from || !canTransition(from, to)) return false;
+    if (expectLeasedBy !== undefined && job.leasedBy !== expectLeasedBy) return false;
     job.status = to;
     if (patch.queuedAtMs !== undefined) job.queuedAtMs = patch.queuedAtMs;
     if (patch.startedAtMs !== undefined) job.startedAtMs = patch.startedAtMs;
@@ -169,7 +172,10 @@ export class InMemoryJobStore implements JobStore {
     return true;
   }
 
-  async claimNextQueued(nowMs: number): Promise<JobRow | undefined> {
+  async claimNextQueued(
+    nowMs: number,
+    lease?: { workerId: string; ttlMs: number },
+  ): Promise<JobRow | undefined> {
     const queued = [...this.jobs.values()]
       .filter((j) => j.status === 'queued')
       .sort((a, b) =>
@@ -184,7 +190,19 @@ export class InMemoryJobStore implements JobStore {
       lastActivityMs: nowMs,
       runDeadlineMs: nowMs + next.runTimeoutMs,
     });
-    return ok ? next : undefined;
+    if (!ok) return undefined;
+    if (lease !== undefined) {
+      next.leasedBy = lease.workerId;
+      next.leaseExpiresAt = nowMs + lease.ttlMs;
+      next.attempts += 1;
+    }
+    return next;
+  }
+
+  async renewLease(workerId: string, untilMs: number): Promise<void> {
+    for (const job of this.jobs.values()) {
+      if (job.status === 'running' && job.leasedBy === workerId) job.leaseExpiresAt = untilMs;
+    }
   }
 
   async list(filter?: {
