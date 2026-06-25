@@ -27,12 +27,22 @@ export interface SameBarCloseFillModel {
   readonly kind: 'same_bar_close';
 }
 
+/** Funding model: per-minute proration of the tape's 8h-equivalent funding rate (035 realism). */
+export interface PerMinuteProrateFundingModel {
+  readonly kind: 'per_minute_prorate';
+  /** Funding interval the tape rate is expressed over (perps: 8h). The per-minute divisor is intervalHours*60. */
+  readonly intervalHours: number;
+}
+
 /**
  * Закрытый каталог поддержанных `fillModel.kind` (024, R6). Пре-флайт `runBacktest` отклоняет любой
  * иной kind кодом `unsupported_fill_model_kind` — без молчаливого fallback (конституция XIV).
  * Не-дефолтные fill-модели НЕ реализуются (FR-031); каталог пополняется значением при их появлении.
  */
 export const SUPPORTED_FILL_MODEL_KINDS = ['next_bar_open', 'same_bar_close'] as const;
+
+/** Closed catalog of supported funding-model kinds (mirror of SUPPORTED_FILL_MODEL_KINDS). */
+export const SUPPORTED_FUNDING_MODEL_KINDS = ['per_minute_prorate'] as const;
 
 /**
  * Форма `dcaLimits`/`scaleInLimits` (017 типизирует слоты как `object`; R4). Раздельные поля одной
@@ -74,6 +84,21 @@ export const DEFAULT_EXEC: ExecutionProfile = {
   fillModel: { kind: 'next_bar_open' } satisfies NextBarOpenFillModel,
   feeModel: { kind: 'fixed_bps', bps: 10 } satisfies FixedBpsModel,
   slippageModel: { kind: 'fixed_bps', bps: 5 } satisfies FixedBpsModel,
+};
+
+/**
+ * `REALISM_EXEC` (035 realism) — honest cost assumptions for analysis. next_bar_open fill, taker-ish fee
+ * (5 bps/side), adverse slippage (5 bps), and per-minute-prorated funding on the 8h-equivalent tape rate.
+ * Opt-in: it carries `fundingModel`, so a run under it accrues funding; the default path (DEFAULT_EXEC,
+ * no fundingModel) stays byte-identical. fee/slippage bps are tunable analysis assumptions.
+ */
+export const REALISM_EXEC: ExecutionProfile = {
+  id: 'realism_exec',
+  version: '1.0.0',
+  fillModel: { kind: 'next_bar_open' } satisfies NextBarOpenFillModel,
+  feeModel: { kind: 'fixed_bps', bps: 5 } satisfies FixedBpsModel,
+  slippageModel: { kind: 'fixed_bps', bps: 5 } satisfies FixedBpsModel,
+  fundingModel: { kind: 'per_minute_prorate', intervalHours: 8 } satisfies PerMinuteProrateFundingModel,
 };
 
 /**

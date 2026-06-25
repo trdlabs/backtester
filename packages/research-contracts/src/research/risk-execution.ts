@@ -33,6 +33,8 @@ export interface ExecutionProfile {
   readonly fillModel: object;
   readonly feeModel: object;
   readonly slippageModel: object;
+  /** 035 (realism) — funding cost model. Optional: absent ⇒ no funding accrual (default path unchanged). */
+  readonly fundingModel?: object;
   readonly latency?: object;
   readonly partialFill?: object;
   readonly bracketPolicy?: object;
