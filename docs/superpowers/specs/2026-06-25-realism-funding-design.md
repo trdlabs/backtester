@@ -63,10 +63,16 @@ Portfolio
   + chargeFunding(cost: Decimal): void   // cost>0 → cash down (outflow); cost<0 → cash up (credit)
   // equityAt(price) formula UNCHANGED (cash + position MTM); funding shows up via cash
 
-runner.ts  (settle-loop, between line 451 same_bar_close-settle and line 454 equity-push)
+runner.ts  (settle-loop, between same_bar_close-settle and the equity-push)
+  // AS BUILT: funding reading comes from the shared `fundingReadingAt(fundingCol, gridTs, bar.ts, t)`
+  // classifier (extracted to market-tape.ts, reused by market-access — single source of grace logic).
+  // present|stale → charge with the reading's rate; missing → charge 0. (Spec "Coverage" honored: stale
+  // within grace IS charged, using the last real snapshot strictly from the past → no look-ahead.)
   if (exec.fundingEnabled() && portfolio.position !== null) {
-    const reading = dataset.fundingAsOf(symbol, t);                       // 030 column, as-of, no look-ahead
-    const cost = computeBarFunding(position, bar.close, reading, exec.fundingModel, barMinutes);
+    const reading = fundingReadingAt(fundingCol, gridTs, bar.ts, t);      // present|stale|missing, no look-ahead
+    const covered = reading.state !== 'missing';
+    const rate = covered ? reading.point.fundingRate : 0;
+    const cost = computeBarFunding({ side, size, mark: bar.close, rate8h: rate, covered, barMinutes: gridMinutes, intervalHours: exec.fundingIntervalHours() }).toNumber();
     portfolio.chargeFunding(cost);                                        // reflected in equityAt(close)
     acc.fundingLedger.push({ barIndex: t, ts: bar.ts, rate, covered, cost });   // append-only, for report/audit
   }
@@ -131,7 +137,7 @@ Concrete, committed expectations so the realism integration test is a true regre
 
 - **Symbol/snapshot:** `BEATUSDT`, fixture `2026-06-18-real-all`.
 - **Trade:** the `time_exit` long — `openedAtMs=1781767380000`, `closedAtMs=1781778240000` (~3.02h hold, ~181 held minutes). Longest BEATUSDT hold → meaningful funding.
-- **Expected:** funding rates negative over the window ⟹ long → **funding credit** ⟹ `funding_drag > 0` (≈ +0.75 bps, order-of-magnitude) ⟹ cash-delta from funding is **positive**. The test pins the sign and order of magnitude; the exact value is captured from the first green run and committed.
+- **Expected:** funding rates negative over the window ⟹ long → **funding credit** ⟹ `funding_drag > 0` ⟹ cash-delta from funding is **positive**. The test pins the sign and order of magnitude. **As built:** the observed credit is ≈ **2.389 bps** of notional; the shipped test pins the band `creditBps ∈ [1.8, 3.0]` (both sides bounded → catches sign inversion, zero-funding, and ~10× drift).
 
 ## Test strategy & build order (TDD, bottom-up; each step red→green before the next)
 
