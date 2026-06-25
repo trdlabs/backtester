@@ -41,7 +41,10 @@ export interface PerMinuteProrateFundingModel {
  */
 export const SUPPORTED_FILL_MODEL_KINDS = ['next_bar_open', 'same_bar_close'] as const;
 
-/** Closed catalog of supported funding-model kinds (mirror of SUPPORTED_FILL_MODEL_KINDS). */
+/**
+ * Закрытый каталог поддержанных `fundingModel.kind` (035, R6). Прогон отклоняет любой иной kind —
+ * без молчаливого fallback (конституция XIV). Каталог пополняется значением при появлении нового вида.
+ */
 export const SUPPORTED_FUNDING_MODEL_KINDS = ['per_minute_prorate'] as const;
 
 /**
@@ -87,10 +90,11 @@ export const DEFAULT_EXEC: ExecutionProfile = {
 };
 
 /**
- * `REALISM_EXEC` (035 realism) — honest cost assumptions for analysis. next_bar_open fill, taker-ish fee
- * (5 bps/side), adverse slippage (5 bps), and per-minute-prorated funding on the 8h-equivalent tape rate.
- * Opt-in: it carries `fundingModel`, so a run under it accrues funding; the default path (DEFAULT_EXEC,
- * no fundingModel) stays byte-identical. fee/slippage bps are tunable analysis assumptions.
+ * `REALISM_EXEC` (035 realism) — реалистичные assumptions стоимости для анализа. fill по `next_bar_open`,
+ * taker-близкая комиссия (5 bps/сторона), adverse slippage (5 bps), поминутное пропорциональное начисление
+ * фандинга по 8h-эквиваленту ленты. Opt-in: наличие `fundingModel` активирует начисление; дефолтный путь
+ * (`DEFAULT_EXEC`, без `fundingModel`) остаётся байт-идентичным. bps комиссии/slippage — настраиваемые
+ * параметры анализа.
  */
 export const REALISM_EXEC: ExecutionProfile = {
   id: 'realism_exec',

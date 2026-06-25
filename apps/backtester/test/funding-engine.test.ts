@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { FundingLedgerEntry } from '../src/engine/runner';
 import {
   DEFAULT_EXEC,
   REALISM_EXEC,
@@ -41,6 +42,10 @@ describe('ExecutionSimulator — funding accessors + guard', () => {
     const bad = { ...REALISM_EXEC, fundingModel: { kind: 'continuous_apr', intervalHours: 8 } };
     expect(() => new ExecutionSimulator(bad)).toThrow(/funding/i);
   });
+
+  it('fundingIntervalHours() throws when funding is not enabled', () => {
+    expect(() => new ExecutionSimulator(DEFAULT_EXEC).fundingIntervalHours()).toThrow();
+  });
 });
 
 describe('Portfolio.chargeFunding', () => {
@@ -57,8 +62,6 @@ describe('Portfolio.chargeFunding', () => {
     expect(p.cash).toBeCloseTo(1001.25, 8);
   });
 });
-
-import type { FundingLedgerEntry } from '../src/engine/runner';
 
 describe('funding ledger wiring', () => {
   it('FundingLedgerEntry shape is exported and structurally usable', () => {

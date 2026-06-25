@@ -39,6 +39,7 @@ import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter } from '.
 import type { SandboxPolicyRegistry } from './sandbox-policy.js';
 import { OverlayComposer } from './overlay.js';
 import { Portfolio } from './portfolio.js';
+import { fundingReadingAt } from './market-tape.js';
 import { SUPPORTED_FILL_MODEL_KINDS } from './profiles.js';
 import { detectProtection } from './protection.js';
 import { type TrustedModuleRegistry } from './registry.js';
@@ -323,6 +324,7 @@ async function runSymbol(
   const { router, risk, exec, composer } = engine;
   const gridMinutes = n > 1 ? (candles[1].ts - candles[0].ts) / 60_000 : 1;
   const fundingCol = exec.fundingEnabled() ? marketTape?.funding(symbol) : undefined;
+  const gridTs = exec.fundingEnabled() ? candles.map((b) => b.ts) : [];
   const module = strategy.module;
   const strategyExec = router.forStrategy(strategy);
 
@@ -469,9 +471,9 @@ async function runSymbol(
     // Correct boundary semantics under next_bar_open: entry bar held full → charged; exit bar held 0 → skipped.
     if (exec.fundingEnabled() && portfolio.position !== null) {
       const pos = portfolio.position;
-      const covered = fundingCol?.covered(bar.ts) ?? false;
-      const snap = covered ? fundingCol?.at(bar.ts) : undefined;
-      const rate = snap !== undefined ? snap.fundingRate : 0;
+      const reading = fundingReadingAt(fundingCol, gridTs, bar.ts, t);
+      const covered = reading.state !== 'missing';
+      const rate = covered && reading.point !== undefined ? reading.point.fundingRate : 0;
       const cost = computeBarFunding({
         side: pos.side,
         size: pos.size,

@@ -18,6 +18,8 @@ import type { CanonicalRow, CanonicalRowV2 } from '@trading/research-contracts/r
 import { SUPPORTED_MARKET_DATA_KINDS } from '@trading/research-contracts/research';
 import {
   type CoverageModel,
+  type FundingPoint,
+  type FundingReading,
   type FundingSnapshot,
   type KindCoverage,
   type LiquidationSnapshot,
@@ -42,6 +44,32 @@ import {
  * coverage-state (kindCoverage) — чтобы они не разъезжались. НЕ keyed на спейсинге change-point'ов.
  */
 export const FUNDING_STALE_GRACE_BARS = 1;
+
+/**
+ * 030 — единственный источник истины для funding-чтения на произвольную минуту грида.
+ * `present` ⟺ минута funding-покрыта; `stale` ⟺ за краем покрытия в пределах grace (отдаётся
+ * последний реальный снимок — bounded live-forward, НЕ carry-forward); `missing` ⟺ нет снимка
+ * `ts ≤ minuteTs` ИЛИ вне grace. Используется market-access (fundingAsOf/fundingWindow) И runner
+ * (end-of-bar accrual), чтобы stale-семантика не разъезжалась.
+ */
+export function fundingReadingAt(
+  fundingCol: MinuteColumn<FundingSnapshot> | undefined,
+  gridTs: readonly number[],
+  minuteTs: number,
+  minuteIdx: number,
+): FundingReading {
+  const snap = fundingCol === undefined ? undefined : fundingCol.at(minuteTs);
+  if (snap === undefined || fundingCol === undefined) return Object.freeze({ state: 'missing' });
+  const point: FundingPoint = Object.freeze({ ts: snap.ts, fundingRate: snap.fundingRate });
+  if (fundingCol.covered(minuteTs)) return Object.freeze({ state: 'present', point });
+  if (minuteIdx >= 0) {
+    for (let k = 1; k <= FUNDING_STALE_GRACE_BARS; k += 1) {
+      const m = gridTs[minuteIdx - k];
+      if (m !== undefined && fundingCol.covered(m)) return Object.freeze({ state: 'stale', point });
+    }
+  }
+  return Object.freeze({ state: 'missing' });
+}
 
 /** Запрещённые маркеры expected-output источника (§8/R8). Любой присутствующий → `non_market_source`. */
 const FORBIDDEN_SOURCE_KEYS = [
