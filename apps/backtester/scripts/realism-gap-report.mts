@@ -67,9 +67,9 @@ async function main(): Promise<void> {
     const rowsForSym = b.rowsBySymbol[trade.symbol];
     const { ledger, size, result } = await runRealismLedger(trade.symbol, rowsForSym, [trade]);
 
-    const fills: any[] = result.evidence.simulatedFills;
+    const fills = result.evidence.simulatedFills as readonly Record<string, any>[];
     const openFill = fills.find((f: any) => f.orderId.endsWith('-open'));
-    const closeFill = fills.find((f: any) => !f.orderId.endsWith('-open') && f.kind !== 'add' && f.kind !== 'protection');
+    const closeFill = fills.find((f: any) => f.orderId.endsWith('-close'));
 
     // Entry/exit close prices from the tape rows (baseline — same_bar_close of next bar after entry ts
     // is what REALISM_EXEC uses with next_bar_open fill, so we use fill prices directly)
@@ -101,7 +101,7 @@ async function main(): Promise<void> {
 
     // Realistic pnlPct: from equity curve (equity_end - equity_start) / INITIAL_EQUITY
     // More precisely: equity at last bar vs initial equity (10_000 INITIAL_EQUITY)
-    const eqCurve: any[] = result.evidence.equityCurve;
+    const eqCurve = result.evidence.equityCurve as readonly Record<string, any>[];
     const equityStart: number = 10_000; // INITIAL_EQUITY from metrics.ts
     const equityEnd: number = eqCurve.length > 0 ? eqCurve[eqCurve.length - 1].equity : equityStart;
     const realisticPnlPct: number = ((equityEnd - equityStart) / equityStart) * 100;

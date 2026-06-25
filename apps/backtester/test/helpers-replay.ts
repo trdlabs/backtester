@@ -1,5 +1,6 @@
 import { runBacktest } from '../src/engine/runner.js';
 import type { FundingLedgerEntry } from '../src/engine/runner.js';
+import type { BacktestRunResult } from '../src/engine/artifacts.js';
 import { marketTapeFromCanonicalRows } from '../src/engine/market-tape.js';
 import { createTrustedRouter } from '../src/engine/module-executor.js';
 import { createModuleRegistry } from '../src/engine/sandbox/routing.js';
@@ -145,7 +146,7 @@ export async function runRealismLedger(
   symbol: string,
   rows: CanonicalRowV2[],
   trades: PaperTrade[],
-): Promise<{ ledger: FundingLedgerEntry[]; size: number; result: any }> {
+): Promise<{ ledger: FundingLedgerEntry[]; size: number; result: BacktestRunResult }> {
   const tape = tapeFromRows(symbol, rows);
   const mod = makeReplayModule(symbol, trades);
   const registry = createModuleRegistry({
