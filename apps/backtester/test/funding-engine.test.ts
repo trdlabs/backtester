@@ -57,3 +57,13 @@ describe('Portfolio.chargeFunding', () => {
     expect(p.cash).toBeCloseTo(1001.25, 8);
   });
 });
+
+import type { FundingLedgerEntry } from '../src/engine/runner';
+
+describe('funding ledger wiring', () => {
+  it('FundingLedgerEntry shape is exported and structurally usable', () => {
+    const e: FundingLedgerEntry = { barIndex: 1, ts: 1781767440000, rate: -0.0002, covered: true, cost: -0.01 };
+    expect(e.covered).toBe(true);
+    expect(e.cost).toBeLessThan(0);
+  });
+});

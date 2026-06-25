@@ -192,6 +192,8 @@ export interface RunEvidence {
    * байт-идентичность выходов 018 сохраняется (SC-001). Заполняется ТОЛЬКО для мульти-source ленты.
    */
   readonly coverage?: CoverageModel;
+  /** 035 (realism) — per-bar funding charges (empty/absent on the default path). */
+  readonly fundingLedger?: readonly { readonly barIndex: number; readonly ts: number; readonly rate: number; readonly covered: boolean; readonly cost: number }[];
 }
 
 /** Наполненная 018-форма результата прогона (§4.9, FR-024). Структурно удовлетворяет 017. */
