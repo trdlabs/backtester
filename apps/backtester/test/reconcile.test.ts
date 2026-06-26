@@ -199,6 +199,13 @@ describe('reconcile — real engine self-test (sub#1 replay, paper convention)',
     const r = reconcileTrades({ paper, backtest, rows: fixture.rowsBySymbol, pnlPctTol: 1e-3 });
 
     expect(r.summary.ambiguous).toBe(0); // hard assertEmpty — corrupt-data sentinel
+    // NOTE: under same_bar_close on a tape built from these same rows, the engine's fill-price pnlPct
+    // is identical to closeToClosePnlPct's c2c — so any engine/paper disagreement classifies as
+    // data_divergent, never engine_divergent. This assertion therefore GUARDS the wiring (a
+    // realizedPnl-based normalizer or a dropped closeReason would flip matched→engine_divergent), it is
+    // NOT proof the engine reproduces paper. Substantive claims rest on `matched + dataDivergent === total`
+    // and the synthetic engine_divergent test. Real engine-divergence detection arrives with the strategy
+    // artifact (its trades will NOT equal c2c).
     expect(r.summary.engineDivergent).toBe(0); // engine reproduces paper where data permits
 
     // Known sub#1 data-divergent trade — snapshot bars ≠ paper engine's live fills
@@ -214,5 +221,27 @@ describe('reconcile — real engine self-test (sub#1 replay, paper convention)',
     expect(matchedSymbols).toEqual(expect.arrayContaining(['BEATUSDT', 'SIRENUSDT']));
 
     expect(r.summary.matched + r.summary.dataDivergent).toBe(r.summary.total);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Unit test: makeReconcileReplayModule carries each trade's OWN closeReason.
+// The real self-test above uses an all-time_exit fixture — this test drives
+// onPositionBar directly (no engine run) to prove the per-trade behavior isn't
+// masked by a constant fallback.
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("makeReconcileReplayModule — carries each trade's own closeReason on exit", () => {
+  it('emits the per-trade closeReason at its closedAtMs (not a constant), idle otherwise', () => {
+    const trades: PaperTrade[] = [
+      { tradeId: 't1', symbol: 'AAA', side: 'long', openedAtMs: 100, closedAtMs: 200, pnlPct: '1', closeReason: 'tp2' },
+      { tradeId: 't2', symbol: 'AAA', side: 'long', openedAtMs: 300, closedAtMs: 400, pnlPct: '2', closeReason: 'hard_stop' },
+    ];
+    const mod = makeReconcileReplayModule('AAA', trades) as unknown as {
+      onPositionBar: (ctx: { bar: { ts: number } }) => { kind: string; target?: string };
+    };
+    expect(mod.onPositionBar({ bar: { ts: 200 } })).toEqual({ kind: 'exit', target: 'tp2' });       // t1's reason
+    expect(mod.onPositionBar({ bar: { ts: 400 } })).toEqual({ kind: 'exit', target: 'hard_stop' }); // t2's reason — DIFFERENT, not constant
+    expect(mod.onPositionBar({ bar: { ts: 250 } })).toEqual({ kind: 'idle' });                       // not a close minute
   });
 });
