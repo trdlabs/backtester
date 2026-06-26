@@ -14,3 +14,5 @@ coverage/
 .worktrees/
 # gortex daemon/CLI local output (e.g. `gortex audit` writes .gortex/badge.svg) — never committed
 .gortex/
+# superpowers subagent-driven-development scratch (briefs, reports, ledger, review diffs) — never committed
+.superpowers/
