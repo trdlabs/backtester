@@ -1,6 +1,6 @@
 {
   "name": "@trading-backtester/sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Standalone authoring, contracts, artifacts and HTTP client SDK for trading-backtester.",
   "type": "module",
   "license": "Apache-2.0",
@@ -32,15 +32,17 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsc -p tsconfig.dts.json && node scripts/run-api-extractor.mjs && rimraf dist-types",
     "test": "vitest run test",
     "prepack": "pnpm build"
   },
   "dependencies": {
-    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.7.2/trading-platform-sdk-0.7.2.tgz",
     "decimal.js": "^10.4.3"
   },
   "devDependencies": {
+    "@microsoft/api-extractor": "^7.58.9",
+    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.7.2/trading-platform-sdk-0.7.2.tgz",
+    "rimraf": "^6.1.3",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

@@ -4,7 +4,7 @@ import type { RegistryDescriptor, OverlayRunPreset, RegisteredModuleRef, Ref } f
 
 describe('registry discovery contract', () => {
   it('bumps the package SDK version but not the API contract version', () => {
-    expect(SDK_VERSION).toBe('0.2.0');
+    expect(SDK_VERSION).toBe('0.2.1');
     expect(API_CONTRACT_VERSION).toBe('017.2');
   });
   it('preset refs are pure Ref (no name/summary leak into the request)', () => {

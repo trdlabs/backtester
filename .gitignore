@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-types/
 # Slice 6b-A — overlay sandbox harness `_engine` is generated from src/engine/indicators/** by
 # `build:sandbox-harness-overlay` (run in pretest + vitest globalSetup). Source of truth is the .ts;
 # the drift-guard test asserts the committed manifest hash matches the source.
