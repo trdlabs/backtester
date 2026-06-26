@@ -1,6 +1,6 @@
 {
   "name": "@trading-backtester/sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Standalone authoring, contracts, artifacts and HTTP client SDK for trading-backtester.",
   "type": "module",
   "license": "Apache-2.0",
@@ -37,10 +37,10 @@
     "prepack": "pnpm build"
   },
   "dependencies": {
-    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.7.2/trading-platform-sdk-0.7.2.tgz",
     "decimal.js": "^10.4.3"
   },
   "devDependencies": {
+    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.7.2/trading-platform-sdk-0.7.2.tgz",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
