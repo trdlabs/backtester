@@ -177,7 +177,7 @@ async function runBacktestTrades(
     );
   }
 
-  return out.baseline.trades.map(engineTradeToNormalized);
+  return out.baseline.trades.map((t) => engineTradeToNormalized({ ...t, symbol }));
 }
 
 describe('reconcile — real engine self-test (sub#1 replay, paper convention)', () => {

@@ -74,7 +74,7 @@ async function runBacktestTrades(
       `reconcile run not completed: ${JSON.stringify('validation' in out ? out.validation : out)}`,
     );
   }
-  return out.baseline.trades.map(engineTradeToNormalized);
+  return out.baseline.trades.map((t) => engineTradeToNormalized({ ...t, symbol }));
 }
 
 function pad(s: string, n: number): string {
