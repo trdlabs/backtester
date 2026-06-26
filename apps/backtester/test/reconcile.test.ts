@@ -73,6 +73,15 @@ describe('reconcileTrades — taxonomy', () => {
     expect(r.rows[0].status).toBe('ambiguous');
     expect(r.summary.ambiguous).toBe(1);
   });
+
+  it('data_divergent (conservative): near-zero paper pnl + missing exit-minute row is NOT engine_divergent', () => {
+    // paper run_terminated-style pnlPct 0; rows have an entry-minute row but NO exit-minute row (gap).
+    const paper = [N({ symbol: 'AAA', side: 'long', entryTs: 1, exitTs: 5, closeReason: 'run_terminated', pnlPct: 0 })];
+    const backtest = [N({ symbol: 'AAA', side: 'long', entryTs: 1, exitTs: 5, closeReason: 'time_exit', pnlPct: 0 })];
+    const rows = { AAA: [{ minute_ts: 1, close: 100 } as unknown as CanonicalRowV2] }; // only the entry minute exists
+    const r = reconcileTrades({ paper, backtest, rows, pnlPctTol: 1e-3 });
+    expect(r.rows[0].status).toBe('data_divergent'); // NOT engine_divergent — exit-minute data is missing
+  });
 });
 
 describe('engineTradeToNormalized — pnlPct from fillPrice, NOT realizedPnl (contract)', () => {

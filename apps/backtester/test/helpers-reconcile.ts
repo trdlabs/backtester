@@ -54,17 +54,27 @@ export function engineTradeToNormalized(t: Trade): NormalizedTrade {
   return { symbol: t.symbol, side: t.side, entryTs: t.entryTs, exitTs: t.exitTs, closeReason: String(t.closeReason), pnlPct };
 }
 
+/** INVARIANT: `rows` must be sorted by `minute_ts` ascending — the linear scan relies on it. */
 function floorRow(rows: readonly CanonicalRowV2[], ts: number): CanonicalRowV2 | undefined {
   let best: CanonicalRowV2 | undefined;
   for (const r of rows) if (r.minute_ts <= ts) best = r; // rows ascending → last ≤ ts is the floor
   return best;
 }
 
-/** Independent price return from rows' closes (side-aware); undefined if a row for either minute is absent. */
+/**
+ * Independent price return from rows' closes (side-aware); undefined if a row for either minute is absent.
+ * Conservative invariant: when entryTs ≠ exitTs but the exit floor row is the SAME minute as the entry
+ * floor row, the exit minute has no distinct row in the dataset (genuine data gap) → returns undefined so
+ * the caller classifies `data_divergent` instead of blaming the engine.
+ * INVARIANT: `rows` must be sorted by `minute_ts` ascending.
+ */
 export function closeToClosePnlPct(rows: readonly CanonicalRowV2[], entryTs: number, exitTs: number, side: Side): number | undefined {
   const e = floorRow(rows, entryTs);
   const x = floorRow(rows, exitTs);
   if (e === undefined || x === undefined) return undefined;
+  // Conservative: if entry ≠ exit but the exit floor resolves to the same minute as the entry floor,
+  // the exit minute is absent from the dataset → treat as missing data, not an engine signal.
+  if (entryTs !== exitTs && e.minute_ts === x.minute_ts) return undefined;
   return side === 'short'
     ? ((e.close - x.close) / e.close) * 100
     : ((x.close - e.close) / e.close) * 100;
