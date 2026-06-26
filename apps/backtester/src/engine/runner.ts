@@ -31,6 +31,7 @@ import type {
 import { type PerBarState, PointInTimeContextBuilder } from './context.js';
 import { type CandleDataset, loadCandleDataset } from './dataset.js';
 import { ExecutionSimulator } from './execution.js';
+import { computeBarFunding } from './funding.js';
 import { computeComparison, computeMetrics, INITIAL_EQUITY } from './metrics.js';
 import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter } from './module-executor.js';
 // Type-only (erased at runtime ⇒ 018 НЕ зависит от 019 в рантайме): форма реестра sandbox-политик
@@ -38,6 +39,7 @@ import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter } from '.
 import type { SandboxPolicyRegistry } from './sandbox-policy.js';
 import { OverlayComposer } from './overlay.js';
 import { Portfolio } from './portfolio.js';
+import { fundingReadingAt } from './market-tape.js';
 import { SUPPORTED_FILL_MODEL_KINDS } from './profiles.js';
 import { detectProtection } from './protection.js';
 import { type TrustedModuleRegistry } from './registry.js';
@@ -119,6 +121,15 @@ interface MutableOrder {
   origin?: 'protection';
 }
 
+/** 035 (realism) — one per-bar funding charge while a position was open (append-only; empty on default path). */
+export interface FundingLedgerEntry {
+  readonly barIndex: number;
+  readonly ts: number;
+  readonly rate: number;
+  readonly covered: boolean;
+  readonly cost: number;
+}
+
 /** Аккумуляторы артефактов одного таргета. */
 interface RunAccumulators {
   readonly decisionRecords: DecisionRecord[];
@@ -127,6 +138,7 @@ interface RunAccumulators {
   readonly riskDecisions: RiskDecision[];
   readonly trades: Trade[];
   readonly equityCurve: EquityPoint[];
+  readonly fundingLedger: FundingLedgerEntry[];
   readonly validationIssues: ValidationIssue[];
 }
 
@@ -305,10 +317,14 @@ async function runSymbol(
   portfolio: Portfolio,
   engine: SimEngine,
   acc: RunAccumulators,
+  marketTape: MarketTapeDataset | undefined,
 ): Promise<void> {
   const n = candles.length;
   if (n === 0) return;
   const { router, risk, exec, composer } = engine;
+  const gridMinutes = n > 1 ? (candles[1].ts - candles[0].ts) / 60_000 : 1;
+  const fundingCol = exec.fundingEnabled() ? marketTape?.funding(symbol) : undefined;
+  const gridTs = exec.fundingEnabled() ? candles.map((b) => b.ts) : [];
   const module = strategy.module;
   const strategyExec = router.forStrategy(strategy);
 
@@ -450,6 +466,27 @@ async function runSymbol(
       settlePending(bar, t, portfolio, exec, acc, bar.close);
     }
 
+    // (4.5) 035 (realism) — end-of-bar funding accrual. Opt-in: only when the profile carries a
+    // fundingModel. End-of-bar placement ⇒ equityAt(close) already includes this bar's funding (no lag).
+    // Correct boundary semantics under next_bar_open: entry bar held full → charged; exit bar held 0 → skipped.
+    if (exec.fundingEnabled() && portfolio.position !== null) {
+      const pos = portfolio.position;
+      const reading = fundingReadingAt(fundingCol, gridTs, bar.ts, t);
+      const covered = reading.state !== 'missing';
+      const rate = covered && reading.point !== undefined ? reading.point.fundingRate : 0;
+      const cost = computeBarFunding({
+        side: pos.side,
+        size: pos.size,
+        mark: bar.close,
+        rate8h: rate,
+        covered,
+        barMinutes: gridMinutes,
+        intervalHours: exec.fundingIntervalHours(),
+      }).toNumber();
+      portfolio.chargeFunding(cost);
+      acc.fundingLedger.push({ barIndex: t, ts: bar.ts, rate, covered, cost });
+    }
+
     // (5) EquityPoint — mark-to-market по close бара.
     acc.equityCurve.push({ barIndex: t, barTs: bar.ts, equity: portfolio.equityAt(bar.close) });
   }
@@ -488,6 +525,7 @@ async function simulateTarget(
     riskDecisions: [],
     trades: [],
     equityCurve: [],
+    fundingLedger: [],
     validationIssues: [],
   };
 
@@ -510,7 +548,7 @@ async function simulateTarget(
       // 023: лента передаётся в builder; ctx.market выставляется по составу ленты (composition-following).
       ...(marketTape !== undefined ? { marketTape } : {}),
     });
-    await runSymbol(symbol, candles, builder, target.strategy, overlays, portfolio, engine, acc);
+    await runSymbol(symbol, candles, builder, target.strategy, overlays, portfolio, engine, acc, marketTape);
     barsProcessed += candles.length;
   }
 
@@ -560,6 +598,8 @@ function assembleResult(
     })),
     // 023: только при наличии (OHLCV-only → undefined → ключ не добавляется → байт-идентичность 018).
     ...(coverage !== undefined ? { coverage } : {}),
+    // 035 (realism): только при наличии зарядов (DEFAULT_EXEC → пусто → ключ не добавляется → байт-идентичность).
+    ...(acc.fundingLedger.length > 0 ? { fundingLedger: acc.fundingLedger } : {}),
   };
 
   return {

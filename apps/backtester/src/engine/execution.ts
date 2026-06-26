@@ -9,7 +9,7 @@ import { Decimal } from 'decimal.js';
 
 import type { ExecutionProfile } from '@trading/research-contracts/research';
 import { quantize } from '../determinism/canonical-json.js';
-import { SUPPORTED_FILL_MODEL_KINDS, type FixedBpsModel } from './profiles.js';
+import { SUPPORTED_FILL_MODEL_KINDS, SUPPORTED_FUNDING_MODEL_KINDS, type FixedBpsModel, type PerMinuteProrateFundingModel } from './profiles.js';
 
 /** Расчёт открывающего fill (next-bar-open): цена, базовый open, slippage bps, fee, размер. */
 export interface OpenFillCalc {
@@ -39,6 +39,7 @@ export class ExecutionSimulator {
   private readonly slippageBps: number;
   private readonly feeBps: number;
   private readonly fillKind: string;
+  private readonly fundingModel: PerMinuteProrateFundingModel | undefined;
 
   constructor(private readonly profile: ExecutionProfile) {
     // 024 (US4/R6): защитная сетка — `fillModel.kind` ∈ каталог. Недостижимо после пре-флайт-гейта
@@ -48,6 +49,17 @@ export class ExecutionSimulator {
       throw new Error(`ExecutionSimulator: unsupported fillModel.kind: ${String(fillKind)}`);
     }
     this.fillKind = fillKind;
+    // 035 (realism): validate optional fundingModel against the closed catalog (fail-fast, no silent fallback).
+    const fm = (profile as { fundingModel?: { kind?: unknown } }).fundingModel;
+    if (fm !== undefined) {
+      const k = fm.kind;
+      if (typeof k !== 'string' || !(SUPPORTED_FUNDING_MODEL_KINDS as readonly string[]).includes(k)) {
+        throw new Error(`ExecutionSimulator: unsupported fundingModel.kind: ${String(k)}`);
+      }
+      this.fundingModel = fm as PerMinuteProrateFundingModel;
+    } else {
+      this.fundingModel = undefined;
+    }
     this.slippageBps = bpsOf(profile.slippageModel);
     this.feeBps = bpsOf(profile.feeModel);
   }
@@ -55,6 +67,17 @@ export class ExecutionSimulator {
   /** True when fills settle at the decision bar's close (vs deferring to next bar open). */
   settlesSameBar(): boolean {
     return this.fillKind === 'same_bar_close';
+  }
+
+  /** True when this profile accrues funding (opt-in: a fundingModel is present). */
+  fundingEnabled(): boolean {
+    return this.fundingModel !== undefined;
+  }
+
+  /** Funding interval (hours) the tape rate is expressed over. Throws if funding is not enabled. */
+  fundingIntervalHours(): number {
+    if (this.fundingModel === undefined) throw new Error('ExecutionSimulator: funding not enabled');
+    return this.fundingModel.intervalHours;
   }
 
   /** Цена fill с учётом slippage: buy дороже, sell дешевле (неблагоприятно к стороне). */

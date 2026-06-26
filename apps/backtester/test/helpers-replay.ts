@@ -1,8 +1,10 @@
 import { runBacktest } from '../src/engine/runner.js';
+import type { FundingLedgerEntry } from '../src/engine/runner.js';
+import type { BacktestRunResult } from '../src/engine/artifacts.js';
 import { marketTapeFromCanonicalRows } from '../src/engine/market-tape.js';
 import { createTrustedRouter } from '../src/engine/module-executor.js';
 import { createModuleRegistry } from '../src/engine/sandbox/routing.js';
-import { DEFAULT_RISK } from '../src/engine/profiles.js';
+import { DEFAULT_RISK, REALISM_EXEC } from '../src/engine/profiles.js';
 import { shortAfterPump } from '../src/engine/examples/short-after-pump.strategy.js';
 import type {
   BacktestRunRequest,
@@ -133,4 +135,54 @@ export async function replayPnlPct(
       paperPnlPct: Number(paper.pnlPct),
     };
   });
+}
+
+/**
+ * Run the recorded trades through the real engine under REALISM_EXEC and surface the funding ledger.
+ * Mirrors replayPnlPct's run wiring but binds the realism execution profile (funding ON). `size` is the
+ * opened position size (single fill) — used by tests to convert per-bar cash funding into a notional fraction.
+ */
+export async function runRealismLedger(
+  symbol: string,
+  rows: CanonicalRowV2[],
+  trades: PaperTrade[],
+): Promise<{ ledger: FundingLedgerEntry[]; size: number; result: BacktestRunResult }> {
+  const tape = tapeFromRows(symbol, rows);
+  const mod = makeReplayModule(symbol, trades);
+  const registry = createModuleRegistry({
+    strategies: [mod],
+    riskProfiles: [DEFAULT_RISK],
+    executionProfiles: [REALISM_EXEC],
+  });
+  const req = {
+    runId: `realism-${symbol}`,
+    mode: 'research',
+    moduleRef: { id: mod.manifest.id, version: '1.0.0' },
+    datasetRef: symbol,
+    symbols: [symbol],
+    timeframe: '1m',
+    period: {
+      from: new Date(rows[0].minute_ts).toISOString(),
+      to: new Date(rows[rows.length - 1].minute_ts + 60_000).toISOString(),
+    },
+    riskProfileRef: { id: 'default_risk', version: '1.0.0' },
+    executionProfileRef: { id: 'realism_exec', version: '1.0.0' },
+    seed: 1,
+    metrics: ['pnl'],
+  } as unknown as BacktestRunRequest;
+
+  const out = await runBacktest(req, { registry, marketTape: tape, router: createTrustedRouter() });
+  if (out.status !== 'completed') {
+    throw new Error(
+      `realism run not completed: ${JSON.stringify('validation' in out ? out.validation : out)}`,
+    );
+  }
+
+  const result = out.baseline;
+  const ledger = (result.evidence.fundingLedger ?? []) as FundingLedgerEntry[];
+  // Open fill: orderId has the form `ord-{symbol}-{barIndex}-open`; it has no `kind` field (only add/close/
+  // protection fills carry `kind`). Use orderId suffix to unambiguously identify the entry fill.
+  const openFill = result.evidence.simulatedFills.find((f: any) => f.orderId.endsWith('-open'));
+  const size = openFill?.size ?? 0;
+  return { ledger, size, result };
 }

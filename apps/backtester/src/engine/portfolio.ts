@@ -114,6 +114,15 @@ export class Portfolio {
     return quantize(new Decimal(this._cash).plus(this.grossUnrealized(mark)).toNumber());
   }
 
+  /**
+   * 035 (realism) — charge funding against cash. `cost > 0` = outflow (paid), `cost < 0` = credit (received).
+   * Funding is a holding cost on the portfolio, NOT an execution price → it never touches per-trade
+   * realizedPnl/feePaid; it surfaces only through cash (and thus `equityAt`). Quantized like other cash flows.
+   */
+  chargeFunding(cost: number): void {
+    this._cash = quantize(new Decimal(this._cash).minus(cost).toNumber());
+  }
+
   /** Поставить pending-ордер (`flat → pending(open)` или `open → pending(close)`). */
   placePending(order: PendingOrder): void {
     if (this._pending !== null) throw new Error('Portfolio.placePending: pending already exists');

@@ -13,7 +13,6 @@
 import type {
   FundingPoint,
   FundingReading,
-  FundingSnapshot,
   LiqPoint,
   MarketTapeDataset,
   OiPoint,
@@ -22,9 +21,9 @@ import type {
   TakerReading,
   TakerSnapshot,
 } from '@trading/research-contracts/research';
-// 030 — funding stale-grace (R6) принадлежит market-tape (там семантика funding-колонки/coverage);
-// market-access переиспользует тот же литерал, чтобы reading-staleness и coverage-state не разъезжались.
-import { FUNDING_STALE_GRACE_BARS } from './market-tape.js';
+// 030 — fundingReadingAt (единственный источник истины для stale-grace семантики) живёт в market-tape;
+// market-access делегирует ей через импорт, чтобы reading-staleness и coverage-state не разъезжались.
+import { fundingReadingAt } from './market-tape.js';
 
 function oiPoint(snap: { readonly ts: number; readonly oiTotalUsd: number } | undefined): OiPoint | undefined {
   return snap === undefined ? undefined : Object.freeze({ ts: snap.ts, oiTotalUsd: snap.oiTotalUsd });
@@ -34,10 +33,6 @@ function liqPoint(
   snap: { readonly ts: number; readonly longUsd: number; readonly shortUsd: number } | undefined,
 ): LiqPoint | undefined {
   return snap === undefined ? undefined : Object.freeze({ ts: snap.ts, longUsd: snap.longUsd, shortUsd: snap.shortUsd });
-}
-
-function fundingPoint(snap: FundingSnapshot): FundingPoint {
-  return Object.freeze({ ts: snap.ts, fundingRate: snap.fundingRate });
 }
 
 function takerPoint(snap: TakerSnapshot): TakerPoint {
@@ -68,26 +63,11 @@ export function pointInTimeMarketApi(
   const fundingCol = dataset.funding(symbol);
   const takerCol = dataset.taker(symbol);
 
-  /**
-   * 030 — funding reading на произвольную минуту `minuteTs` (грид-индекс `minuteIdx`). `present` ⟺ минута
-   * funding-покрыта; `stale` ⟺ за краем покрытия в пределах grace (отдаётся последний реальный снимок —
-   * bounded live-forward, НЕ carry-forward); `missing` ⟺ нет снимка `ts ≤ minuteTs` ИЛИ за пределами grace.
-   * Общая база для `fundingAsOf` (на `t`) и `fundingWindow` (на каждой минуте окна). 0/отрицательный = present.
-   */
-  const fundingReadingAt = (minuteTs: number, minuteIdx: number): FundingReading => {
-    const snap = fundingCol === undefined ? undefined : fundingCol.at(minuteTs);
-    if (snap === undefined || fundingCol === undefined) return Object.freeze({ state: 'missing' });
-    if (fundingCol.covered(minuteTs)) return Object.freeze({ state: 'present', point: fundingPoint(snap) });
-    if (minuteIdx >= 0) {
-      for (let k = 1; k <= FUNDING_STALE_GRACE_BARS; k += 1) {
-        const m = gridTs[minuteIdx - k];
-        if (m !== undefined && fundingCol.covered(m)) return Object.freeze({ state: 'stale', point: fundingPoint(snap) });
-      }
-    }
-    return Object.freeze({ state: 'missing' });
-  };
+  // 030 — тонкая обёртка: логика stale-grace вынесена в market-tape.fundingReadingAt (единый источник истины).
+  const fundingReadingAtLocal = (minuteTs: number, minuteIdx: number): FundingReading =>
+    fundingReadingAt(fundingCol, gridTs, minuteTs, minuteIdx);
 
-  const fundingAsOf = (): FundingReading => fundingReadingAt(t, idx);
+  const fundingAsOf = (): FundingReading => fundingReadingAtLocal(t, idx);
 
   /**
    * 030 — taker as-of бакет минуты `t` (FR-008/009/010). `present` ⟺ бакет существует (вкл. present-zero
@@ -110,7 +90,7 @@ export function pointInTimeMarketApi(
     const start = Math.max(0, idx - lookback + 1);
     const out: (FundingPoint | undefined)[] = [];
     for (let j = start; j <= idx; j += 1) {
-      const r = fundingReadingAt(gridTs[j], j);
+      const r = fundingReadingAtLocal(gridTs[j], j);
       out.push(r.state === 'missing' ? undefined : r.point);
     }
     return Object.freeze(out);
