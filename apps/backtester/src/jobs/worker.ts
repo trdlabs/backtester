@@ -17,6 +17,7 @@ import { persistOverlayArtifacts } from '../artifacts/overlay-store';
 import { datasetFingerprint, materialize, type BacktesterDataPort } from '../data/reader';
 import { buildOverlayDataset } from '../engine/data-adapter';
 import { runOverlayBacktest } from '../engine/run-overlay';
+import { runStrategyBacktest } from '../engine/run-strategy';
 import { buildInlineOverlayRegistry, buildTrustedRegistry } from '../engine/trusted-registry';
 import { join } from 'node:path';
 import { loadBundle, type ModuleBundle as SandboxModuleBundle } from '../engine/sandbox/bundle';
@@ -199,6 +200,74 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         outcome,
         dsFingerprint,
       );
+      manifest = persisted.manifest;
+      summary = toOverlaySummary(
+        outcome,
+        runId,
+        persisted.artifactRefs,
+        resultHash,
+        dsFingerprint,
+        claimed.bundleHash,
+      );
+    } else if (claimed.request.engine === 'strategy') {
+      // ===== STRATEGY PATH — kind:'strategy' lifecycle-bundle via sandbox (closes gap PR #57) =====
+      if (claimed.bundleHash === undefined || sandboxBundle === undefined) {
+        throw new RunnerError('validation_error', 'strategy run requires a submitted bundle (ESM bytes)');
+      }
+      if (sandboxBundle.bundle.manifest.kind !== 'strategy') {
+        throw new RunnerError(
+          'validation_error',
+          `strategy engine requires manifest.kind="strategy", got "${sandboxBundle.bundle.manifest.kind}"`,
+        );
+      }
+      const r = claimed.request;
+      const marketTape = await overlayTapeCache.getOrBuild(
+        tapeCacheKey({
+          datasetRef: r.datasetRef,
+          symbols: r.symbols,
+          timeframe: r.timeframe,
+          from: r.period.from,
+          to: r.period.to,
+        }),
+        () =>
+          buildOverlayDataset(deps.dataPort, {
+            datasetRef: r.datasetRef,
+            symbols: r.symbols,
+            timeframe: r.timeframe,
+            period: r.period,
+          }),
+      );
+      dsFingerprint = contentRef(r.symbols.map((s) => marketTape.candles(s)));
+      const engineRequest: BacktestRunRequest = {
+        runId,
+        mode: r.mode,
+        moduleRef: r.moduleRef,
+        datasetRef: r.datasetRef,
+        symbols: r.symbols,
+        timeframe: r.timeframe,
+        period: r.period,
+        ...(r.params !== undefined ? { params: r.params } : {}),
+        ...(r.riskProfileRef !== undefined ? { riskProfileRef: r.riskProfileRef } : {}),
+        ...(r.executionProfileRef !== undefined ? { executionProfileRef: r.executionProfileRef } : {}),
+        seed: claimed.effectiveSeed,
+        metrics: r.metrics,
+        ...(r.robustnessChecks !== undefined ? { robustnessChecks: r.robustnessChecks } : {}),
+      };
+      const registry = buildInlineOverlayRegistry([], [sandboxBundle.bundle]);
+      sandboxRouter = overlayRouterFor(deps);
+      const outcome = await runStrategyBacktest(engineRequest, {
+        registry,
+        marketTape,
+        ...(sandboxRouter ? { router: sandboxRouter } : {}),
+      });
+      if (outcome.status !== 'completed') {
+        throw new RunnerError(
+          'validation_error',
+          `strategy run rejected: ${JSON.stringify(outcome.validation.issues)}`,
+        );
+      }
+      resultHash = contentRef(outcome);
+      const persisted = await persistOverlayArtifacts(deps.artifactStore, outcome, dsFingerprint);
       manifest = persisted.manifest;
       summary = toOverlaySummary(
         outcome,

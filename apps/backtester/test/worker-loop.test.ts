@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryJobStore, type NewJob } from '../src/jobs/job-store.js';
-import { runWorkerLoop, type WorkerDeps } from '../src/jobs/worker.js';
+import { processNextQueued, runWorkerLoop, type WorkerDeps } from '../src/jobs/worker.js';
 import { DOCKER_AVAILABLE, PG_AVAILABLE, createPgSchema } from './store-factories.js';
 import { InMemoryArtifactStore } from '../src/artifacts/store.js';
 import { FixtureDataPort } from '../src/data/reader.js';
@@ -237,6 +237,56 @@ describe.skipIf(!PG_AVAILABLE)('worker-loop integration [postgres]', () => {
       await teardownCrash();
     }
   }, 60_000);
+});
+
+// ─── Strategy-engine dispatch (cheap, no Docker) ────────────────────────────
+
+describe('strategy-engine dispatch', () => {
+  it('strategy job without bundleHash is rejected with validation_error', async () => {
+    const store = new InMemoryJobStore();
+    const runId = 'strategy-no-bundle-test';
+    const job: NewJob = {
+      jobId: runId,
+      runId,
+      requestFingerprint: `fp-${runId}`,
+      request: {
+        mode: 'research',
+        moduleRef: { id: 'my-strategy', version: '1.0.0' },
+        datasetRef: 'smoke-btc-1m',
+        symbols: ['BTCUSDT'],
+        timeframe: '1m',
+        period: { from: '2023-11-14T00:00:00.000Z', to: '2023-11-15T00:00:00.000Z' },
+        seed: 42,
+        metrics: [],
+        engine: 'strategy',
+      } as never,
+      effectiveSeed: 42,
+      datasetRef: 'smoke-btc-1m',
+      // NO bundleHash — the strategy branch must reject this immediately
+      runTimeoutMs: 3_600_000,
+      acceptedAtMs: 1_700_000_000_000,
+    };
+
+    await store.insertOrGet(job);
+    await store.transition(runId, 'accepted', 'queued', {
+      atMs: 1_700_000_000_000,
+      queuedAtMs: 1_700_000_000_000,
+    });
+
+    const deps = {
+      store,
+      clock: () => 1_700_000_000_000,
+      uid: () => randomUUID(),
+      postWebhook: async () => {},
+      dataPort: {} as never,
+      artifactStore: {} as never,
+      overlaySandbox: {} as never,
+    } as unknown as WorkerDeps;
+
+    const row = await processNextQueued(deps);
+    expect(row?.status).toBe('failed');
+    expect(row?.terminalCode).toBe('validation_error');
+  });
 });
 
 describe.skipIf(!DOCKER_AVAILABLE || !PG_AVAILABLE)('worker-loop docker+pg integration', () => {
