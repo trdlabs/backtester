@@ -12,3 +12,8 @@ export {
 } from './authoring/doc';
 export { STRATEGY_EXAMPLE_BUNDLE, STRATEGY_EXAMPLE_SOURCE } from './authoring/examples/strategy-example';
 export { OVERLAY_EXAMPLE_BUNDLE, OVERLAY_EXAMPLE_SOURCE } from './authoring/examples/overlay-example';
+export {
+  scaffoldStrategyBundle,
+  type ScaffoldStrategyBundleInput,
+  type ScaffoldStrategyBundleResult,
+} from './authoring/scaffold';
