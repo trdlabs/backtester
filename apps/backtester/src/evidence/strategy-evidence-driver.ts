@@ -81,6 +81,11 @@ export async function produceStrategyEvidenceForBundle(
   // For Variant-2 flat self-contained ESM the raw bytes ARE the entry-file content encoded UTF-8.
   // Throws before any Docker work — safe to call in non-Docker test environments.
   const entryStr = input.inlineBundle.files[input.inlineBundle.entry];
+  if (entryStr == null) {
+    throw new Error(
+      `inlineBundle.files has no entry "${input.inlineBundle.entry}" — malformed bundle`,
+    );
+  }
   if (!Buffer.from(input.bundleBytes).equals(Buffer.from(entryStr, 'utf8'))) {
     throw new Error(
       'bundleBytes do not match inlineBundle entry file — caller must pass the raw bytes of the bundle',
