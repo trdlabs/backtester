@@ -10,3 +10,4 @@ export {
   OVERLAY_AUTHORING_DOC,
   STRATEGY_AUTHORING_DOC,
 } from './authoring/doc';
+export { STRATEGY_EXAMPLE_BUNDLE, STRATEGY_EXAMPLE_SOURCE } from './authoring/examples/strategy-example';
