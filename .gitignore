@@ -17,3 +17,5 @@ coverage/
 .gortex/
 # superpowers subagent-driven-development scratch (briefs, reports, ledger, review diffs) — never committed
 .superpowers/
+# harness-generated evidence artifacts (produce-evidence.mts output) — never committed
+apps/backtester/.evidence-out/
