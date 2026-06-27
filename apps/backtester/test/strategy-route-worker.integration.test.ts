@@ -100,6 +100,10 @@ describe.skipIf(!DOCKER_AVAILABLE)(
           expect(row!.resultSummary).toBeDefined();
           // bundleHash is set during submission (submitRun → bundleStore.put).
           expect(row!.bundleHash).toBeDefined();
+          // Strongest available row-level discriminator: the persisted request carries engine:'strategy'.
+          // Both overlay and strategy paths call toOverlaySummary — request.engine is the only field
+          // on JobRow that unambiguously identifies the branch that ran.
+          expect(row!.request.engine).toBe('strategy');
         } finally {
           await app.dispose();
         }
