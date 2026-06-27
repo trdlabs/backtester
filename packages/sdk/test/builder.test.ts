@@ -61,6 +61,11 @@ describe('SDK builder', () => {
     const bundle = createModuleBundle({ manifest, entry: 'i.js', files: { 'i.js': 'export default () => ({})' } });
     const report = preflightValidateBundle(bundle, { engine: 'strategy' });
     expect(report.status).toBe('accepted');
+
+    // Reject when engine doesn't match kind
+    const rejectReport = preflightValidateBundle(bundle, { engine: 'overlay' });
+    expect(rejectReport.status).toBe('rejected');
+    expect(rejectReport.issues.some((i) => i.code === 'unsupported_module_kind')).toBe(true);
   });
 
   it('preflight rejects an entry not in files', () => {
