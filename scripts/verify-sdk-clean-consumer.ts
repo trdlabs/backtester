@@ -47,7 +47,18 @@ if (typeof createModuleManifest !== 'function') process.exit(1);
 if (typeof BacktesterClient !== 'function') process.exit(1);
 if (!isContentHash(\`sha256:\${'a'.repeat(64)}\`)) process.exit(1);
 if (allSchemaAssets().length !== 5) process.exit(1);
-const manifest = createModuleManifest({ id: 'smoke', version: '1.0.0', kind: 'overlay' });
+const manifest = createModuleManifest({
+  id: 'smoke',
+  version: '1.0.0',
+  kind: 'overlay',
+  name: 'Smoke overlay',
+  summary: 'clean-consumer smoke',
+  rationale: 'verifies the published SDK builds bundles standalone',
+  hooks: ['apply'],
+  paramsSchema: { type: 'object' },
+  capabilities: { platformSdk: true },
+  dataNeeds: { closedCandlesUpToCurrent: true },
+});
 const bundle = createModuleBundle({ manifest, entry: 'index.js', files: { 'index.js': 'export default () => ({ apply: () => null })' } });
 if (!isContentHash(computeInlineBundleHash(bundle))) process.exit(1);
 `;

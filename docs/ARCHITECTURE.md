@@ -68,7 +68,7 @@ exports — the root `.` plus four named subpaths:
 |---|---|
 | `.` (root) | `SDK_VERSION`, `SDK_CAPABILITIES`, supported contract versions (identity only) |
 | `/contracts` | Core type contracts, JSON schema assets (`allSchemaAssets()`), determinism core (`canonical-json`, content hashing) |
-| `/builder` | `createModuleManifest`, `createModuleBundle`, `computeInlineBundleHash`, `preflightValidateBundle` |
+| `/builder` | `createModuleManifest`, `createModuleBundle`, `computeInlineBundleHash`, `preflightValidateBundle`, `getAuthoringDoc`, `STRATEGY_AUTHORING_DOC`, `STRATEGY_EXAMPLE_BUNDLE`, `computeBundleHash`, `scaffoldStrategyBundle` |
 | `/client` | `BacktesterClient` HTTP client and error types |
 | `/artifacts` | `isContentHash` and artifact guard utilities |
 

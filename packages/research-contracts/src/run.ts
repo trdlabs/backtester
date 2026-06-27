@@ -13,6 +13,7 @@ export type {
   ModuleBundle,
   BacktestRunRequest,
   RunSubmitRequest,
+  ModuleValidateRequest,
   NonTerminalRunStatus,
   TerminalRunStatus,
   RunStatus,

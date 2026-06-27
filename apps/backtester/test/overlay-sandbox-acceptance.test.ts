@@ -17,7 +17,7 @@ describe('lifted hooks-bundle fixtures', () => {
     it(`${name}: parses, declares hooks, content-addresses stably`, () => {
       const b = loadInlineBundle(name);
       expect(b.manifest.id).toBe(id);
-      expect((b.manifest as { hooks?: string[] }).hooks).toEqual(hooks);
+      expect((b.manifest as unknown as { hooks?: string[] }).hooks).toEqual(hooks);
       expect(b.files[b.entry]).toContain('export'); // module source present
       const again = loadInlineBundle(name); // fresh JSON.parse of the same fixture
       expect(bundleHash(again)).toBe(bundleHash(b)); // content-addressed identity is stable across independent parses

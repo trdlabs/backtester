@@ -7,6 +7,10 @@ export function sha256Hex(input: string): string {
   return createHash('sha256').update(input, 'utf8').digest('hex');
 }
 
+export function sha256HexBytes(input: Uint8Array): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
 export function contentRef(payload: unknown): ContentHash {
   return `sha256:${sha256Hex(canonicalJson(payload))}`;
 }

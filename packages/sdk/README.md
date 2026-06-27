@@ -62,6 +62,13 @@ const manifest = createModuleManifest({
   id: 'my-momentum-overlay',
   version: '1.0.0',
   kind: 'overlay',
+  name: 'Smoke overlay',
+  summary: 'clean-consumer smoke',
+  rationale: 'verifies the published SDK builds bundles standalone',
+  hooks: ['apply'],
+  paramsSchema: { type: 'object' },
+  capabilities: { platformSdk: true },
+  dataNeeds: { closedCandlesUpToCurrent: true },
 });
 
 const entrySource = `
@@ -161,3 +168,27 @@ to bound memory usage. For large artifacts, use the paginated
 - **Node >= 22** (uses native `crypto.subtle` for SHA-256)
 - **ESM only** — all entry points are `"type": "module"`; set `"moduleResolution": "NodeNext"` or `"Bundler"` in `tsconfig.json`
 - `decimal.js` is the only runtime dependency (bundled in the tarball; no registry resolution needed at install time)
+
+---
+
+## Strategy authoring (for the lab builder)
+
+The `@trading-backtester/sdk/builder` subpath now carries the strategy-authoring surface:
+
+- `getAuthoringDoc('strategy' | 'overlay')` + `STRATEGY_AUTHORING_DOC` / `OVERLAY_AUTHORING_DOC` —
+  the prose fed to the LLM builder.
+- `STRATEGY_EXAMPLE_BUNDLE` / `STRATEGY_EXAMPLE_SOURCE` (and the overlay equivalents) — worked,
+  self-contained `export default createStrategyModule` bundles.
+- `scaffoldStrategyBundle({ manifest, entry, files })` — build + preflight in one call.
+- `computeBundleHash(rawBytes)` — the cross-boundary `sha256:<hex>` pin over raw ESM bytes
+  (distinct from the internal structural `computeInlineBundleHash`).
+
+**Canonical contract:** the SDK contract is authoritative — `{ id, version, kind,
+bundleContractVersion }` plus the rich kernel manifest fields; `bundleHash` is the sha256 of the raw
+ESM bytes.
+
+**Next on the lab side (separate task):** depend on `@trading-backtester/sdk`; consume
+`getAuthoringDoc` + the example in the builder prompt/RAG; converge lab's `module-bundle-v1` to this
+canonical contract; update the lab schema/validator/prompt to emit strategy bundles; then build the
+proof-harness (generate → backtester validate+sign → platform paper-isolated vs curated `long_oi` →
+compare).

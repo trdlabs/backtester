@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { ModuleBundle, RunResultSummary, RunStatusView } from '@trading/research-contracts';
-import { BUNDLE_CONTRACT_VERSION } from '@trading/research-contracts';
+import { createModuleManifest } from '@trading-backtester/sdk/builder';
 import { InMemoryBundleStore } from '../src/sandbox/bundle-store';
 import { AUTH, buildTestApp, HARNESS_DIR, runBody, testDeps } from './helpers';
 import { DOCKER_AVAILABLE } from './store-factories';
@@ -13,7 +13,18 @@ const MOMENTUM =
 
 function bundle(source: string): ModuleBundle {
   return {
-    manifest: { id: 'sb', version: '1.0.0', kind: 'strategy', bundleContractVersion: BUNDLE_CONTRACT_VERSION },
+    manifest: createModuleManifest({
+      id: 'sb',
+      version: '1.0.0',
+      kind: 'strategy',
+      name: 'Sandbox test strategy',
+      summary: 'Momentum stub for sandbox execution tests.',
+      rationale: 'Exercises the untrusted-bundle sandbox path.',
+      hooks: ['onBarClose'],
+      paramsSchema: { type: 'object' },
+      capabilities: { platformSdk: true },
+      dataNeeds: { closedCandlesUpToCurrent: true },
+    }),
     entry: 'module.mjs',
     files: { 'module.mjs': source },
   };

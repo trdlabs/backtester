@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { ModuleBundle, RunStatusView } from '@trading/research-contracts';
-import { BUNDLE_CONTRACT_VERSION } from '@trading/research-contracts';
+import { createModuleManifest } from '@trading-backtester/sdk/builder';
 import type { BundleStore } from '../src/sandbox/bundle-store';
 import { InMemoryBundleStore } from '../src/sandbox/bundle-store';
 import { InMemoryJobStore } from '../src/jobs/job-store';
@@ -18,7 +18,18 @@ import { AUTH, buildTestApp, runBody, testDeps } from './helpers';
  */
 function minimalBundle(): ModuleBundle {
   return {
-    manifest: { id: 'sf', version: '1.0.0', kind: 'strategy', bundleContractVersion: BUNDLE_CONTRACT_VERSION },
+    manifest: createModuleManifest({
+      id: 'sf',
+      version: '1.0.0',
+      kind: 'strategy',
+      name: 'Sandbox failure-mode strategy',
+      summary: 'Structurally valid stub for sandbox failure-mode tests.',
+      rationale: 'Exercises pre-Docker infrastructure failure paths.',
+      hooks: ['onBarClose'],
+      paramsSchema: { type: 'object' },
+      capabilities: { platformSdk: true },
+      dataNeeds: { closedCandlesUpToCurrent: true },
+    }),
     entry: 'module.mjs',
     files: {
       'module.mjs': 'export function init() { return {}; } export function computeSignals() { return []; }',
