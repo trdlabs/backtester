@@ -18,12 +18,18 @@ export function buildTrustedRegistry(): TrustedModuleRegistry {
  * `/v1/registry` advertises (via {@link TRUSTED_REGISTRY_DEFINITION}), plus the untrusted overlay
  * bundle(s) submitted with the run. Single source of truth — keeps discovery and execution from
  * drifting (the worker must NOT hand-list refs).
+ *
+ * `strategyBundles` (default `[]`) wires in submitted strategy bundles so they resolve with
+ * `provenance:'bundle'` — the trusted strategies remain available as the single-arg fallback.
+ * Caller must pass an empty array for the first param when only wiring strategy bundles.
  */
 export function buildInlineOverlayRegistry(
   overlayBundles: readonly ModuleBundle[],
+  strategyBundles: readonly ModuleBundle[] = [],
 ): ModuleRegistry019 {
   return createModuleRegistry({
     strategies: [...TRUSTED_REGISTRY_DEFINITION.strategies],
+    strategyBundles: [...strategyBundles],
     overlays: [...TRUSTED_REGISTRY_DEFINITION.overlays],
     overlayBundles: [...overlayBundles],
     riskProfiles: [...TRUSTED_REGISTRY_DEFINITION.riskProfiles],
