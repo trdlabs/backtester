@@ -220,6 +220,15 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           `strategy engine requires manifest.kind="strategy", got "${sandboxBundle.bundle.manifest.kind}"`,
         );
       }
+      if (
+        claimed.request.moduleRef.id !== sandboxBundle.bundle.manifest.id ||
+        claimed.request.moduleRef.version !== sandboxBundle.bundle.manifest.version
+      ) {
+        throw new RunnerError(
+          'validation_error',
+          `strategy run moduleRef ${claimed.request.moduleRef.id}@${claimed.request.moduleRef.version} does not match submitted bundle manifest ${sandboxBundle.bundle.manifest.id}@${sandboxBundle.bundle.manifest.version}`,
+        );
+      }
       const r = claimed.request;
       const marketTape = await overlayTapeCache.getOrBuild(
         tapeCacheKey({

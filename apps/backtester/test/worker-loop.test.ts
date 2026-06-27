@@ -7,6 +7,9 @@ import { FixtureDataPort } from '../src/data/reader.js';
 import { FIXTURES_DIR } from './helpers.js';
 import { loadConfig } from '../src/config.js';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { InMemoryBundleStore } from '../src/sandbox/bundle-store.js';
+import type { ModuleBundle } from '@trading/research-contracts';
 
 // Minimal deps with a fake executor path: we use a store preloaded with jobs whose run is a no-op
 // by pointing processNextQueued at a stub. For this unit we exercise loop+heartbeat+abort with a
@@ -283,6 +286,68 @@ describe('strategy-engine dispatch', () => {
       overlaySandbox: {} as never,
     } as unknown as WorkerDeps;
 
+    const row = await processNextQueued(deps);
+    expect(row?.status).toBe('failed');
+    expect(row?.terminalCode).toBe('validation_error');
+  });
+
+  it('strategy job with bundle present but moduleRef != bundle manifest is rejected with validation_error', async () => {
+    // Load the fixture bundle: kind:'strategy', id:'short_after_pump', version:'0.1.0'
+    const bundle = JSON.parse(
+      readFileSync(
+        new URL('./fixtures/overlay/bundles/short-after-pump.bundle.json', import.meta.url),
+        'utf8',
+      ),
+    ) as ModuleBundle;
+    const bundleStore = new InMemoryBundleStore();
+    const hash = await bundleStore.put(bundle);
+
+    const store = new InMemoryJobStore();
+    const runId = 'strategy-mismatched-moduleref';
+    const job: NewJob = {
+      jobId: runId,
+      runId,
+      requestFingerprint: `fp-${runId}`,
+      request: {
+        mode: 'research',
+        // Intentionally different from bundle manifest (short_after_pump@0.1.0):
+        moduleRef: { id: 'trusted-strategy-DIFFERENT', version: '9.9.9' },
+        datasetRef: 'smoke-btc-1m',
+        symbols: ['BTCUSDT'],
+        timeframe: '1m',
+        period: { from: '2023-11-14T00:00:00.000Z', to: '2023-11-15T00:00:00.000Z' },
+        seed: 42,
+        metrics: [],
+        engine: 'strategy',
+      } as never,
+      effectiveSeed: 42,
+      datasetRef: 'smoke-btc-1m',
+      bundleHash: hash,
+      runTimeoutMs: 3_600_000,
+      acceptedAtMs: 1_700_000_000_000,
+    };
+
+    await store.insertOrGet(job);
+    await store.transition(runId, 'accepted', 'queued', {
+      atMs: 1_700_000_000_000,
+      queuedAtMs: 1_700_000_000_000,
+    });
+
+    const config = loadConfig();
+    const deps = {
+      store,
+      clock: () => 1_700_000_000_000,
+      uid: () => randomUUID(),
+      postWebhook: async () => {},
+      dataPort: {} as never,
+      artifactStore: {} as never,
+      overlaySandbox: config.overlaySandbox,
+      bundleStore,
+    } as unknown as WorkerDeps;
+
+    // Guard fires before marketTape/sandbox allocation — pure fs, no Docker needed.
+    // terminalCode='validation_error' proves the moduleRef-vs-manifest guard was reached
+    // (both earlier guards pass: bundleHash is set + manifest.kind==='strategy').
     const row = await processNextQueued(deps);
     expect(row?.status).toBe('failed');
     expect(row?.terminalCode).toBe('validation_error');
