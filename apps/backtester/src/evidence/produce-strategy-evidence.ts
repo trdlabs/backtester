@@ -37,7 +37,8 @@ export interface ProduceStrategyResult {
   /** 'sha256:<hex64>' of bundleBytes. */
   readonly bundleHash: string;
   readonly keyId: string;
-  readonly verdict: 'passed' | 'failed';
+  /** Always 'passed': the function throws on any non-'passed' verdict before returning. */
+  readonly verdict: 'passed';
 }
 
 /**

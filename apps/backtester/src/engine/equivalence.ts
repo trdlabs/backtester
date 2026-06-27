@@ -20,6 +20,11 @@ export interface EquivalenceResult {
  * Economics-parity fields checked per-trade in declaration order.
  * NOTE: real Trade uses entryFillPrice/exitFillPrice/realizedPnl
  * (brief assumed entryPrice/exitPrice/pnlPct — those fields do NOT exist on Trade).
+ *
+ * Scope: this is ECONOMICS parity, not full trade identity. Intentionally EXCLUDED:
+ * `symbol` (identity, not economics) and `closeKind`/`closeSeq` (partial-close bookkeeping).
+ * Any divergence in those is still caught by Layer 1 (result_hash via contentRef hashes the
+ * whole RunOutcome); they are omitted here only from the per-trade field-level diagnostic.
  */
 const TRADE_FIELDS: readonly (keyof Trade)[] = [
   'side',

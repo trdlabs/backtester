@@ -52,6 +52,7 @@ describe('compareBacktestRuns', () => {
     const r = compareBacktestRuns(completed([trade({})]), completed([]));
     expect(r.equivalent).toBe(false);
     expect(r.candidateTradeCount).toBe(0);
+    expect(r.firstDivergence).toEqual({ index: 0, field: 'count', expected: 1, actual: 0 });
   });
 
   it('rejected-прогон → не эквивалентен', () => {

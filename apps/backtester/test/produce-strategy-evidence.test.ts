@@ -166,7 +166,7 @@ describe('produceStrategyEvidence (abort-before-sign)', () => {
         key,
         backtesterRunId: 'bt-test-b',
       }),
-    ).toThrow(/divergen|расхожд|bar/i);
+    ).toThrow(/equivalence failed at trade #\d+ field exitBarIndex: expected 1, got 2/i);
   });
 
   // ── case (c) ────────────────────────────────────────────────────────────────
