@@ -1,6 +1,9 @@
-// Track B harness: validate → backtest (real long_oi data, in-process engine) → verdict → sign → artifact.
+// Track B harness: backtest (real long_oi data, in-process engine) → verdict → sign → artifact.
 // Backtest wiring mirrors scripts/reconcile-report.mts. The sandboxed (Docker) executor path is the FINAL
 // long_oi wiring; Track B uses the in-process trusted router so it runs in WSL2/CI.
+// NOTE: Track B currently does backtest+sign on a programmatic fixture (makeReconcileReplayModule).
+// The bundle-validation gate (validateBundle → rejected ⇒ abort) is NOT active in the current Track-B path —
+// it is wired at the real-bundle step via the TODO seam in produceEvidence() below.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -17,7 +20,6 @@ import {
   buildEvidenceBody,
   type EvidenceScope,
   type SignedBacktestEvidence,
-  type SignedEvidenceBody,
 } from '../src/evidence/body.js';
 import { decideVerdict } from '../src/evidence/verdict.js';
 import {
@@ -50,11 +52,17 @@ export interface ProduceResult {
   readonly keyId: string;
   readonly publicKeyPem: string;
   readonly verdict: 'passed' | 'failed';
-  /** Forward-compat: direct access to the evidence body (always undefined on this path). */
-  readonly body?: SignedEvidenceBody;
 }
 
 export async function produceEvidence(opts: { fixturePath?: string }): Promise<ProduceResult> {
+  // TODO(real-bundle): when the final self-contained long_oi ESM bundle arrives from lab,
+  // run the acceptance-gate FIRST and ABORT before signing on rejection:
+  //   const v = validateBundle(bundle, platformContractContext([strategyRef]));
+  //   if (v.status === 'rejected') throw new Error('bundle validation rejected — return to lab; no evidence emitted');
+  // (validateBundle from '../src/engine/sandbox/acceptance-gate.js' ingests the bundleDir/ESM bytes;
+  //  platformContractContext from '@trading/research-contracts/research' builds the authoritative ContractContext;
+  //  the Track-B reconcile-module fixture is not a ModuleBundle, so the gate is deferred to the real-bundle
+  //  wiring — NOT silently dropped.)
   const fixture = JSON.parse(readFileSync(opts.fixturePath ?? FIXTURE, 'utf8')) as {
     trades: PaperTrade[]; rowsBySymbol: Record<string, CanonicalRowV2[]>;
   };
