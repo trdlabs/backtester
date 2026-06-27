@@ -1,7 +1,7 @@
-import type { ModuleBundle, ModuleManifest } from '../contracts/module';
+import type { BundleManifest, ModuleBundle } from '../contracts/module';
 
 export interface CreateModuleBundleInput {
-  readonly manifest: ModuleManifest;
+  readonly manifest: BundleManifest;
   readonly entry: string;
   readonly files: Readonly<Record<string, string>>;
 }

@@ -62,6 +62,13 @@ const manifest = createModuleManifest({
   id: 'my-momentum-overlay',
   version: '1.0.0',
   kind: 'overlay',
+  name: 'Smoke overlay',
+  summary: 'clean-consumer smoke',
+  rationale: 'verifies the published SDK builds bundles standalone',
+  hooks: ['apply'],
+  paramsSchema: { type: 'object' },
+  capabilities: { platformSdk: true },
+  dataNeeds: { closedCandlesUpToCurrent: true },
 });
 
 const entrySource = `

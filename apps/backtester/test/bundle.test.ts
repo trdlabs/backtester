@@ -1,18 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import type { ModuleBundle } from '@trading/research-contracts';
-import { BUNDLE_CONTRACT_VERSION } from '@trading/research-contracts';
-import { computeInlineBundleHash } from '@trading-backtester/sdk/builder';
+import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
+import { computeInlineBundleHash, createModuleManifest } from '@trading-backtester/sdk/builder';
 import { bundleHash, validateBundle } from '../src/sandbox/bundle';
 
 const SRC = 'export function signals(c){ return c.map(()=>false); }';
 
+const MANIFEST = createModuleManifest({
+  id: 'b',
+  version: '1.0.0',
+  kind: 'strategy',
+  name: 'Byte-parity fixture',
+  summary: 's',
+  rationale: 'r',
+  hooks: ['onBarClose'],
+  paramsSchema: { type: 'object' },
+  capabilities: { platformSdk: true },
+  dataNeeds: { closedCandlesUpToCurrent: true },
+});
+
 function bundle(over: Partial<ModuleBundle> = {}): ModuleBundle {
-  return {
-    manifest: { id: 'b', version: '1.0.0', kind: 'strategy', bundleContractVersion: BUNDLE_CONTRACT_VERSION },
-    entry: 'module.mjs',
-    files: { 'module.mjs': SRC },
-    ...over,
-  };
+  return { manifest: MANIFEST, entry: 'module.mjs', files: { 'module.mjs': SRC }, ...over };
 }
 
 describe('bundle content-addressing', () => {
@@ -46,19 +53,19 @@ describe('bundle validation', () => {
 
   it('accepts an overlay kind', () => {
     expect(
-      validateBundle(bundle({ manifest: { ...bundle().manifest, kind: 'overlay' as never } })),
+      validateBundle(bundle({ manifest: { ...MANIFEST, kind: 'overlay' as never } })),
     ).toEqual([]);
   });
 
   it('rejects an unsupported kind', () => {
     const issues = validateBundle(
-      bundle({ manifest: { ...bundle().manifest, kind: 'other' as never } }),
+      bundle({ manifest: { ...MANIFEST, kind: 'other' as never } }),
     );
     expect(issues.some((i) => i.code === 'unsupported_module_kind')).toBe(true);
   });
 
   it('rejects an unsupported contract version', () => {
-    const issues = validateBundle(bundle({ manifest: { ...bundle().manifest, bundleContractVersion: '000.0' } }));
+    const issues = validateBundle(bundle({ manifest: { ...MANIFEST, bundleContractVersion: '000.0' } }));
     expect(issues.some((i) => i.code === 'unsupported_contract_version')).toBe(true);
   });
 
