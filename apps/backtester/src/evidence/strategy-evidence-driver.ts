@@ -4,11 +4,14 @@
 //   materialize → loadBundle (gated) → buildOverlayDataset → curated run → candidate run →
 //   produceStrategyEvidence → signed ProduceStrategyResult.
 //
-// SINGLE-SOURCE SEAM CLOSURE: the gated `bundle` and the signed `bundleBytes` both derive from the
-// single `input.inlineBundle`/`input.bundleBytes` pair — the caller cannot pass a gated bundle
-// unrelated to signed bytes. `bundleHash` = sha256BundleRef(input.bundleBytes) inside
-// produceStrategyEvidence (lab-pinned raw bytes; NOT recomputed from bundleDir — cross-boundary
-// contract: lab-pinned raw bytes, not a post-materialization re-hash of disk layout).
+// SINGLE CALL-SITE: the gated `bundle` (materialized from `input.inlineBundle`) and the signed
+// `bundleBytes` arrive on ONE call, so byte↔bundle correspondence is established at a single point
+// rather than threaded across the run pipeline. They are still independent input fields — the
+// CALLER owns the guarantee that `bundleBytes` are the raw bytes of `inlineBundle` (for a Variant-2
+// flat ESM that is Buffer.from(inlineBundle.files[inlineBundle.entry], 'utf8')). `bundleHash` =
+// sha256BundleRef(input.bundleBytes) inside produceStrategyEvidence (lab-pinned raw bytes; NOT
+// recomputed from bundleDir — cross-boundary contract: lab-pinned raw bytes, not a
+// post-materialization re-hash of disk layout). (Fast-follow: assert that correspondence here.)
 //
 // SANDBOX-ROUTER WIRING: inlined verbatim from
 // test/helpers-overlay-sandbox.ts::buildSandboxStrategyBaselineDeps (that helper is test-only;
@@ -60,8 +63,8 @@ export interface StrategyEvidenceDriverInput {
  * End-to-end evidence driver: materialize one bundle, run both curated (trusted, in-process) and
  * candidate (strategy-route sandbox) backtests, then produce a signed ProduceStrategyResult.
  *
- * Closes the bundleBytes↔gated-bundle seam: both derive from the single `input.inlineBundle` /
- * `input.bundleBytes` pair — callers cannot pass a gated bundle unrelated to signed bytes.
+ * Single call-site for the gated bundle + signed bytes (byte↔bundle correspondence is the caller's
+ * guarantee: `bundleBytes` must be the raw bytes of `inlineBundle`). bundleHash stays lab-pinned.
  *
  * `finally`: cleanup materialized dir + close sandbox router (deterministic docker rm -f).
  */

@@ -20,17 +20,11 @@
 //   moduleRef = { id:'short_after_pump', version:'0.1.0' } (from baseline.json, matches bundle manifest).
 //   robustnessChecks: ['walk_forward'] carried from baseline.json — valid in platform ROBUSTNESS_CATALOG.
 //
-// Metric selection rationale (two-catalog constraint):
-//   submit.ts validate() uses backtester momentum METRIC_CATALOG for engine:'strategy':
-//     ['pnl','return_pct','total_bars','long_bars','win_rate','seed_probe']
-//   The 017 run-request validator (platform kernel) requires metrics ≥ 1 and each in
-//   platform METRIC_CATALOG: ['pnl','sharpe','max_drawdown','win_rate','total_trades',...]
-//   Intersection = ['pnl','win_rate'] — both pass both gates.
-//
-// Known production gap (no production code changed):
-//   submit.ts should use VALID_OVERLAY_METRICS for engine:'strategy' (same as 'overlay'),
-//   since runStrategyBacktest runs the same lifted engine accepting the full platform catalog.
-//   Today strategy runs are silently limited to the momentum-catalog intersection metrics.
+// Metric selection:
+//   submit.ts validate() validates engine:'strategy' against VALID_OVERLAY_METRICS (the platform
+//   catalog: pnl/sharpe/max_drawdown/win_rate/total_trades/...) and rejects empty metrics — the
+//   strategy engine runs the same lifted engine as overlay. ['pnl','win_rate'] is a minimal valid
+//   choice; the full platform catalog is accepted (e.g. sharpe/max_drawdown/total_trades).
 //
 // Terminal assertions:
 //   row.status === 'completed', row.resultHash non-empty, row.resultSummary defined,
@@ -74,12 +68,9 @@ describe.skipIf(!DOCKER_AVAILABLE)(
           // sets bundleHash on the job row. processNextQueued will call sandboxBundleFor(bundleHash)
           // → buildOverlayDataset → runStrategyBacktest → completed.
           //
-          // metrics: ['pnl', 'win_rate'] — the intersection of:
-          //   • backtester submit.ts VALID_METRICS (momentum) — passes the submit gate
-          //   • platform 017 METRIC_CATALOG                  — passes the engine gate
-          // Using only overlay metrics (pnl, max_drawdown, win_rate, sharpe from baseline.json)
-          // would 400 at submit (engine:'strategy' hits the momentum catalog gate in submit.ts).
-          // Using metrics:[] would 202 at submit but the 017 validator rejects it (requires ≥1).
+          // metrics: ['pnl', 'win_rate'] — a minimal valid set. submit.ts validates engine:'strategy'
+          // against VALID_OVERLAY_METRICS (the platform catalog) and rejects metrics:[] with a 400,
+          // so the full platform catalog (sharpe/max_drawdown/total_trades/...) is also accepted here.
           const res = await app.server.inject({
             method: 'POST',
             url: '/v1/runs',
