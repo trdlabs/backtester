@@ -37,6 +37,7 @@ import type { OverlaySandboxSettings } from '../config';
 import { publishCompletion, reapAndPublish, type CompletionDeps } from './completion';
 import type { JobRow, JobStore } from './job-store';
 import { overlayTapeCache, momentumTapeCache, tapeCacheKey } from '../data/tape-cache.js';
+import type { SigningKey } from '../evidence/signing.js';
 import { runBoundedPool } from './pool.js';
 
 export { RunnerError };
@@ -55,6 +56,8 @@ export interface WorkerDeps extends CompletionDeps {
   overlaySandbox: OverlaySandboxSettings;
   /** When set, the worker claims with a lease and owner-guards its terminal transitions. */
   lease?: { workerId: string; ttlMs: number; maxAttempts: number };
+  /** Ed25519 signing key for backtest evidence. Absent ⇒ evidence signing is OFF. */
+  evidenceSigningKey?: SigningKey;
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
