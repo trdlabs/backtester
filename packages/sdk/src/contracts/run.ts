@@ -34,6 +34,8 @@ export interface BacktestRunRequest {
   readonly robustnessChecks?: readonly string[];
   readonly artifacts?: readonly string[];
   readonly engine?: BacktestEngine;
+  /** Backtester-only: trusted baseline ref to compare against for signed evidence (e.g. short_after_pump). Stripped before the lifted runner; never reaches the 017 validator. */
+  readonly curatedBaselineRef?: Ref;
 }
 
 export interface ModuleValidateRequest {
@@ -123,6 +125,8 @@ export interface RunResultSummary {
   readonly evidence: RunEvidence;
   readonly resultHash?: ContentHash;
   readonly comparison?: ComparisonSummary;
+  /** Pointer to the signed backtest-evidence/v1 artifact in the ArtifactStore (present only when evidence was produced). */
+  readonly evidenceRef?: ArtifactReference;
 }
 
 export type CompletionEventType =

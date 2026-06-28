@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config';
 
+
 describe('dataSource config', () => {
   it('defaults to the in-process fixture reader when no env is set', () => {
     expect(loadConfig({}).dataSource).toBe('fixture');
@@ -31,5 +32,16 @@ describe('dataSource config', () => {
     expect(c.dataSource).toBe('real');
     expect(c.mockPlatformUrl).toBe('http://89.124.86.84:8088');
     expect(c.mockPlatformToken).toBe('tok');
+  });
+});
+
+describe('evidenceSigningKeyPem config', () => {
+  it('reads BT_EVIDENCE_SIGNING_KEY into evidenceSigningKeyPem when set', () => {
+    const cfg = loadConfig({ BT_EVIDENCE_SIGNING_KEY: 'PEMDATA' });
+    expect(cfg.evidenceSigningKeyPem).toBe('PEMDATA');
+  });
+
+  it('leaves evidenceSigningKeyPem undefined when BT_EVIDENCE_SIGNING_KEY is absent', () => {
+    expect(loadConfig({}).evidenceSigningKeyPem).toBeUndefined();
   });
 });

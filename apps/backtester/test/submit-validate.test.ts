@@ -98,4 +98,20 @@ describe('submit validate — engine:strategy metric catalog (Gap 1 + Gap 2)', (
       submitRun(minimalDeps(), req({ metrics: [] })),
     ).resolves.toBeDefined();
   });
+
+  // ── curatedBaselineRef (backtester-only) ──────────────────────────────────
+  it("accepts engine:'strategy' submit with curatedBaselineRef (backtester-only field)", async () => {
+    // curatedBaselineRef is a backtester-only field like `engine` — validate() checks only
+    // specific named fields and never rejects unknown ones, so this must be accepted.
+    await expect(
+      submitRun(
+        minimalDeps(),
+        req({
+          engine: 'strategy',
+          metrics: ['sharpe'],
+          curatedBaselineRef: { id: 'short_after_pump', version: '0.1.0' },
+        }),
+      ),
+    ).resolves.toBeDefined();
+  });
 });

@@ -92,6 +92,12 @@ export interface AppConfig {
   readonly sandbox: SandboxSettings;
   /** OVERLAY sandbox (Slice-6b-A) — distinct from `sandbox` (Slice-3). */
   readonly overlaySandbox: OverlaySandboxSettings;
+  /**
+   * PEM-encoded PKCS8 Ed25519 private key used to sign backtest evidence.
+   * Source: env `BT_EVIDENCE_SIGNING_KEY`. Absent ⇒ evidence signing is OFF.
+   * Do NOT generate ephemeral keys on startup — an ephemeral keyId is not in the platform allowlist.
+   */
+  readonly evidenceSigningKeyPem?: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -167,6 +173,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     workerMaxAttempts: maxAttempts,
     workerPollMs: pollMs,
     enableOverlayEngine: env.BACKTESTER_ENABLE_OVERLAY_ENGINE === 'true',
+    ...(env.BT_EVIDENCE_SIGNING_KEY ? { evidenceSigningKeyPem: env.BT_EVIDENCE_SIGNING_KEY } : {}),
     sandbox: {
       harnessDir: env.BACKTESTER_SANDBOX_HARNESS_DIR ?? resolve(HERE, '../sandbox-harness'),
       image: env.BACKTESTER_SANDBOX_IMAGE ?? 'node:24-alpine',

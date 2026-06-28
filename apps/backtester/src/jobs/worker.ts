@@ -4,7 +4,7 @@
 // the trusted momentum executor. Sandbox limit/▶failures map to a clean terminal status + terminal_code
 // (never a service crash).
 
-import type { ArtifactManifest, ContentHash } from '@trading-backtester/sdk/artifacts';
+import type { ArtifactManifest, ArtifactReference, ContentHash } from '@trading-backtester/sdk/artifacts';
 import type {
   BacktestRunRequest,
   RunPeriod,
@@ -19,6 +19,7 @@ import { buildOverlayDataset } from '../engine/data-adapter';
 import { runOverlayBacktest } from '../engine/run-overlay';
 import { runStrategyBacktest } from '../engine/run-strategy';
 import { buildInlineOverlayRegistry, buildTrustedRegistry } from '../engine/trusted-registry';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadBundle, type ModuleBundle as SandboxModuleBundle } from '../engine/sandbox/bundle';
 import { materializeBundle } from '../engine/sandbox/bundle-materialize';
@@ -37,6 +38,9 @@ import type { OverlaySandboxSettings } from '../config';
 import { publishCompletion, reapAndPublish, type CompletionDeps } from './completion';
 import type { JobRow, JobStore } from './job-store';
 import { overlayTapeCache, momentumTapeCache, tapeCacheKey } from '../data/tape-cache.js';
+import type { SigningKey } from '../evidence/signing.js';
+import { produceStrategyEvidence } from '../evidence/produce-strategy-evidence.js';
+import type { EvidenceScope } from '../evidence/body.js';
 import { runBoundedPool } from './pool.js';
 
 export { RunnerError };
@@ -55,6 +59,8 @@ export interface WorkerDeps extends CompletionDeps {
   overlaySandbox: OverlaySandboxSettings;
   /** When set, the worker claims with a lease and owner-guards its terminal transitions. */
   lease?: { workerId: string; ttlMs: number; maxAttempts: number };
+  /** Ed25519 signing key for backtest evidence. Absent ⇒ evidence signing is OFF. */
+  evidenceSigningKey?: SigningKey;
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -278,6 +284,47 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       resultHash = contentRef(outcome);
       const persisted = await persistOverlayArtifacts(deps.artifactStore, outcome, dsFingerprint);
       manifest = persisted.manifest;
+
+      // ── E4: evidence block (run-once, additive) ──────────────────────────────
+      // Runs ONLY when curatedBaselineRef is set AND a signing key is present.
+      // Any failure leaves evidenceRef undefined — the run still completes with resultHash.
+      // curatedBaselineRef is NOT added to engineRequest (never reaches the 017 validator).
+      let evidenceRef: ArtifactReference | undefined;
+      if (claimed.request.curatedBaselineRef !== undefined && deps.evidenceSigningKey !== undefined) {
+        try {
+          const curated = await runOverlayBacktest(
+            { ...engineRequest, moduleRef: claimed.request.curatedBaselineRef },
+            { registry: buildTrustedRegistry(), marketTape },
+          );
+          if (curated.status !== 'completed') throw new Error('curated baseline run not completed');
+          const entryAbs = join(sandboxBundle!.bundle.bundleDir, sandboxBundle!.bundle.descriptor.entryPoint);
+          const bundleBytes = readFileSync(entryAbs);
+          const { tsFrom, tsTo } = periodMs(r.period);
+          const scope: EvidenceScope = {
+            datasetRef: r.datasetRef,
+            window: { fromMs: tsFrom, toMs: tsTo },
+            symbols: [...r.symbols].sort(),
+            timeframe: r.timeframe,
+          };
+          const result = produceStrategyEvidence({
+            bundle: sandboxBundle!.bundle,
+            bundleBytes,
+            curated,
+            candidate: outcome,
+            scope,
+            key: deps.evidenceSigningKey,
+            backtesterRunId: runId,
+          });
+          const evidenceHash = await deps.artifactStore.write(result.artifact);
+          evidenceRef = { artifactId: evidenceHash, artifactType: 'backtest-evidence/v1', availability: 'available' };
+        } catch (err) {
+          // gate-reject / non-equivalent / verdict != passed → additive: leave evidenceRef undefined,
+          // the run still completes with resultHash intact. (Do NOT rethrow.)
+          console.warn(`[evidence] strategy run ${runId}: evidence not produced: ${err instanceof Error ? err.message : String(err)}`);
+          evidenceRef = undefined;
+        }
+      }
+
       summary = toOverlaySummary(
         outcome,
         runId,
@@ -285,6 +332,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         resultHash,
         dsFingerprint,
         claimed.bundleHash,
+        evidenceRef,
       );
     } else {
       // ===== MOMENTUM PATH — unchanged (golden eff10116… must not move) =====
