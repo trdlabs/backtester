@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp, type AppHandles, type BuildAppOptions } from '../src/app';
+import type { SigningKey } from '../src/evidence/signing.js';
 import { InMemoryArtifactStore } from '../src/artifacts/store';
 import type { AppConfig } from '../src/config';
 import { DEFAULT_SANDBOX, SANDBOX_IMAGE } from '../src/engine/sandbox-policy';
@@ -70,10 +71,12 @@ export function testDeps(extra: Partial<BuildAppOptions> = {}): BuildAppOptions 
 }
 
 export async function buildTestApp(
-  over: Partial<AppConfig> = {},
-  deps: BuildAppOptions = testDeps(),
+  over: Partial<AppConfig> & { evidenceSigningKey?: SigningKey } = {},
+  deps?: BuildAppOptions,
 ): Promise<AppHandles> {
-  return buildApp(testConfig(over), deps);
+  const { evidenceSigningKey, ...configOver } = over;
+  const resolvedDeps = deps ?? testDeps(evidenceSigningKey ? { evidenceSigningKey } : {});
+  return buildApp(testConfig(configOver), resolvedDeps);
 }
 
 /** Build an app over a factory's store, returning a combined cleanup (dispose app + teardown store). */

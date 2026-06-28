@@ -22,7 +22,7 @@ import {
 import { InMemoryJobStore, type JobStore } from './jobs/job-store';
 import { PgJobStore } from './jobs/pg-job-store';
 import { drainQueue, type WorkerDeps } from './jobs/worker';
-import { loadSigningKeyFromPem } from './evidence/signing.js';
+import { loadSigningKeyFromPem, type SigningKey } from './evidence/signing.js';
 import { FileBundleStore, type BundleStore } from './sandbox/bundle-store';
 import type { SandboxConfig } from './sandbox/sandbox-executor';
 
@@ -35,6 +35,8 @@ export interface BuildAppOptions {
   clock?: () => number;
   uid?: () => string;
   postWebhook?: WebhookPoster;
+  /** Directly inject an already-constructed SigningKey (for tests). Takes precedence over config.evidenceSigningKeyPem. */
+  evidenceSigningKey?: SigningKey;
 }
 
 export interface AppHandles {
@@ -107,7 +109,9 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     bundleStore,
     sandbox,
     overlaySandbox: config.overlaySandbox,
-    ...(config.evidenceSigningKeyPem
+    ...(overrides.evidenceSigningKey
+      ? { evidenceSigningKey: overrides.evidenceSigningKey }
+      : config.evidenceSigningKeyPem
       ? { evidenceSigningKey: loadSigningKeyFromPem(config.evidenceSigningKeyPem) }
       : {}),
   };
