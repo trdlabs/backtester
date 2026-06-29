@@ -22,11 +22,11 @@ import { materializeBundle } from '../src/engine/sandbox/bundle-materialize.js';
 import { loadBundle } from '../src/engine/sandbox/bundle.js';
 import { buildOverlayDataset } from '../src/engine/data-adapter.js';
 import { runStrategyBacktest } from '../src/engine/run-strategy.js';
-import { createTrustedRegistry } from '../src/engine/registry.js';
 import { buildInlineOverlayRegistry } from '../src/engine/trusted-registry.js';
 import { TRUSTED_REGISTRY_DEFINITION } from '../src/engine/registry-definition.js';
-import { createExecutorRouter } from '../src/engine/sandbox/routing.js';
-import { createSandboxPolicyRegistry } from '../src/engine/sandbox-policy.js';
+import { createModuleRegistry, createExecutorRouter } from '../src/engine/sandbox/routing.js';
+import { createTrustedRouter } from '../src/engine/module-executor.js';
+import { createSandboxPolicyRegistry, EVIDENCE_LONG_SANDBOX } from '../src/engine/sandbox-policy.js';
 import { loadConfig } from '../src/config.js';
 import { FixtureDataPort } from '../src/data/reader.js';
 import { produceStrategyEvidence } from '../src/evidence/produce-strategy-evidence.js';
@@ -99,7 +99,9 @@ async function main(): Promise<void> {
   // ── (7) materialize the gated bundle + build the sandbox router ──────────────
   const sp = await materializeBundle(inlineBundle);
   const config = loadConfig();
-  const policy = config.overlaySandbox.policy;
+  // evidence_long@1.0.0: raised stdout/session caps for full-day annotate-heavy runs; isolation unchanged.
+  const policy = EVIDENCE_LONG_SANDBOX;
+  const sandboxPolicyId = `${policy.id}@${policy.version}`;
   const router = createExecutorRouter({
     sandboxPolicies: createSandboxPolicyRegistry([policy]),
     sandboxPolicyRef: { id: policy.id, version: policy.version },
@@ -110,14 +112,25 @@ async function main(): Promise<void> {
     const bundle = loadBundle(sp.bundleDir);
     const marketTape = await buildOverlayDataset(dataPort, { datasetRef, symbols: win.symbols, timeframe: '1m', period });
 
-    // curated — SAME bundle, in-process trusted (no router → createTrustedRouter default)
-    const curatedModule = factory(manifest.params);
-    const curatedRegistry = createTrustedRegistry({
+    // curated — SAME bundle, in-process trusted. Mirrors the proven scripts/produce-evidence.mts
+    // pattern: createModuleRegistry({strategies:[mod]}) (provenance:'trusted') + explicit
+    // createTrustedRouter() → onBarClose runs in-process via InProcessTrustedModuleExecutor.
+    //
+    // The factory's raw wire-manifest carries `bundleContractVersion` (019 field), which the 017
+    // manifest validator rejects (additionalProperties:false). materializeBundle strips it into the
+    // on-disk manifest.json, so loadBundle()'s manifest is the clean 017 form — reuse THAT manifest
+    // for the in-process module so curated passes the same validation candidate does (identical manifest).
+    const curatedModule = { ...factory(manifest.params), manifest: bundle.manifest };
+    const curatedRegistry = createModuleRegistry({
       strategies: [curatedModule],
       riskProfiles: [...TRUSTED_REGISTRY_DEFINITION.riskProfiles],
       executionProfiles: [...TRUSTED_REGISTRY_DEFINITION.executionProfiles],
     });
-    const curated = await runStrategyBacktest(baselineRequest, { registry: curatedRegistry, marketTape });
+    const curated = await runStrategyBacktest(baselineRequest, {
+      registry: curatedRegistry,
+      marketTape,
+      router: createTrustedRouter(),
+    });
 
     // candidate — SAME bundle, sandbox route (Docker)
     const candidate = await runStrategyBacktest(
@@ -126,6 +139,47 @@ async function main(): Promise<void> {
     );
     const sandboxErrors = router.errors();
     if (sandboxErrors.length > 0) throw new Error('sandbox execution failed: ' + JSON.stringify(sandboxErrors));
+
+    // ── DIAGNOSTIC: compare per-bar decisions to locate in-process vs sandbox divergence ─────────
+    if (process.env.LONGOI_DIAG === '1') {
+      if (curated.status !== 'completed' || candidate.status !== 'completed') {
+        console.error(`status: curated=${curated.status} candidate=${candidate.status}`);
+        if (curated.status === 'rejected') console.error('curated.validation: ' + JSON.stringify(curated.validation, null, 2));
+        if (candidate.status === 'rejected') console.error('candidate.validation: ' + JSON.stringify(candidate.validation, null, 2));
+        router.closeAll();
+        await sp.cleanup();
+        return;
+      }
+      const cur = curated.baseline.decisionRecords;
+      const can = candidate.baseline.decisionRecords;
+      const sig = (d: { baseDecision: { kind: string; tags?: readonly string[] } }) =>
+        `${d.baseDecision.kind}[${(d.baseDecision.tags ?? []).join(',')}]`;
+      const tally = (recs: readonly { baseDecision: { kind: string } }[]) => {
+        const m: Record<string, number> = {};
+        for (const r of recs) m[r.baseDecision.kind] = (m[r.baseDecision.kind] ?? 0) + 1;
+        return m;
+      };
+      console.error(JSON.stringify({
+        curatedTrades: curated.baseline.trades.length,
+        candidateTrades: candidate.baseline.trades.length,
+        curatedRecords: cur.length,
+        candidateRecords: can.length,
+        curatedKinds: tally(cur),
+        candidateKinds: tally(can),
+      }, null, 2));
+      const n = Math.min(cur.length, can.length);
+      let shown = 0;
+      for (let i = 0; i < n && shown < 8; i += 1) {
+        if (sig(cur[i]!) !== sig(can[i]!)) {
+          console.error(`DIVERGE idx=${i} ts=${cur[i]!.barTs} sym=${cur[i]!.symbol} hook=${cur[i]!.hook} curated=${sig(cur[i]!)} candidate=${sig(can[i]!)}`);
+          shown += 1;
+        }
+      }
+      if (shown === 0) console.error('no per-record baseDecision divergence in the common prefix');
+      router.closeAll();
+      await sp.cleanup();
+      return;
+    }
 
     // scope — what the platform verifies via scopeMatches
     const scope: EvidenceScope = { datasetRef, window: { fromMs: win.fromMs, toMs: win.toMs }, symbols: win.symbols, timeframe: '1m' };
@@ -145,8 +199,15 @@ async function main(): Promise<void> {
     mkdirSync(outDir, { recursive: true });
     writeFileSync(join(outDir, `${result.artifactRef.replace(':', '_')}.json`), serializeArtifact(result.artifact));
     writeFileSync(join(outDir, 'signer.pub.json'), JSON.stringify({ keyId: key.keyId, publicKeyPem: key.publicKeyPem }, null, 2));
+    // Audit trail (NOT part of the signed body, which is fixed schema): records the sandbox policy
+    // the candidate ran under so a verifier can audit the isolation profile behind the evidence.
+    writeFileSync(join(outDir, `${result.artifactRef.replace(':', '_')}.audit.json`), JSON.stringify(
+      { artifactRef: result.artifactRef, bundleHash: result.bundleHash, verdict: result.verdict, keyId: result.keyId, sandboxPolicyId, symbols: win.symbols, window: { fromMs: win.fromMs, toMs: win.toMs } },
+      null,
+      2,
+    ));
     console.log(JSON.stringify(
-      { artifactRef: result.artifactRef, bundleHash: result.bundleHash, verdict: result.verdict, keyId: result.keyId, symbols: win.symbols, window: { fromMs: win.fromMs, toMs: win.toMs } },
+      { artifactRef: result.artifactRef, bundleHash: result.bundleHash, verdict: result.verdict, keyId: result.keyId, sandboxPolicyId, symbols: win.symbols, window: { fromMs: win.fromMs, toMs: win.toMs } },
       null,
       2,
     ));

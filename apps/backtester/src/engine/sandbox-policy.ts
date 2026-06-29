@@ -90,6 +90,26 @@ export const TINY_MEM_SANDBOX: SandboxPolicy = {
   },
 };
 
+/**
+ * Evidence-прогон политика `evidence_long@1.0.0`: реальные long_oi-прогоны идут на полном дне (1440
+ * баров/символ) и эмитят `annotate` почти на каждом баре, так что кумулятивный сессионный stdout
+ * (default 64KiB) и `wallTimeMsPerSession` (30с) дефолтной политики переполняются. Поднимаем ТОЛЬКО
+ * эти два лимита; вся изоляция (net=none, ro-rootfs, cap-drop, 128MiB, no-new-privs, pids=64) и
+ * `maxDecisionBytes` (одна строка-ответа) — БЕЗ изменений. `maxStdoutBytes` остаётся тесной анти-flood
+ * DoS-границей (2MiB ≈ 6–7× от наблюдаемого peak ~300KB, НЕ безразмерный буфер). Кумулятивный cap
+ * сохранён намеренно (per-bar reset = регрессия безопасности; per-bar limit допустим только ВДОБАВОК).
+ */
+export const EVIDENCE_LONG_SANDBOX: SandboxPolicy = {
+  id: 'evidence_long',
+  version: '1.0.0',
+  isolation: { ...DEFAULT_SANDBOX.isolation },
+  limits: {
+    ...DEFAULT_SANDBOX.limits,
+    maxStdoutBytes: 2_097_152, // 2 MiB — tight anti-flood cap for full-day annotate-heavy runs
+    wallTimeMsPerSession: 300_000, // 300s — full-day per-symbol session budget (per-call stays 2s)
+  },
+};
+
 function key(id: string, version: string): string {
   return `${id}@${version}`;
 }
@@ -104,4 +124,5 @@ export function createSandboxPolicyRegistry(policies: readonly SandboxPolicy[]):
 export const SANDBOX_POLICIES: SandboxPolicyRegistry = createSandboxPolicyRegistry([
   DEFAULT_SANDBOX,
   TINY_MEM_SANDBOX,
+  EVIDENCE_LONG_SANDBOX,
 ]);
