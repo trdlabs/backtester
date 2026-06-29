@@ -19,3 +19,6 @@ coverage/
 .superpowers/
 # harness-generated evidence artifacts (produce-evidence.mts output) — never committed
 apps/backtester/.evidence-out/
+# evidence signing key(s) — Ed25519 private PEM for backtest-evidence/v1; NEVER committed
+.secrets/
+*.pem
