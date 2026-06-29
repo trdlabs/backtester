@@ -69,10 +69,16 @@ async function main(): Promise<void> {
   // ── (4) inline bundle (single source for gate + materialization) ─────────────
   const inlineBundle = { manifest, entry: ENTRY, files: { [ENTRY]: entrySource } } as unknown as InlineModuleBundle;
 
-  // ── (5) dataset: exec-validation fixture → temp FixtureFile ──────────────────
-  const ev = JSON.parse(readFileSync(EXEC_FIXTURE, 'utf8')) as { rowsBySymbol: Record<string, CanonicalRowV2[]> };
-  const datasetRef = 'long-oi-3sym-1m';
-  const fixture = toFixtureFile(ev, datasetRef, '1m');
+  // ── (5) dataset → temp FixtureFile ───────────────────────────────────────────
+  // Default: 3-symbol exec-validation fixture. With LONGOI_SNAPSHOT set to a mock-platform ops
+  // snapshot bundle.json, use the full real scope — its `historical.rowsBySymbol` is the same
+  // CanonicalRowV2 shape (OHLCV + OI/liq/funding/taker). datasetRef derives from the symbol count.
+  const snapshotPath = process.env.LONGOI_SNAPSHOT;
+  const rowsBySymbol: Record<string, CanonicalRowV2[]> = snapshotPath
+    ? (JSON.parse(readFileSync(snapshotPath, 'utf8')) as { historical: { rowsBySymbol: Record<string, CanonicalRowV2[]> } }).historical.rowsBySymbol
+    : (JSON.parse(readFileSync(EXEC_FIXTURE, 'utf8')) as { rowsBySymbol: Record<string, CanonicalRowV2[]> }).rowsBySymbol;
+  const datasetRef = `long-oi-${Object.keys(rowsBySymbol).length}sym-1m`;
+  const fixture = toFixtureFile({ rowsBySymbol }, datasetRef, '1m');
   const win = fixtureWindow(fixture.rows);
   const tmpFixtureDir = mkdtempSync(join(tmpdir(), 'long-oi-fixtures-'));
   writeFileSync(join(tmpFixtureDir, `${datasetRef}.json`), JSON.stringify(fixture));
