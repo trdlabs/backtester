@@ -36,8 +36,15 @@ describe('authoring docs', () => {
     expect(getAuthoringDoc('overlay')).not.toContain('\\`');
   });
 
-  it('bumps the authoring doc version for the market-tape addition', () => {
-    expect(AUTHORING_DOC_VERSION).toBe('1.1.0');
+  it('documents that sizingHint is a number, not an object', () => {
+    expect(STRATEGY_AUTHORING_DOC).toContain('sizingHint');
+    expect(STRATEGY_AUTHORING_DOC).toContain('a **number**');
+    // the exact anti-pattern an LLM emitted (object form) must be called out
+    expect(STRATEGY_AUTHORING_DOC).toContain('sizingHint: { multiplier: 1.5 }');
+  });
+
+  it('bumps the authoring doc version (market-tape + sizingHint clarifications)', () => {
+    expect(AUTHORING_DOC_VERSION).toBe('1.2.0');
   });
 
   it('overlay doc documents apply + OverlayDecision', () => {

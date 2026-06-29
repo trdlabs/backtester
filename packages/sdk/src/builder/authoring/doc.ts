@@ -1,7 +1,7 @@
 import type { ModuleKind } from '../../contracts/module';
 
 /** Bumped whenever the authoring contract (forms/fields/conventions) changes. */
-export const AUTHORING_DOC_VERSION = '1.1.0';
+export const AUTHORING_DOC_VERSION = '1.2.0';
 
 export const STRATEGY_AUTHORING_DOC = `# Authoring a strategy bundle
 
@@ -110,6 +110,14 @@ Read a reading via its \`state\`:
 - \`{ kind: 'idle' }\`
 
 A hook may return one decision, an array of decisions, or null (treated as idle).
+
+\`sizingHint\` (on \`enter\` and \`add_to_position\`) is a **number** — a notional-% sizing hint
+(e.g. \`5\` = 5% of equity), clamped by the risk profile. It is a scalar, NOT an object:
+
+    // ❌ schema-invalid — rejected ("sizingHint: must be number")
+    { kind: 'add_to_position', mode: 'dca', sizingHint: { multiplier: 1.5 } }
+    // ✅ a number
+    { kind: 'add_to_position', mode: 'dca', sizingHint: 1.5 }
 
 ## Manifest
 
