@@ -43,8 +43,8 @@ describe('authoring docs', () => {
     expect(STRATEGY_AUTHORING_DOC).toContain('sizingHint: { multiplier: 1.5 }');
   });
 
-  it('bumps the authoring doc version (market-tape + sizingHint clarifications)', () => {
-    expect(AUTHORING_DOC_VERSION).toBe('1.2.0');
+  it('bumps the authoring doc version (dataNeeds catalog + decision-union completeness)', () => {
+    expect(AUTHORING_DOC_VERSION).toBe('1.3.0');
   });
 
   it('overlay doc documents apply + OverlayDecision', () => {

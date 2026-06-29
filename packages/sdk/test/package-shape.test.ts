@@ -21,7 +21,7 @@ const pkg = JSON.parse(
 describe('@trading-backtester/sdk package shape', () => {
   it('is public, licensed and exposes only the approved entrypoints', () => {
     expect(pkg.name).toBe('@trading-backtester/sdk');
-    expect(pkg.version).toBe('0.5.0');
+    expect(pkg.version).toBe('0.6.0');
     expect(pkg.private).not.toBe(true);
     expect(pkg.license).toBe('Apache-2.0');
     expect(Object.keys(pkg.exports).sort()).toEqual([

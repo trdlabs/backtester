@@ -1,7 +1,7 @@
 import type { ModuleKind } from '../../contracts/module';
 
 /** Bumped whenever the authoring contract (forms/fields/conventions) changes. */
-export const AUTHORING_DOC_VERSION = '1.2.0';
+export const AUTHORING_DOC_VERSION = '1.3.0';
 
 export const STRATEGY_AUTHORING_DOC = `# Authoring a strategy bundle
 
@@ -30,9 +30,16 @@ A strategy bundle is a single **self-contained ESM** file. It must:
 
 ## StrategyContext (read-only, deep-frozen)
 
+These are the ONLY properties on \`ctx\` — there is no \`ctx.state\`, \`ctx.trade\`, or \`ctx.equity\`.
+
 - \`ctx.bar\`: \`{ ts, open, high, low, close, volume }\` — the just-closed bar.
-- \`ctx.position\`: \`{ side, size, entryPrice, stop?, take? } | null\`.
-- \`ctx.data.closedCandles(lookback)\`: closed bars strictly before the current bar (as-of).
+- \`ctx.position\`: \`{ side, size, entryPrice, stop?, take? } | null\` — the open position (null while flat).
+  The position lives HERE, not under \`ctx.state\`.
+- \`ctx.pendingIntent\`: pending-entry snapshot \`| null\` (only relevant inside \`onPendingIntentBar\`).
+- \`ctx.portfolio\`: account-level snapshot (equity / exposure). \`ctx.symbol\`: the traded symbol string.
+  \`ctx.run\`: run metadata.
+- \`ctx.data.closedCandles(lookback): readonly Bar[]\`: closed bars strictly before the current bar
+  (as-of), **oldest→newest** — index \`0\` is the oldest, index \`len-1\` is the most recent closed bar.
 - \`ctx.data.indicatorAsOf(name)\`: scalar indicator as-of, or undefined in warmup.
 - \`ctx.indicators.query({ name, params?, source? })\`: per-bar indicator value, undefined in warmup.
 - \`ctx.market?\`: point-in-time market-tape surface (OI / liquidations / funding / taker), present
@@ -102,11 +109,15 @@ Read a reading via its \`state\`:
 
 ## Decision forms (StrategyDecision)
 
-- \`{ kind: 'enter', side: 'long'|'short', stop?, take?, ttl?, sizingHint?, tags?, rationale? }\`
-- \`{ kind: 'exit', target: string, percent?, reason? }\`
-- \`{ kind: 'add_to_position', mode: 'dca'|'scale_in', sizingHint? }\`
-- \`{ kind: 'update_protection', stop?, take? }\`
-- \`{ kind: 'annotate', tags?, metrics?, rationale? }\`
+A closed union of exactly six \`kind\`s. Each form is \`additionalProperties: false\` — any field NOT
+listed for that \`kind\` is schema-invalid. \`?\` marks optional; everything else is required.
+
+- \`{ kind: 'enter', side: 'long'|'short', stop?: number, take?: number, ttl?: number, sizingHint?: number, tags?: string[], rationale?: string, entry?: object, evidenceRefs?: string[] }\`
+  — \`side\` is REQUIRED (direction lives in the decision, not globally).
+- \`{ kind: 'exit', target: string, percent?: number, reason?: string }\` — \`target\` is REQUIRED (e.g. \`'all'\`).
+- \`{ kind: 'add_to_position', mode: 'dca'|'scale_in', sizingHint?: number }\` — \`mode\` is REQUIRED.
+- \`{ kind: 'update_protection', stop?: number, take?: number }\`
+- \`{ kind: 'annotate', tags?: string[], metrics?: object, rationale?: string }\`
 - \`{ kind: 'idle' }\`
 
 A hook may return one decision, an array of decisions, or null (treated as idle).
@@ -119,6 +130,46 @@ A hook may return one decision, an array of decisions, or null (treated as idle)
     // ✅ a number
     { kind: 'add_to_position', mode: 'dca', sizingHint: 1.5 }
 
+## Data needs — \`manifest.dataNeeds\` (CLOSED catalog)
+
+\`dataNeeds\` is a flat map of **boolean** flags declaring which point-in-time data the strategy reads.
+It is a DECLARATIVE contract of expectations, NOT a permission gate — \`ctx.market\` is populated from
+the tape's composition, never from this map (FR-010). Set a flag \`true\` ONLY for data you actually read.
+
+**The flag names are a closed vocabulary.** Any \`true\` flag whose name is NOT one of the names below →
+the bundle is rejected with \`unsupported_market_data_kind\`. Do NOT invent flag names.
+
+### ✅ Legitimate market / structural needs (set \`true\` when read)
+
+- \`closedCandlesUpToCurrent: boolean\` — closed OHLCV candles up to the current bar (\`ctx.data.closedCandles\`).
+- \`asOfIndicators: boolean\` — as-of indicator reads (\`ctx.data.indicatorAsOf\` / \`ctx.indicators.query\`).
+- \`openInterest: boolean\` — point-in-time open interest (\`ctx.market.oiAsOf\` / \`oiWindow\`).
+- \`liquidations: boolean\` — point-in-time liquidations (\`ctx.market.liqAsOf\` / \`liqWindow\`).
+- \`funding: boolean\` — funding snapshots (\`ctx.market.fundingAsOf\` / \`fundingWindow\`).
+- \`taker: boolean\` — taker buy/sell flow (\`ctx.market.takerAsOf\` / \`takerWindow\`).
+
+### ❌ Lookahead flags → \`lookahead_violation\` (recognized names, but NEVER set \`true\`)
+
+\`forwardBars\`, \`forwardWindow\`, \`oracle\`, \`labeling\`, \`postTradeOutcome\`.
+
+### ❌ Non-determinism flags → \`nondeterminism_violation\` (NEVER set \`true\`)
+
+\`wallClock\`, \`uncontrolledRandom\`.
+
+### Mapping guide (intent → flag) — do NOT invent sub-types
+
+- "candles" / "price" / "OHLCV" / "volume" → \`closedCandlesUpToCurrent\`
+  (NOT \`candles\`, \`priceData\`, \`volume\`, \`ohlcv\`).
+- "open interest" / "OI" → \`openInterest\` (NOT \`oi\`).
+- "liquidations" — long AND short → the single flag \`liquidations\`
+  (NOT \`longLiquidations\` / \`shortLiquidations\`; the long/short split lives inside \`LiqPoint\`, not in a flag).
+- "funding rate" → \`funding\`.  "taker / aggressor flow" → \`taker\`.
+
+    // ❌ unsupported_market_data_kind — invented names outside the catalog
+    dataNeeds: { priceData: true, candles: true, longLiquidations: true, volume: true }
+    // ✅ every flag is a catalog name; true only for data actually read
+    dataNeeds: { closedCandlesUpToCurrent: true, openInterest: true, liquidations: true }
+
 ## Manifest
 
 \`\`\`
@@ -127,13 +178,14 @@ A hook may return one decision, an array of decisions, or null (treated as idle)
   author: 'agent'|'human', status: 'research_only',
   contractVersion: '017.2', bundleContractVersion: '019.1',
   hooks: ['onBarClose', 'onPositionBar'],
-  dataNeeds: { closedCandlesUpToCurrent: true, asOfIndicators: true, ... },
+  dataNeeds: { closedCandlesUpToCurrent: true, asOfIndicators: true /* closed catalog — see above */ },
   capabilities: { platformSdk: true },
   paramsSchema: { /* JSON Schema of params */ },
   params: { /* default params */ }
 }
 \`\`\`
 
+\`contractVersion\` / \`bundleContractVersion\` are pinned by the SDK builder — do not invent values.
 The bundle wraps the manifest + entry + files; \`bundleHash\` is the sha256 of the raw ESM bytes.
 `;
 
