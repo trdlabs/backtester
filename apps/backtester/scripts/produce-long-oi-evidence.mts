@@ -20,6 +20,7 @@ import type { CanonicalRowV2, StrategyModule } from '@trading/research-contracts
 import { toFixtureFile, fixtureWindow } from './lib/long-oi-fixture.mjs';
 import { materializeBundle } from '../src/engine/sandbox/bundle-materialize.js';
 import { loadBundle } from '../src/engine/sandbox/bundle.js';
+import { createModuleManifest } from '@trading-backtester/sdk/builder';
 import { buildOverlayDataset } from '../src/engine/data-adapter.js';
 import { runStrategyBacktest } from '../src/engine/run-strategy.js';
 import { buildInlineOverlayRegistry } from '../src/engine/trusted-registry.js';
@@ -35,9 +36,11 @@ import { serializeArtifact } from '../src/evidence/artifact.js';
 import type { EvidenceScope } from '../src/evidence/body.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BUNDLE_MJS = '/home/alexxxnikolskiy/projects/trading-lab/.artifacts/long-oi-llm-bundle.mjs';
+// Bundle path + lab-pinned hash are env-overridable (LONGOI_BUNDLE / LONGOI_BUNDLE_HASH) so a new
+// proven bundle can be signed without editing code. Defaults = the original 3-symbol demo bundle.
+const BUNDLE_MJS = process.env.LONGOI_BUNDLE ?? '/home/alexxxnikolskiy/projects/trading-lab/.artifacts/long-oi-llm-bundle.mjs';
 const EXEC_FIXTURE = resolve(HERE, '../test/fixtures/exec-validation/long-oi-time-exit.json');
-const EXPECTED_BUNDLE_HASH = 'sha256:38fe5286dd8152da7a74e043576b2a9333ec23950839cb25289881bfe2c4416c';
+const EXPECTED_BUNDLE_HASH = process.env.LONGOI_BUNDLE_HASH ?? 'sha256:38fe5286dd8152da7a74e043576b2a9333ec23950839cb25289881bfe2c4416c';
 const TRUSTED_KEY_ID = 'bt-ed25519-cb1661aa4bcbfff8';
 const ENTRY = 'module/index.mjs';
 
@@ -63,8 +66,14 @@ async function main(): Promise<void> {
   // ── (3) extract manifest by importing the Variant-2 factory ──────────────────
   const factory = (await import(pathToFileURL(BUNDLE_MJS).href)).default as (p: unknown) => StrategyModule;
   if (typeof factory !== 'function') throw new Error('bundle default export is not a factory function');
-  const manifest = factory(undefined).manifest;
-  if (!manifest || manifest.kind !== 'strategy') throw new Error('bundle manifest missing or not kind:strategy');
+  const wireManifest = factory(undefined).manifest;
+  if (!wireManifest || wireManifest.kind !== 'strategy') throw new Error('bundle manifest missing or not kind:strategy');
+  // SDK 0.6.0 author bundles emit a bare manifest WITHOUT contractVersion/bundleContractVersion —
+  // authoring-doc 1.3.0 mandates these are "pinned by the SDK builder — do not invent values", i.e.
+  // a packaging concern, not an authoring one. Run the wire-manifest through the SDK's
+  // createModuleManifest so packaging injects 017.2 + 019.1 (and omits undefined optionals); without
+  // it the bare manifest fails materializeBundle/preflight (missing bundleContractVersion).
+  const manifest = createModuleManifest({ ...wireManifest, kind: 'strategy' });
 
   // ── (4) inline bundle (single source for gate + materialization) ─────────────
   const inlineBundle = { manifest, entry: ENTRY, files: { [ENTRY]: entrySource } } as unknown as InlineModuleBundle;
@@ -122,9 +131,9 @@ async function main(): Promise<void> {
     // pattern: createModuleRegistry({strategies:[mod]}) (provenance:'trusted') + explicit
     // createTrustedRouter() → onBarClose runs in-process via InProcessTrustedModuleExecutor.
     //
-    // The factory's raw wire-manifest carries `bundleContractVersion` (019 field), which the 017
-    // manifest validator rejects (additionalProperties:false). materializeBundle strips it into the
-    // on-disk manifest.json, so loadBundle()'s manifest is the clean 017 form — reuse THAT manifest
+    // `manifest` (from createModuleManifest above) carries `bundleContractVersion` (019 field), which
+    // the 017 manifest validator rejects (additionalProperties:false). materializeBundle strips it into
+    // the on-disk manifest.json, so loadBundle()'s manifest is the clean 017 form — reuse THAT manifest
     // for the in-process module so curated passes the same validation candidate does (identical manifest).
     const curatedModule = { ...factory(manifest.params), manifest: bundle.manifest };
     const curatedRegistry = createModuleRegistry({
