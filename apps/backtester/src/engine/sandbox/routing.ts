@@ -81,7 +81,11 @@ export function createInertOverlayModule(manifest: ModuleManifest): HypothesisOv
 
 /** Вход построителя 019 module-registry (расширяет 018 trusted-registry). */
 export interface ModuleRegistryInput {
-  readonly strategies?: readonly StrategyModule[]; // trusted
+  // trusted: инстанс модуля; опц. `moduleFactory` (аддитивно) включает per-symbol инстанцирование
+  // в runner'е (изоляция module-state между символами — паритет с sandbox-сессиями).
+  readonly strategies?: readonly (StrategyModule & {
+    readonly moduleFactory?: (params: unknown) => StrategyModule;
+  })[];
   readonly overlays?: readonly HypothesisOverlayModule[]; // trusted
   readonly strategyBundles?: readonly ModuleBundle[]; // untrusted (accepted)
   readonly overlayBundles?: readonly ModuleBundle[];
@@ -105,7 +109,12 @@ function key(id: string, version: string): string {
 export function createModuleRegistry(input: ModuleRegistryInput): ModuleRegistry019 {
   const strategies = new Map<string, ResolvedStrategy019>();
   for (const m of input.strategies ?? []) {
-    strategies.set(key(m.manifest.id, m.manifest.version), { module: m, manifest: m.manifest, provenance: 'trusted' });
+    strategies.set(key(m.manifest.id, m.manifest.version), {
+      module: m,
+      manifest: m.manifest,
+      provenance: 'trusted',
+      ...(m.moduleFactory !== undefined ? { moduleFactory: m.moduleFactory } : {}),
+    });
   }
   for (const b of input.strategyBundles ?? []) {
     strategies.set(key(b.manifest.id, b.manifest.version), {

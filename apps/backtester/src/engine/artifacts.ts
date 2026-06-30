@@ -251,6 +251,14 @@ export interface ComparisonSummary {
 export interface ResolvedStrategy {
   readonly module: StrategyModule;
   readonly manifest: ModuleManifest;
+  /**
+   * Опционально (trusted): фабрика для СВЕЖЕГО инстанса модуля per-symbol. Когда задана, runner
+   * инстанцирует стратегию заново на каждый символ — так module-level FSM-state (в замыкании
+   * `createStrategyModule`) НЕ протекает между символами (twin-equivalence с sandbox, где каждый
+   * символ исполняется в своей сессии/контейнере). Не задана → переиспользуется `module` (поведение
+   * single-symbol неизменно).
+   */
+  readonly moduleFactory?: (params: unknown) => StrategyModule;
 }
 
 /** Резолвнутый overlay из registry. */

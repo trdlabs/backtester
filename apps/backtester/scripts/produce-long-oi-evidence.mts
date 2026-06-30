@@ -135,7 +135,12 @@ async function main(): Promise<void> {
     // the 017 manifest validator rejects (additionalProperties:false). materializeBundle strips it into
     // the on-disk manifest.json, so loadBundle()'s manifest is the clean 017 form — reuse THAT manifest
     // for the in-process module so curated passes the same validation candidate does (identical manifest).
-    const curatedModule = { ...factory(manifest.params), manifest: bundle.manifest };
+    // Per-symbol изоляция (twin-equivalence): отдаём ФАБРИКУ, а не пред-собранный инстанс — runner
+    // инстанцирует стратегию свежей на каждый символ (FSM-state не протекает между символами; паритет
+    // с sandbox per-symbol сессией). `manifest: bundle.manifest` — clean 017 форма (см. выше).
+    const curatedFactory = (p: unknown): StrategyModule =>
+      ({ ...factory(p), manifest: bundle.manifest }) as unknown as StrategyModule;
+    const curatedModule = Object.assign(curatedFactory(manifest.params), { moduleFactory: curatedFactory });
     const curatedRegistry = createModuleRegistry({
       strategies: [curatedModule],
       riskProfiles: [...TRUSTED_REGISTRY_DEFINITION.riskProfiles],

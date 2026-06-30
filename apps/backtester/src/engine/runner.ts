@@ -548,7 +548,15 @@ async function simulateTarget(
       // 023: лента передаётся в builder; ctx.market выставляется по составу ленты (composition-following).
       ...(marketTape !== undefined ? { marketTape } : {}),
     });
-    await runSymbol(symbol, candles, builder, target.strategy, overlays, portfolio, engine, acc, marketTape);
+    // Per-symbol изоляция module-state: если стратегия несёт `moduleFactory` (trusted), инстанцируем
+    // её свежей на КАЖДЫЙ символ — FSM-state в замыкании `createStrategyModule` не протекает между
+    // символами (паритет с sandbox, где каждый символ исполняется в своей сессии). Без фабрики —
+    // переиспользуем единственный `module` (поведение single-symbol неизменно).
+    const symbolStrategy =
+      target.strategy.moduleFactory !== undefined
+        ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
+        : target.strategy;
+    await runSymbol(symbol, candles, builder, symbolStrategy, overlays, portfolio, engine, acc, marketTape);
     barsProcessed += candles.length;
   }
 
