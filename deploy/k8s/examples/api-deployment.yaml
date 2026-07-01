@@ -15,7 +15,7 @@ spec:
       containers:
         - name: api
           image: trading-backtester:latest
-          command: ["node", "apps/backtester/src/index.ts"]
+          command: ["node_modules/.bin/tsx", "apps/backtester/src/index.ts"]
           ports:
             - containerPort: 8080
           env:
