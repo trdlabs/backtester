@@ -157,7 +157,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ? Math.floor(workerHealthPortRaw)
       : undefined;
   const workerId = env.WORKER_ID ?? `${hostname()}:${process.pid}`;
-  const storeBackend: 'filesystem' | 's3' = env.BACKTESTER_STORE_BACKEND === 's3' ? 's3' : 'filesystem';
+  const rawStoreBackend = env.BACKTESTER_STORE_BACKEND;
+  if (rawStoreBackend && rawStoreBackend !== 'filesystem' && rawStoreBackend !== 's3') {
+    throw new Error(
+      `invalid BACKTESTER_STORE_BACKEND '${rawStoreBackend}' (expected 'filesystem' or 's3')`,
+    );
+  }
+  const storeBackend: 'filesystem' | 's3' = rawStoreBackend === 's3' ? 's3' : 'filesystem';
   let s3: S3Settings | undefined;
   if (storeBackend === 's3') {
     const endpoint = env.BACKTESTER_S3_ENDPOINT;

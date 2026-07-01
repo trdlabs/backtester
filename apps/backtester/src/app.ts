@@ -26,6 +26,7 @@ import { loadSigningKeyFromPem, type SigningKey } from './evidence/signing.js';
 import type { BundleStore } from './sandbox/bundle-store';
 import type { SandboxConfig } from './sandbox/sandbox-executor';
 import { createArtifactStore, createBundleStore } from './storage/stores';
+import { createS3ObjectClient } from './storage/s3-client';
 
 export interface BuildAppOptions {
   store?: JobStore;
@@ -82,8 +83,14 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
           ...(config.mockPlatformToken ? { token: config.mockPlatformToken } : {}),
         })
       : new FixtureDataPort(config.fixturesDir));
-  const artifactStore = overrides.artifactStore ?? (await createArtifactStore(config));
-  const bundleStore = overrides.bundleStore ?? (await createBundleStore(config));
+  // Build one shared S3 client when the S3 backend is active and at least one store isn't overridden,
+  // so the artifact and bundle stores share a single connection pool instead of constructing two.
+  const sharedS3Client =
+    config.storeBackend === 's3' && config.s3 && (!overrides.artifactStore || !overrides.bundleStore)
+      ? await createS3ObjectClient(config.s3)
+      : undefined;
+  const artifactStore = overrides.artifactStore ?? (await createArtifactStore(config, sharedS3Client));
+  const bundleStore = overrides.bundleStore ?? (await createBundleStore(config, sharedS3Client));
   const clock = overrides.clock ?? ((): number => Date.now());
   const uid = overrides.uid ?? ((): string => randomUUID());
   const postWebhook = overrides.postWebhook ?? defaultWebhookPoster();

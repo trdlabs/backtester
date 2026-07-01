@@ -163,6 +163,8 @@ Set `BACKTESTER_STORE_BACKEND=s3` and:
 | `BACKTESTER_S3_ACCESS_KEY` / `_SECRET_KEY` | from `Secret` | from `Secret` |
 | `BACKTESTER_S3_FORCE_PATH_STYLE` | `true` | `false` |
 
+First boot: create the bucket before starting the service — the store does not auto-create it, e.g. `mc mb myminio/backtester`.
+
 `S3` here means the S3 **protocol/API**, not the AWS vendor — the same code runs against MinIO, Ceph
 RGW, Cloudflare R2, or AWS S3. Default backend is `filesystem` (dev/CI). `@aws-sdk/client-s3` is an
 optional dependency imported only on the S3 path.

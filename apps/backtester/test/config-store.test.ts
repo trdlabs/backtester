@@ -44,4 +44,14 @@ describe('store backend config', () => {
       loadConfig({ BACKTESTER_STORE_BACKEND: 's3', BACKTESTER_S3_ENDPOINT: 'http://minio:9000' }),
     ).toThrow(/BACKTESTER_S3_BUCKET/);
   });
+
+  it('rejects an unrecognized store backend value', () => {
+    expect(() => loadConfig({ BACKTESTER_STORE_BACKEND: 'minio' })).toThrow(
+      /invalid BACKTESTER_STORE_BACKEND/,
+    );
+  });
+
+  it('accepts an explicit filesystem backend', () => {
+    expect(loadConfig({ BACKTESTER_STORE_BACKEND: 'filesystem' }).storeBackend).toBe('filesystem');
+  });
 });
