@@ -913,7 +913,7 @@ spec:
       containers:
         - name: api
           image: trading-backtester:latest
-          command: ["node", "apps/backtester/src/index.ts"]
+          command: ["node_modules/.bin/tsx", "apps/backtester/src/index.ts"]
           ports:
             - containerPort: 8080
           env:
@@ -974,7 +974,9 @@ spec:
       containers:
         - name: worker
           image: trading-backtester:latest
-          command: ["node", "apps/backtester/src/worker-main.ts"]
+          command: ["node_modules/.bin/tsx", "apps/backtester/src/worker-main.ts"]
+          ports:
+            - containerPort: 8081
           env:
             - name: WORKER_CONCURRENCY
               value: "2"
