@@ -49,6 +49,10 @@ import type { SigningKey } from '../evidence/signing.js';
 import { produceStrategyEvidence } from '../evidence/produce-strategy-evidence.js';
 import type { EvidenceScope } from '../evidence/body.js';
 import { runBoundedPool } from './pool.js';
+import { normalize, restamp, type DedupTemplate } from './dedup/restamp.js';
+import { computeIdentity } from './dedup/compute-identity.js';
+import type { ResultCache } from './dedup/result-cache.js';
+import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.js';
 
 export { RunnerError };
 
@@ -68,6 +72,10 @@ export interface WorkerDeps extends CompletionDeps {
   lease?: { workerId: string; ttlMs: number; maxAttempts: number };
   /** Ed25519 signing key for backtest evidence. Absent ⇒ evidence signing is OFF. */
   evidenceSigningKey?: SigningKey;
+  /** Fingerprint-based completed-result cache. Absent ⇒ dedup is OFF (kill-switch). */
+  resultCache?: ResultCache;
+  /** Master kill-switch: dedup only engages when true AND resultCache is present. */
+  dedupEnabled?: boolean;
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -124,6 +132,13 @@ export function overlaySandboxDeps(s: OverlaySandboxSettings): SandboxExecutorDe
   const harnessDir = ensureHarnessInVolume(s.harnessDir, mount.mountpoint);
   return { harnessDir, mount };
 }
+
+/**
+ * Boundary indirection: processNextQueued invokes bundle/executor/router construction through this
+ * object so tests can `vi.spyOn(workerInternals, 'sandboxBundleFor')` and prove a dedup HIT performs
+ * NONE of them (a bare intra-module call would not be interceptable by the spy). Compute-skip proof.
+ */
+export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor };
 
 type Engine = 'momentum' | 'overlay' | 'strategy';
 
@@ -294,12 +309,8 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
   let sandboxRouter: ExecutorRouter | undefined;
   let sandboxBundle: SandboxBundleHandle | undefined;
   try {
-    let summary: RunResultSummary;
-    let resultHash: ContentHash;
-    let manifest: ArtifactManifest;
-
     if (claimed.bundleHash !== undefined) {
-      sandboxBundle = await sandboxBundleFor(deps, claimed.bundleHash);
+      sandboxBundle = await workerInternals.sandboxBundleFor(deps, claimed.bundleHash);
     }
 
     // Strategy pre-flight validation — MUST run before tape materialization: the strategy-dispatch
@@ -330,8 +341,45 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     const materialized = await materializeFor(deps, claimed);
     const dsFingerprint = materialized.datasetFingerprint;
     const engineRequest = materialized.engineRequest;
+    const engine = materialized.engine;
 
-    if (claimed.request.engine === 'overlay') {
+    // ── DEDUP GATE ────────────────────────────────────────────────────────────
+    // dedup engages only when the kill-switch is on AND a cache is wired.
+    const dedupOn = deps.dedupEnabled === true && deps.resultCache !== undefined;
+    // bypassCache skips the LOOKUP (force fresh) but a fresh successful run STILL populates below.
+    const doLookup = dedupOn && claimed.request.bypassCache !== true;
+    let sandboxPolicyVersion = '';
+    if (dedupOn) {
+      const policy = deps.overlaySandbox.policy;
+      sandboxPolicyVersion = `${policy.id}@${policy.version}`;
+    }
+
+    let finalized: Finalized | undefined;
+    let dedupedFrom: string | undefined;
+
+    if (doLookup) {
+      const identity = computeIdentity({
+        requestFingerprint: claimed.requestFingerprint,
+        datasetFingerprint: dsFingerprint,
+        sandboxPolicyVersion,
+      });
+      const hit = await deps.resultCache!.lookup(identity);
+      if (hit) {
+        const template = (await deps.artifactStore.read(hit.templateRef as ContentHash)) as DedupTemplate;
+        if (template.engine === engine && template.templateVersion === DEDUP_TEMPLATE_VERSION) {
+          // Cache HIT: re-stamp the cached template under this runId. Deliberately performs NONE of
+          // sandboxBundleFor / executorFor / router / engine — the whole point of dedup.
+          const payload = restamp(template, runId);
+          finalized = await finalizeResult(deps, engine, payload, claimed, dsFingerprint);
+          dedupedFrom = hit.computeIdentity;
+        }
+      }
+    }
+
+    if (!finalized) {
+      // ===== MISS PATH — the ONLY place engine execution happens =====
+      let payload: unknown;
+      if (claimed.request.engine === 'overlay') {
       // ===== OVERLAY PATH — lifted engine end-to-end (Slice 6a) =====
       const marketTape = materialized.marketTape!;
 
@@ -340,7 +388,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         // Build the inline execution registry from the SAME canonical definition that `/v1/registry`
         // advertises, adding only the submitted overlay bundle — so discovery and execution can't drift.
         registry = buildInlineOverlayRegistry([sandboxBundle!.bundle]);
-        sandboxRouter = overlayRouterFor(deps);
+        sandboxRouter = workerInternals.overlayRouterFor(deps);
       }
 
       const outcome = await runOverlayBacktest(engineRequest, {
@@ -354,20 +402,15 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           `overlay run rejected: ${JSON.stringify(outcome.validation.issues)}`,
         );
       }
-      ({ summary, manifest, resultHash } = await finalizeResult(
-        deps,
-        'overlay',
-        outcome,
-        claimed,
-        dsFingerprint,
-      ));
+      payload = outcome;
+      finalized = await finalizeResult(deps, 'overlay', outcome, claimed, dsFingerprint);
     } else if (claimed.request.engine === 'strategy') {
       // ===== STRATEGY PATH — kind:'strategy' lifecycle-bundle via sandbox (closes gap PR #57) =====
       // Pre-flight guards (bundle present, manifest.kind, moduleRef match) already ran above.
       const r = claimed.request;
       const marketTape = materialized.marketTape!;
       const registry = buildInlineOverlayRegistry([], [sandboxBundle!.bundle]);
-      sandboxRouter = overlayRouterFor(deps);
+      sandboxRouter = workerInternals.overlayRouterFor(deps);
       const outcome = await runStrategyBacktest(engineRequest, {
         registry,
         marketTape,
@@ -419,17 +462,11 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         }
       }
 
-      ({ summary, manifest, resultHash } = await finalizeResult(
-        deps,
-        'strategy',
-        outcome,
-        claimed,
-        dsFingerprint,
-        evidenceRef,
-      ));
+      payload = outcome;
+      finalized = await finalizeResult(deps, 'strategy', outcome, claimed, dsFingerprint, evidenceRef);
     } else {
       // ===== MOMENTUM PATH — unchanged (golden eff10116… must not move) =====
-      executor = await executorFor(deps, claimed);
+      executor = await workerInternals.executorFor(deps, claimed);
 
       const dataset = materialized.dataset!;
       const result = await runBacktest(engineRequest, {
@@ -437,13 +474,30 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         executor,
         ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
       });
-      ({ summary, manifest, resultHash } = await finalizeResult(
-        deps,
-        'momentum',
-        result,
-        claimed,
-        dsFingerprint,
-      ));
+      payload = result;
+      finalized = await finalizeResult(deps, 'momentum', result, claimed, dsFingerprint);
+    }
+
+      // Populate the cache on ANY completed fresh run — INCLUDING a bypassCache run (bypass skips
+      // lookup, not populate). Reachable only after the engine returned, before the terminal
+      // transition, so failed/timeout/validation_error runs (which threw) never cache.
+      if (dedupOn) {
+        const normalized = normalize(engine, payload, runId);
+        const templateRef = await deps.artifactStore.write(normalized);
+        await deps.resultCache!.put({
+          computeIdentity: computeIdentity({
+            requestFingerprint: claimed.requestFingerprint,
+            datasetFingerprint: dsFingerprint,
+            sandboxPolicyVersion,
+          }),
+          requestFingerprint: claimed.requestFingerprint,
+          datasetFingerprint: dsFingerprint,
+          computeVersion: DEDUP_COMPUTE_VERSION,
+          sandboxPolicyVersion,
+          templateRef,
+          createdAtMs: deps.clock(),
+        });
+      }
     }
 
     const now = deps.clock();
@@ -451,10 +505,11 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       atMs: now,
       terminalAtMs: now,
       lastActivityMs: now,
-      resultSummary: summary,
-      resultHash,
-      artifactManifest: manifest,
+      resultSummary: finalized.summary,
+      resultHash: finalized.resultHash,
+      artifactManifest: finalized.manifest,
       datasetFingerprint: dsFingerprint,
+      ...(dedupedFrom !== undefined ? { dedupedFrom } : {}),
     }, deps.lease?.workerId);
   } catch (err) {
     const code = err instanceof RunnerError ? err.code : 'runner_failure';

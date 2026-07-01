@@ -47,6 +47,9 @@ export interface JobRow {
   resultHash?: ContentHash;
   artifactManifest?: ArtifactManifest;
   terminalCode?: string;
+  /** Provenance: computeIdentity of the cache entry this run was served from (dedup HIT). Observability
+   *  only — NEVER part of result_hash. Absent for freshly-computed runs. */
+  dedupedFrom?: string;
   timeline: RunTimelineEntry[];
 }
 
@@ -79,6 +82,8 @@ export interface JobRowPatch {
   artifactManifest?: ArtifactManifest;
   datasetFingerprint?: string;
   terminalCode?: string;
+  /** Dedup provenance (computeIdentity of the served cache entry). Observability only. */
+  dedupedFrom?: string;
 }
 
 export type JobEventType =
@@ -168,6 +173,7 @@ export class InMemoryJobStore implements JobStore {
     if (patch.artifactManifest !== undefined) job.artifactManifest = patch.artifactManifest;
     if (patch.datasetFingerprint !== undefined) job.datasetFingerprint = patch.datasetFingerprint;
     if (patch.terminalCode !== undefined) job.terminalCode = patch.terminalCode;
+    if (patch.dedupedFrom !== undefined) job.dedupedFrom = patch.dedupedFrom;
     job.timeline.push({ status: to, atMs: patch.atMs });
     return true;
   }
