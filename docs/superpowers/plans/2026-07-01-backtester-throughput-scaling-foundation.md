@@ -1221,3 +1221,15 @@ Investigate with systematic-debugging; do not weaken any assertion or invariant 
 **Type consistency:** `S3ObjectClient.{put,get,head}`, `createS3ObjectClient`, `createFakeS3Client`, `S3ArtifactStore`/`S3BundleStore` constructors (single `S3ObjectClient` arg), `createArtifactStore`/`createBundleStore(config, injected?)`, `WorkerHealthState.{live,ready}`, `startWorkerHealthServer(port, state)`, and `AppConfig.{storeBackend,s3,workerHealthPort}` are used identically across the tasks that define and consume them.
 
 **Note for the implementer (Task 5, Step 5):** grep before narrowing the `app.ts` imports — `FileArtifactStore` / `FileBundleStore` may still be referenced elsewhere in the file; only convert to `type`-only import if the value import is genuinely unused, else leave it and just add the factory import.
+
+---
+
+## Post-review hardening (applied after the whole-branch review — commit 6906b23)
+
+The final whole-branch review passed (merge = yes). Three agreed hardening deltas were applied on top of the tasks above:
+
+1. `config.ts` — reject a set-but-unrecognized `BACKTESTER_STORE_BACKEND` (fail-fast) instead of silently defaulting to `filesystem`; an unset/empty value still defaults to filesystem. (+2 `config-store.test.ts` cases.)
+2. `buildApp` — construct a single shared `S3ObjectClient` for the artifact and bundle stores instead of one each (one connection pool).
+3. `docs/OPERATIONS.md` — note that the bucket must be created first (`mc mb`).
+
+Accepted as **fast-follows** (non-blocking): a `HeadBucket` preflight to tighten the not-found taxonomy, a MinIO integration test exercising the real client, `hexOf`/`JSON.parse` cross-impl consistency across the store adapters, `WORKER_HEALTH_PORT="0"` disable semantics, a k8s `Service` for the worker health port, and MinIO bucket auto-create.
