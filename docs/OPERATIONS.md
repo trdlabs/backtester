@@ -185,3 +185,28 @@ peak sandbox CPU    ≈ max_pods × WORKER_CONCURRENCY × avg_symbols_per_run ×
 
 Prefer many modest workers over few large ones, and set KEDA `maxReplicaCount` from these formulas so
 you do not exhaust a node's Docker daemon.
+
+## Result dedup (Phase C item 11)
+
+Skips redundant compute (engine + sandbox execution) for a run whose identity was already computed
+successfully. Off by default — a pure opt-in.
+
+- **Enable:** `BACKTESTER_DEDUP_ENABLED=true` (default `false`/OFF — the kill switch; when unset or
+  `false`, `buildApp` behaves exactly as it did before dedup existed).
+- **Cache key (identity):** `requestFingerprint + datasetFingerprint + DEDUP_COMPUTE_VERSION + sandbox
+  policy`. Only successful `completed` runs are cached — failed/errored/cancelled runs never populate
+  or satisfy a lookup.
+- **Backing store:** `PgResultCache` when `DATABASE_URL` is set (same `ownedPool` `buildApp` already
+  ran `migrate()` on — the dedup table and `deduped_from` column ship in migration `0004` and are
+  guaranteed present before the cache is constructed); `InMemoryResultCache` otherwise (single-process,
+  cleared on restart).
+- **Invalidation:** bump `DEDUP_COMPUTE_VERSION` whenever engine/scoring/sandbox-policy semantics
+  change in a way that would make a cached result stale. There is no automatic invalidation — the
+  version bump is the mechanism.
+- **Bypass:** a per-request `bypassCache` flag forces fresh compute for that run; the fresh result
+  still populates the cache for subsequent identical requests.
+- **`result_hash` is unchanged:** it is re-stamped per run regardless of cache hit/miss — dedup affects
+  compute, not the result-hash contract.
+- **Accepted partial (bundle-carrying runs):** a HIT on a run that carries a strategy bundle still
+  loads the bundle (needed to serve the response) but skips the expensive engine + sandbox execution.
+  Momentum (non-bundle) HITs skip all compute, including bundle load.
