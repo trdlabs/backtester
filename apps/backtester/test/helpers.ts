@@ -25,6 +25,7 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     fixturesDir: FIXTURES_DIR,
     artifactsDir: mkdtempSync(resolve(tmpdir(), 'bt-artifacts-')),
     bundlesDir: mkdtempSync(resolve(tmpdir(), 'bt-bundles-')),
+    storeBackend: 'filesystem',
     dataSource: 'fixture',
     dataApiPageLimit: 1000,
     defaultQueueTimeoutMs: 3_600_000,
