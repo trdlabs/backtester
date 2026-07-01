@@ -309,6 +309,12 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
   let sandboxRouter: ExecutorRouter | undefined;
   let sandboxBundle: SandboxBundleHandle | undefined;
   try {
+    // NOTE: the bundle is loaded here (pre-flight) rather than lazily in the miss-path so the strategy
+    // validation guards fire before tape materialization — preserving the sandbox error taxonomy
+    // (validation_error, not missing_dataset). Consequence: a dedup HIT on a bundle-carrying run still
+    // loads the bundle (cheap); it skips the expensive engine + sandbox EXECUTION, which is the dedup win.
+    // Follow-up: split into loadBundleManifest (early, for validation) + materializeBundleToDisk (lazy,
+    // miss-path) to let a bundle-path HIT skip the bundle materialization too.
     if (claimed.bundleHash !== undefined) {
       sandboxBundle = await workerInternals.sandboxBundleFor(deps, claimed.bundleHash);
     }
