@@ -40,8 +40,7 @@ export async function wakeComputeWaiters(
     // Poison exhausted waiters first (independent of cache/lock).
     for (const w of group) {
       if (w.computeWaitAttempts >= deps.computeWaitMaxAttempts) {
-        await deps.store.poisonComputeWaiter(w.runId, now);
-        poisoned += 1;
+        if (await deps.store.poisonComputeWaiter(w.runId, now)) poisoned += 1;
       }
     }
     const live = group.filter((w) => w.computeWaitAttempts < deps.computeWaitMaxAttempts);
