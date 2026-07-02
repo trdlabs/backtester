@@ -484,6 +484,76 @@ git commit -m "feat(coalesce): internal waiting_for_compute status; toStatusView
 
 ---
 
+### Task 5: `JobRow`/`JobRowPatch` fields + deferred-charge claim + Pg mapping
+
+> Ordered BEFORE the gate task so the patch fields it introduces exist when the gate (Task 6) uses them.
+
+**Files:**
+- Modify: `apps/backtester/src/jobs/job-store.ts` (`JobRow` ~line 17, `JobRowPatch` ~line 73, `InMemoryJobStore.transition`/`claimNextQueued`)
+- Modify: `apps/backtester/src/jobs/pg-job-store.ts` (`rowToJob` ~line 87, `transition` ~line 176, `claimNextQueued` ~line 224)
+- Test: `apps/backtester/test/coalesce-claim.test.ts`
+
+**Interfaces:**
+- Produces: `JobRow` + `JobRowPatch` new fields (`computeWaitAttempts: number`, `computeIdentity?: string`, `waitDeadlineMs?: number`, `computeWakeReason?: ComputeWakeReason`, `engineAttemptCharged?: boolean`); `claimNextQueued(nowMs, lease?, opts?: { coalesceEnabled?: boolean })` — when `coalesceEnabled`, the claim does NOT bump `attempts`.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// apps/backtester/test/coalesce-claim.test.ts
+import { describe, expect, it } from 'vitest';
+import { InMemoryJobStore } from '../src/jobs/job-store.js';
+// ... build a queued momentum job (reuse momentumJob/enqueue from dedup-worker.test.ts) ...
+
+describe('deferred attempt charging on claim', () => {
+  it('coalescing off: claim bumps attempts (unchanged)', async () => {
+    const store = new InMemoryJobStore();
+    await enqueue(store, 'run-x');
+    const c = await store.claimNextQueued(1000, { workerId: 'w1', ttlMs: 100 });
+    expect(c?.attempts).toBe(1);
+  });
+  it('coalescing on: claim sets running+lease but does NOT bump attempts', async () => {
+    const store = new InMemoryJobStore();
+    await enqueue(store, 'run-y');
+    const c = await store.claimNextQueued(1000, { workerId: 'w1', ttlMs: 100 }, { coalesceEnabled: true });
+    expect(c?.status).toBe('running');
+    expect(c?.leasedBy).toBe('w1');
+    expect(c?.attempts).toBe(0);            // deferred to engine-commit (INV-5)
+    expect(c?.computeWaitAttempts).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm vitest run apps/backtester/test/coalesce-claim.test.ts`
+Expected: FAIL — `claimNextQueued` ignores the 3rd `opts` arg / always bumps attempts.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Add fields to `JobRow` (default `computeWaitAttempts: 0`) and `JobRowPatch` (all optional). Update `NewJob`→`insertOrGet` to default `computeWaitAttempts = 0`. Extend the `JobStore` interface signature: `claimNextQueued(nowMs: number, lease?: {...}, opts?: { coalesceEnabled?: boolean }): Promise<JobRow | undefined>`.
+
+`InMemoryJobStore.claimNextQueued`: when `opts?.coalesceEnabled`, set `running` + lease but skip the `attempts += 1`. `InMemoryJobStore.transition`: apply the new patch fields (mirror the existing `if (patch.x !== undefined) job.x = patch.x` lines) for `computeWaitAttempts`, `computeIdentity`, `waitDeadlineMs`, `computeWakeReason`, `engineAttemptCharged`, and `attempts`.
+
+`PgJobStore.claimNextQueued`: thread `coalesceEnabled` into the existing UPDATE — the `attempts` CASE becomes:
+```sql
+attempts = CASE WHEN $3::text IS NULL OR $5::boolean THEN j.attempts ELSE j.attempts + 1 END
+```
+with `$5 = opts?.coalesceEnabled ?? false`. `rowToJob`: map the 5 new columns (`compute_wait_attempts`→number, `compute_identity`, `wait_deadline_ms`→num, `compute_wake_reason`, `engine_attempt_charged`→bool). `PgJobStore.transition`: add the 5 fields to the patch SQL (mirror the existing `queued_at_ms` COALESCE-style parameters).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pnpm vitest run apps/backtester/test/coalesce-claim.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/backtester/src/jobs/job-store.ts apps/backtester/src/jobs/pg-job-store.ts apps/backtester/test/coalesce-claim.test.ts
+git commit -m "feat(coalesce): JobRow/Patch fields + deferred attempt charging in claimNextQueued"
+```
+
+---
+
 ### Task 6: `WorkerDeps` wiring + gate leader/follower + engine-commit charge (bypassCache bypasses coalescing)
 
 **Files:**
@@ -658,76 +728,6 @@ Expected: PASS (coalescing off in those suites — INV-6).
 ```bash
 git add apps/backtester/src/jobs/worker.ts apps/backtester/test/coalesce-gate.test.ts
 git commit -m "feat(coalesce): gate leader/follower + engine-commit attempts charge on all engine paths"
-```
-
----
-
-### Task 5: `JobRow`/`JobRowPatch` fields + deferred-charge claim + Pg mapping
-
-> Ordered BEFORE the gate task so the patch fields it introduces exist when the gate (Task 6) uses them.
-
-**Files:**
-- Modify: `apps/backtester/src/jobs/job-store.ts` (`JobRow` ~line 17, `JobRowPatch` ~line 73, `InMemoryJobStore.transition`/`claimNextQueued`)
-- Modify: `apps/backtester/src/jobs/pg-job-store.ts` (`rowToJob` ~line 87, `transition` ~line 176, `claimNextQueued` ~line 224)
-- Test: `apps/backtester/test/coalesce-claim.test.ts`
-
-**Interfaces:**
-- Produces: `JobRow` + `JobRowPatch` new fields (`computeWaitAttempts: number`, `computeIdentity?: string`, `waitDeadlineMs?: number`, `computeWakeReason?: ComputeWakeReason`, `engineAttemptCharged?: boolean`); `claimNextQueued(nowMs, lease?, opts?: { coalesceEnabled?: boolean })` — when `coalesceEnabled`, the claim does NOT bump `attempts`.
-
-- [ ] **Step 1: Write the failing test**
-
-```ts
-// apps/backtester/test/coalesce-claim.test.ts
-import { describe, expect, it } from 'vitest';
-import { InMemoryJobStore } from '../src/jobs/job-store.js';
-// ... build a queued momentum job (reuse momentumJob/enqueue from dedup-worker.test.ts) ...
-
-describe('deferred attempt charging on claim', () => {
-  it('coalescing off: claim bumps attempts (unchanged)', async () => {
-    const store = new InMemoryJobStore();
-    await enqueue(store, 'run-x');
-    const c = await store.claimNextQueued(1000, { workerId: 'w1', ttlMs: 100 });
-    expect(c?.attempts).toBe(1);
-  });
-  it('coalescing on: claim sets running+lease but does NOT bump attempts', async () => {
-    const store = new InMemoryJobStore();
-    await enqueue(store, 'run-y');
-    const c = await store.claimNextQueued(1000, { workerId: 'w1', ttlMs: 100 }, { coalesceEnabled: true });
-    expect(c?.status).toBe('running');
-    expect(c?.leasedBy).toBe('w1');
-    expect(c?.attempts).toBe(0);            // deferred to engine-commit (INV-5)
-    expect(c?.computeWaitAttempts).toBe(0);
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm vitest run apps/backtester/test/coalesce-claim.test.ts`
-Expected: FAIL — `claimNextQueued` ignores the 3rd `opts` arg / always bumps attempts.
-
-- [ ] **Step 3: Write minimal implementation**
-
-Add fields to `JobRow` (default `computeWaitAttempts: 0`) and `JobRowPatch` (all optional). Update `NewJob`→`insertOrGet` to default `computeWaitAttempts = 0`. Extend the `JobStore` interface signature: `claimNextQueued(nowMs: number, lease?: {...}, opts?: { coalesceEnabled?: boolean }): Promise<JobRow | undefined>`.
-
-`InMemoryJobStore.claimNextQueued`: when `opts?.coalesceEnabled`, set `running` + lease but skip the `attempts += 1`. `InMemoryJobStore.transition`: apply the new patch fields (mirror the existing `if (patch.x !== undefined) job.x = patch.x` lines) for `computeWaitAttempts`, `computeIdentity`, `waitDeadlineMs`, `computeWakeReason`, `engineAttemptCharged`, and `attempts`.
-
-`PgJobStore.claimNextQueued`: thread `coalesceEnabled` into the existing UPDATE — the `attempts` CASE becomes:
-```sql
-attempts = CASE WHEN $3::text IS NULL OR $5::boolean THEN j.attempts ELSE j.attempts + 1 END
-```
-with `$5 = opts?.coalesceEnabled ?? false`. `rowToJob`: map the 5 new columns (`compute_wait_attempts`→number, `compute_identity`, `wait_deadline_ms`→num, `compute_wake_reason`, `engine_attempt_charged`→bool). `PgJobStore.transition`: add the 5 fields to the patch SQL (mirror the existing `queued_at_ms` COALESCE-style parameters).
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm vitest run apps/backtester/test/coalesce-claim.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/backtester/src/jobs/job-store.ts apps/backtester/src/jobs/pg-job-store.ts apps/backtester/test/coalesce-claim.test.ts
-git commit -m "feat(coalesce): JobRow/Patch fields + deferred attempt charging in claimNextQueued"
 ```
 
 ---
