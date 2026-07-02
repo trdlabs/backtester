@@ -199,6 +199,44 @@ Temporal) remain follow-up specs.
 12. **Stronger sandbox isolation later:** evaluate gVisor/Kata/Firecracker only after the horizontal Docker worker path is proven. Preserve the current sandbox contract: no network/secrets, read-only mounts, resource-limit error taxonomy, deterministic cleanup, and stable IPC behavior.
 13. **Temporal later, for workflows not raw speed:** introduce Temporal only when the product becomes multi-step durable orchestration (generate strategy -> backtest -> evaluate -> re-prompt -> evidence), not as a replacement for the current Pg job queue.
 
+### Phase D — concurrent-burst readiness (analysis 2026-07-02)
+
+Context: with the Phase C foundation shipped (items 6–9) and dedup+coalescing validated (11a),
+the dominant cost is the **fresh-miss engine/sandbox run (~23 s, 85–95 % of wall time)**, which
+scales only with `worker_pods × WORKER_CONCURRENCY`. A whole-system review (backtester runtime +
+docs + trading-lab interaction) found that for "hundreds of concurrent backtests" the cheapest,
+highest-leverage work is **lab-side parallelism** and **ingress protection** — not new engine
+work. Capacity math: unique-run throughput ≈ `pods × WORKER_CONCURRENCY / 23 s`; "hundreds
+in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a per-node choke,
+~1.8× at 4 workers/host). No architectural redesign required. Lab-side items live in
+`trading-lab` but are tracked here to keep one scaling picture.
+
+14. **Tier 0 — turn on what's built (env + stale surfaces).**
+    - Enable `BACKTESTER_DEDUP_ENABLED` + `BACKTESTER_COALESCE_ENABLED` + `BACKTESTER_JOB_OBS` in the working env (validated PASS, item 11a; code defaults stay OFF).
+    - `/statsz`: add queue depth + oldest-queued age (`countByStatus()` follow-up) — today a backlog is invisible; this is also the KEDA scaling metric.
+    - Fix `/v1/capabilities` advertising a stale hardcoded `maxConcurrency: 1`.
+15. **Tier 1 — lab-side parallelism (`trading-lab`; biggest ROI, no engine changes).**
+    - `ParamGridRunner.runGrid` submits strictly sequentially (`for … await`, up to 8 points/round) — parallel submit-all-then-poll (bounded) turns "8 × ~30 s serial" into "~30 s parallel"; grid points differ by params so server-side coalescing can NOT collapse them.
+    - BullMQ worker created without `concurrency` option (default 1) — one experiment in flight per lab process; add a knob.
+    - Executors poll (`PLATFORM_RUN_MAX_POLLS`=30 × `PLATFORM_RUN_POLL_DELAY_MS`=2000 ≈ 60 s hard budget) and fail the experiment `INCONCLUSIVE 'run_pending'` on expiry, even though `callbackUrl` + outbox webhooks are plumbed end-to-end — switch to webhook-driven completion with poll fallback; `run_pending` should resume, not fail.
+    - Baseline lane is serial (sanity → train → holdout); train ∥ holdout is free parallelism once the sanity boundary resolves.
+16. **Tier 2 — ingress backpressure + connection hardening (prerequisite for any load growth).**
+    - `POST /v1/runs` has NO backpressure: no rate limit, no queue-depth cap, no 429 — a 500-submit burst is silently accepted and expires after 6 h. Add queue-depth cap → `429` + `Retry-After`; add SDK retry/backoff and a `rate_limited` mapping in lab's `toGatewayError` (currently absent).
+    - `db/pool.ts` passes only `connectionString` — pg default `max=10` connections, no knob, no statement timeout; submit ≈ 4–5 sequential Pg round trips, so bursts + worker claim/heartbeat traffic contend invisibly. Add `BACKTESTER_PG_POOL_MAX` + timeouts.
+    - Bundle-by-ref: `BundleStore` is already content-addressed — expose `PUT /v1/bundles` + submit by hash. Lifts the ~1 MiB inline-bundle body pressure and stops lab re-uploading identical bytes per grid point.
+    - LISTEN/NOTIFY queue wake instead of polling (existing coalescing-design follow-up).
+17. **Tier 3 — fresh-miss cost (GATED: only after Tiers 0–2 are live and misses still hurt — the item-11b/12 warm-pool gate).**
+    - Warm container pool (security-sensitive, deliberately deferred).
+    - Tape cache: `TAPE_CACHE_MAX_ENTRIES` default 16/process collapses under many distinct symbol/period keys across M workers — raise it, verify single-flight in `getOrBuild`, consider worker-start warm-up.
+    - Streamed (not buffered) S3 artifact writes; move bundle `put` off the submit hot path.
+    - Scale-out: more worker nodes + KEDA on the (new) queue-depth metric.
+18. **Tier 4 — B2C / multi-user gate (extends item 10; open BEFORE public multi-user).**
+    - Per-tenant queued/running quotas + admission control + priority tiers (`tenantId` WHERE-predicate hook already in place).
+    - Real per-client authn (today: one static bearer token compared with `===`) + per-token rate limits.
+    - Sandbox isolation upgrade (gVisor/Kata/Firecracker, item 12) becomes **mandatory**, not optional, once arbitrary third-party strategies run at scale.
+    - Artifact GC/TTL + dedup-cache TTL/LRU pruning (existing item-11 follow-up); cost metering per tenant (attempt-charging seam exists).
+    - Obs: p50/p95 percentiles, cross-replica `/statsz` aggregation, queue-wait by tenant.
+
 ## Definition of Done
 
 The system is “working” when (✅ except the real-platform data path):
