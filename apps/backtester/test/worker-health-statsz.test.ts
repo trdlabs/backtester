@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { startWorkerHealthServer } from '../src/jobs/worker-health.js';
-import { ObsRegistry } from '../src/jobs/obs-registry.js';
+import { ObsRegistry, type JobObsSnapshot } from '../src/jobs/obs-registry.js';
 
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => { await close?.(); close = undefined; });
@@ -14,7 +14,7 @@ describe('worker health /statsz', () => {
     close = srv.close;
     const res = await fetch(`http://127.0.0.1:${srv.port}/statsz`);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as JobObsSnapshot;
     expect(body.startedAtMs).toBe(1234);
     expect(body.jobs.total).toBe(0);
   });
