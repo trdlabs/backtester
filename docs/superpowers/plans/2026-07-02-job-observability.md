@@ -78,7 +78,7 @@ describe('ObsRegistry', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @trading-backtester/app test -- obs-registry`
+Run: `pnpm vitest run apps/backtester/test/obs-registry.test.ts`
 Expected: FAIL — cannot find module `../src/jobs/obs-registry.js`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -171,7 +171,7 @@ export class ObsRegistry {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @trading-backtester/app test -- obs-registry`
+Run: `pnpm vitest run apps/backtester/test/obs-registry.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
@@ -215,7 +215,7 @@ describe('BACKTESTER_JOB_OBS config', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @trading-backtester/app test -- config-job-obs`
+Run: `pnpm vitest run apps/backtester/test/config-job-obs.test.ts`
 Expected: FAIL — `jobObs` is `undefined` / not on `AppConfig`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -235,7 +235,7 @@ In `loadConfig`, add next to `dedupEnabled: env.BACKTESTER_DEDUP_ENABLED === 'tr
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @trading-backtester/app test -- config-job-obs`
+Run: `pnpm vitest run apps/backtester/test/config-job-obs.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -363,7 +363,7 @@ describe('worker observability — momentum', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @trading-backtester/app test -- obs-worker`
+Run: `pnpm vitest run apps/backtester/test/obs-worker.test.ts`
 Expected: FAIL — `deps.obs` not consumed; no `job_terminal` line; `recordJob` never called.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -455,12 +455,12 @@ In the lookup block: when the template matches and `finalized` is set (the re-st
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @trading-backtester/app test -- obs-worker`
+Run: `pnpm vitest run apps/backtester/test/obs-worker.test.ts`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Run the dedup goldens to confirm no regression**
 
-Run: `pnpm --filter @trading-backtester/app test -- dedup-equivalence dedup-worker`
+Run: `pnpm vitest run apps/backtester/test/dedup-equivalence.test.ts apps/backtester/test/dedup-worker.test.ts`
 Expected: PASS (unchanged; obs off in those suites).
 
 - [ ] **Step 6: Commit**
@@ -518,7 +518,7 @@ describe('worker health /statsz', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @trading-backtester/app test -- worker-health-statsz`
+Run: `pnpm vitest run apps/backtester/test/worker-health-statsz.test.ts`
 Expected: FAIL — `/statsz` returns 404 even with a provider (arg not accepted yet).
 
 - [ ] **Step 3: Write minimal implementation**
@@ -557,7 +557,7 @@ export async function startWorkerHealthServer(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @trading-backtester/app test -- worker-health-statsz`
+Run: `pnpm vitest run apps/backtester/test/worker-health-statsz.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
@@ -611,7 +611,7 @@ describe('buildApp obs wiring', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @trading-backtester/app test -- app-obs-wiring`
+Run: `pnpm vitest run apps/backtester/test/app-obs-wiring.test.ts`
 Expected: FAIL — `workerDeps.obs` is always `undefined`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -674,7 +674,7 @@ Queue **depth** is not part of `/statsz`; query it directly:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @trading-backtester/app test -- app-obs-wiring`
+Run: `pnpm vitest run apps/backtester/test/app-obs-wiring.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Full gate**
