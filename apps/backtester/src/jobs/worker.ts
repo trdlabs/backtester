@@ -693,11 +693,25 @@ export async function runWorkerLoop(
   opts: { concurrency: number; heartbeatMs: number; pollMs: number; signal: AbortSignal },
 ): Promise<void> {
   let pendingRenew: Promise<unknown> = Promise.resolve();
+  // Active-leader identities for this worker: populated by the gate's registerLeader (Task 6, lock-win)
+  // and cleared by unregisterLeader (terminal/defer finally). The beat below renews each so a long
+  // engine run never lets the compute-lock lapse into a spurious takeover.
+  const activeLeaders = new Set<string>();
+  deps.registerLeader = (computeIdentity: string) => activeLeaders.add(computeIdentity);
+  deps.unregisterLeader = (computeIdentity: string) => activeLeaders.delete(computeIdentity);
   const beat = setInterval(() => {
     if (deps.lease) {
       pendingRenew = deps.store
         .renewLease(deps.lease.workerId, deps.clock() + deps.lease.ttlMs)
         .catch(() => {}); // ignore post-shutdown errors (pool may be tearing down)
+      // Compute-lock renew is SEPARATE from and additional to the job-lease renew above — only when
+      // coalescing is on (INV-6: coalescing-off loop behavior unchanged). Best-effort, like the lease renew.
+      if (deps.computeLock && deps.coalesceEnabled) {
+        const until = deps.clock() + (deps.computeLockTtlMs ?? deps.lease.ttlMs);
+        for (const ci of activeLeaders) {
+          void deps.computeLock.renew(ci, deps.lease.workerId, until).catch(() => {});
+        }
+      }
     }
   }, opts.heartbeatMs);
   try {
