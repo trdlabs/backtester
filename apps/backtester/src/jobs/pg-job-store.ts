@@ -359,8 +359,13 @@ export class PgJobStore implements JobStore {
     );
   }
 
-  async reapDeadlines(nowMs: number, opts?: { leaseMaxAttempts?: number }): Promise<JobRow[]> {
+  async reapDeadlines(
+    nowMs: number,
+    opts?: { leaseMaxAttempts?: number; coalesceEnabled?: boolean; computeWaitMaxAttempts?: number },
+  ): Promise<JobRow[]> {
     const maxAttempts = opts?.leaseMaxAttempts ?? 3;
+    const coalesceEnabled = opts?.coalesceEnabled ?? false;
+    const waitCap = opts?.computeWaitMaxAttempts ?? 3;
     const expired = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
          status = 'expired', terminal_at_ms = $1::bigint, terminal_code = 'queue_deadline_exceeded',
@@ -369,6 +374,41 @@ export class PgJobStore implements JobStore {
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'expired', atMs: nowMs }])],
     );
+
+    let coalescePoisoned: { rows: JobDbRow[] } = { rows: [] };
+    if (coalesceEnabled) {
+      // Coalescing crash-attribution (INV-6: gated on coalesceEnabled — the plain attempts-based
+      // path below is unchanged, and its WHERE clauses explicitly exclude engine_attempt_charged =
+      // false rows once coalescing is on, so a job never double-attributes across both paths).
+      // Crash BEFORE the engine charged its attempt: re-arm compute_wait_attempts instead of
+      // consuming the engine `attempts` budget; poison only once THAT counter is exhausted.
+      coalescePoisoned = await this.pool.query<JobDbRow>(
+        `UPDATE backtest_job SET
+           status = 'failed', terminal_at_ms = $1::bigint, terminal_code = 'compute_wait_exhausted',
+           timeline_json = timeline_json || $2::jsonb
+         WHERE status = 'running' AND lease_expires_at IS NOT NULL
+           AND $1::bigint > lease_expires_at AND engine_attempt_charged = false
+           AND compute_wait_attempts >= $3
+         RETURNING *`,
+        [nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }]), waitCap],
+      );
+      await this.pool.query(
+        `UPDATE backtest_job SET
+           status = 'queued', queued_at_ms = $1::bigint, leased_by = NULL, lease_expires_at = NULL,
+           compute_wait_attempts = compute_wait_attempts + 1,
+           timeline_json = timeline_json || $2::jsonb
+         WHERE status = 'running' AND lease_expires_at IS NOT NULL
+           AND $1::bigint > lease_expires_at AND engine_attempt_charged = false
+           AND compute_wait_attempts < $3`,
+        [nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }]), waitCap],
+      );
+    }
+    // Crash DURING/AFTER the engine (or coalescing disabled): existing attempts-based path. When
+    // coalesceEnabled, the engine_attempt_charged = false rows have already been handled above, so
+    // this clause is scoped to engine_attempt_charged IS DISTINCT FROM false (true or NULL) to avoid
+    // double-handling; when coalesceEnabled is false that extra clause is always-true and this SQL is
+    // byte-identical to the pre-Task-7 query (INV-6).
+    const engineChargedFilter = coalesceEnabled ? 'AND engine_attempt_charged IS DISTINCT FROM false' : '';
     // Poison: expired-lease running jobs at/over the attempts cap → terminal failure.
     const poisoned = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
@@ -376,6 +416,7 @@ export class PgJobStore implements JobStore {
          timeline_json = timeline_json || $2::jsonb
        WHERE status = 'running' AND lease_expires_at IS NOT NULL
          AND $1::bigint > lease_expires_at AND attempts >= $3
+         ${engineChargedFilter}
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }]), maxAttempts],
     );
@@ -385,7 +426,8 @@ export class PgJobStore implements JobStore {
          status = 'queued', queued_at_ms = $1::bigint, leased_by = NULL, lease_expires_at = NULL,
          timeline_json = timeline_json || $2::jsonb
        WHERE status = 'running' AND lease_expires_at IS NOT NULL
-         AND $1::bigint > lease_expires_at AND attempts < $3`,
+         AND $1::bigint > lease_expires_at AND attempts < $3
+         ${engineChargedFilter}`,
       [nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }]), maxAttempts],
     );
     const timedOut = await this.pool.query<JobDbRow>(
@@ -396,6 +438,64 @@ export class PgJobStore implements JobStore {
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'timed_out', atMs: nowMs }])],
     );
-    return [...expired.rows, ...poisoned.rows, ...timedOut.rows].map(rowToJob);
+    return [...expired.rows, ...coalescePoisoned.rows, ...poisoned.rows, ...timedOut.rows].map(rowToJob);
+  }
+
+  async listComputeWaiters(nowMs: number): Promise<JobRow[]> {
+    const r = await this.pool.query<JobDbRow>(
+      `SELECT * FROM backtest_job WHERE status = 'waiting_for_compute'`,
+    );
+    return r.rows.map(rowToJob);
+  }
+
+  async releaseAllComputeWaiters(
+    computeIdentity: string,
+    reason: ComputeWakeReason,
+    nowMs: number,
+  ): Promise<number> {
+    // Does NOT touch queued_at_ms — preserves FIFO position (INV: releaseAll/electOne must not
+    // overwrite queued_at_ms).
+    const r = await this.pool.query(
+      `UPDATE backtest_job SET
+         status = 'queued', compute_wake_reason = $2, engine_attempt_charged = false,
+         timeline_json = timeline_json || $4::jsonb
+       WHERE status = 'waiting_for_compute' AND compute_identity = $1`,
+      [computeIdentity, reason, nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }])],
+    );
+    return r.rowCount ?? 0;
+  }
+
+  async electOneComputeWaiter(
+    computeIdentity: string,
+    reason: ComputeWakeReason,
+    nowMs: number,
+  ): Promise<JobRow | undefined> {
+    const r = await this.pool.query<JobDbRow>(
+      `UPDATE backtest_job SET
+         status = 'queued', compute_wake_reason = $2,
+         engine_attempt_charged = false,
+         timeline_json = timeline_json || $3::jsonb
+       WHERE run_id = (
+         SELECT run_id FROM backtest_job
+         WHERE status = 'waiting_for_compute' AND compute_identity = $1
+         ORDER BY COALESCE(queued_at_ms, accepted_at_ms) ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT 1
+       )
+       RETURNING *`,
+      [computeIdentity, reason, JSON.stringify([{ status: 'queued', atMs: nowMs }])],
+    );
+    return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
+  }
+
+  async poisonComputeWaiter(runId: string, nowMs: number): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE backtest_job SET
+         status = 'failed', terminal_at_ms = $2::bigint, terminal_code = 'compute_wait_exhausted',
+         timeline_json = timeline_json || $3::jsonb
+       WHERE run_id = $1 AND status = 'waiting_for_compute'`,
+      [runId, nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }])],
+    );
+    return r.rowCount === 1;
   }
 }

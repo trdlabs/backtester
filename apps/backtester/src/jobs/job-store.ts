@@ -140,10 +140,31 @@ export interface JobStore {
   list(filter?: { status?: RunStatus; correlationId?: string; workflowId?: string }): Promise<JobRow[]>;
   appendEvent(ev: JobEventRow): Promise<void>;
   listEvents(runId: string): Promise<JobEventRow[]>;
-  reapDeadlines(nowMs: number, opts?: { leaseMaxAttempts?: number }): Promise<JobRow[]>;
+  reapDeadlines(
+    nowMs: number,
+    opts?: { leaseMaxAttempts?: number; coalesceEnabled?: boolean; computeWaitMaxAttempts?: number },
+  ): Promise<JobRow[]>;
   /** Outbox: terminal events still pending/failed delivery, oldest first. */
   listDeliverable(limit: number): Promise<JobEventRow[]>;
   markDelivered(eventUid: string, ok: boolean): Promise<void>;
+  /** Coalescing wake step (Task 7). All jobs currently in the internal waiting_for_compute status. */
+  listComputeWaiters(nowMs: number): Promise<JobRow[]>;
+  /** Release every waiting_for_compute job for computeIdentity → queued (cache_ready). Does NOT
+   *  overwrite queued_at_ms (preserves FIFO position). Returns the number of jobs released. */
+  releaseAllComputeWaiters(
+    computeIdentity: string,
+    reason: ComputeWakeReason,
+    nowMs: number,
+  ): Promise<number>;
+  /** Elect exactly one waiting_for_compute job for computeIdentity → queued (new leader). Does NOT
+   *  overwrite queued_at_ms. Undefined if no waiter matched (already raced away). */
+  electOneComputeWaiter(
+    computeIdentity: string,
+    reason: ComputeWakeReason,
+    nowMs: number,
+  ): Promise<JobRow | undefined>;
+  /** Poison an exhausted waiting_for_compute job → failed(compute_wait_exhausted). */
+  poisonComputeWaiter(runId: string, nowMs: number): Promise<boolean>;
 }
 
 export class InMemoryJobStore implements JobStore {
@@ -278,8 +299,13 @@ export class InMemoryJobStore implements JobStore {
     ev.deliveryAttempts = (ev.deliveryAttempts ?? 0) + 1;
   }
 
-  async reapDeadlines(nowMs: number, opts?: { leaseMaxAttempts?: number }): Promise<JobRow[]> {
+  async reapDeadlines(
+    nowMs: number,
+    opts?: { leaseMaxAttempts?: number; coalesceEnabled?: boolean; computeWaitMaxAttempts?: number },
+  ): Promise<JobRow[]> {
     const maxAttempts = opts?.leaseMaxAttempts ?? 3;
+    const waitCap = opts?.computeWaitMaxAttempts ?? 3;
+    const coalesceEnabled = opts?.coalesceEnabled ?? false;
     const reaped: JobRow[] = [];
     for (const job of this.jobs.values()) {
       if (isTerminal(job.status)) continue;
@@ -294,7 +320,30 @@ export class InMemoryJobStore implements JobStore {
       } else if (job.status === 'running') {
         const leaseStale = job.leaseExpiresAt !== undefined && nowMs > job.leaseExpiresAt;
         const runStale = job.runDeadlineMs !== undefined && nowMs > job.runDeadlineMs;
-        if (leaseStale && job.attempts >= maxAttempts) {
+        // Coalescing crash-attribution (INV-6: only when coalesceEnabled — otherwise fall through to
+        // the pre-existing single attempts-based path below, byte-identical to today). A lease-expired
+        // running job that crashed BEFORE the engine charged its attempt (engineAttemptCharged=false)
+        // must not consume the engine `attempts` budget — it re-arms the compute-wait counter instead,
+        // poisoning only once that counter (not `attempts`) is exhausted.
+        if (coalesceEnabled && leaseStale && job.engineAttemptCharged === false) {
+          if (job.computeWaitAttempts >= waitCap) {
+            if (await this.transition(job.runId, 'running', 'failed', {
+              atMs: nowMs, terminalAtMs: nowMs, terminalCode: 'compute_wait_exhausted',
+            })) reaped.push(job);
+          } else if (
+            await this.transition(job.runId, 'running', 'queued', {
+              atMs: nowMs,
+              queuedAtMs: nowMs,
+              computeWaitAttempts: job.computeWaitAttempts + 1,
+            })
+          ) {
+            const requeued = this.jobs.get(job.runId);
+            if (requeued !== undefined) {
+              requeued.leasedBy = undefined;
+              requeued.leaseExpiresAt = undefined;
+            }
+          }
+        } else if (leaseStale && job.attempts >= maxAttempts) {
           if (await this.transition(job.runId, 'running', 'failed', {
             atMs: nowMs, terminalAtMs: nowMs, terminalCode: 'lease_expired',
           })) reaped.push(job);
@@ -317,6 +366,59 @@ export class InMemoryJobStore implements JobStore {
       }
     }
     return reaped;
+  }
+
+  async listComputeWaiters(nowMs: number): Promise<JobRow[]> {
+    return [...this.jobs.values()].filter((j) => j.status === 'waiting_for_compute');
+  }
+
+  async releaseAllComputeWaiters(
+    computeIdentity: string,
+    reason: ComputeWakeReason,
+    nowMs: number,
+  ): Promise<number> {
+    let released = 0;
+    for (const job of [...this.jobs.values()]) {
+      if (job.status !== 'waiting_for_compute' || job.computeIdentity !== computeIdentity) continue;
+      // Do NOT pass queuedAtMs — transition() only overwrites fields present in the patch, so the
+      // job's original FIFO queued_at_ms is preserved.
+      const ok = await this.transition(job.runId, 'waiting_for_compute', 'queued', {
+        atMs: nowMs,
+        computeWakeReason: reason,
+        engineAttemptCharged: false,
+      });
+      if (ok) released += 1;
+    }
+    return released;
+  }
+
+  async electOneComputeWaiter(
+    computeIdentity: string,
+    reason: ComputeWakeReason,
+    nowMs: number,
+  ): Promise<JobRow | undefined> {
+    const candidates = [...this.jobs.values()]
+      .filter((j) => j.status === 'waiting_for_compute' && j.computeIdentity === computeIdentity)
+      .sort((a, b) =>
+        (a.queuedAtMs ?? a.acceptedAtMs) - (b.queuedAtMs ?? b.acceptedAtMs) ||
+        (a.runId < b.runId ? -1 : 1),
+      );
+    const next = candidates[0];
+    if (!next) return undefined;
+    const ok = await this.transition(next.runId, 'waiting_for_compute', 'queued', {
+      atMs: nowMs,
+      computeWakeReason: reason,
+      engineAttemptCharged: false,
+    });
+    return ok ? this.jobs.get(next.runId) : undefined;
+  }
+
+  async poisonComputeWaiter(runId: string, nowMs: number): Promise<boolean> {
+    return this.transition(runId, 'waiting_for_compute', 'failed', {
+      atMs: nowMs,
+      terminalAtMs: nowMs,
+      terminalCode: 'compute_wait_exhausted',
+    });
   }
 }
 
