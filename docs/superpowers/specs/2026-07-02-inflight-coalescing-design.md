@@ -42,8 +42,13 @@ The compute-lock reuses **exactly this lease/SKIP-LOCKED/reaper idiom**, applied
 - **INV-2 — lock expiry alone is not failure.** An expired lock means "the leader no longer owns compute"; it only allows takeover — it never fails any follower.
 - **INV-3 — a waiting-follower completes byte-identically to a normal HIT run** (own `runId`/`result_hash`, `dedupedFrom` set), through the existing completion/outbox path. No separate completion code.
 - **INV-4 — lock cleanup is not correctness-critical.** If the success path wrote the template but did not release/expire the lock, followers still see the cache first (INV-1) and complete; a stale lock is harmless and expires naturally.
-- **INV-5 — attempts accounting.** engine `attempts` counts ONLY real engine/sandbox runs (leadership executions). A separate `compute_wait_attempts` counts wait/re-election cycles. A `promoted` re-claim that resolves back into `waiting_for_compute` (someone else already leads) bumps `compute_wait_attempts`, NOT engine `attempts`. engine `attempts` is spent only when the gate actually executes the engine as leader.
-- **INV-6 — coalescing OFF is a no-op.** With `BACKTESTER_COALESCE_ENABLED` off (default): NO `compute_lock` reads/writes, NO `waiting_for_compute` transitions, completed-cache behavior exactly as shipped (#73/#75), `attempts` semantics unchanged. The existing dedup goldens / byte-equivalence hold unchanged.
+- **INV-5 — attempts accounting (deferred charging, model A).** engine `attempts` counts ONLY real engine/sandbox executions. When coalescing is enabled, **`attempts` is charged at the gate's engine-commit point, NOT at claim time** — because a fresh first-follower is an ordinary `queued` job (no `compute_wake_reason`) that would otherwise spend an engine attempt at claim and then lose the lock and defer to `waiting_for_compute` without ever running the engine. Concretely (coalescing on):
+  - the claim sets `running` + job-lease but does **NOT** `attempts++`;
+  - `attempts++` (and marker `engine_attempt_charged=true`) happens only when the gate commits to running the engine as leader;
+  - lock lost → `waiting_for_compute`: `attempts` unchanged, `compute_wait_attempts++`;
+  - a `compute_wake_reason` re-claim that re-defers likewise bumps `compute_wait_attempts`, not `attempts`.
+  A **second counter `compute_wait_attempts`** bounds *non-engine claim cycles* — both waits/re-elections AND pre-engine crashes (see §Reaper) — with its own poison cap, keeping the engine-`attempts` poison cap meaning exactly "engine executions". Coalescing OFF keeps the existing claim-time `attempts++` unchanged (INV-6).
+- **INV-6 — coalescing OFF is a no-op.** With `BACKTESTER_COALESCE_ENABLED` off (default): NO `compute_lock` reads/writes, NO `waiting_for_compute` transitions, completed-cache behavior exactly as shipped (#73/#75). **Claim-time `attempts++` is preserved exactly** — deferred charging (model A) and the reaper's `engine_attempt_charged` attribution apply ONLY when coalescing is on; off, `attempts`/reaper/poison behave bit-for-bit as today. The existing dedup goldens / byte-equivalence hold unchanged.
 
 ## Components
 
@@ -67,7 +72,10 @@ ALTER TABLE backtest_job ADD COLUMN IF NOT EXISTS compute_wait_attempts INT NOT 
 ALTER TABLE backtest_job ADD COLUMN IF NOT EXISTS compute_identity      TEXT;      -- set when the job defers; lets wake match it
 ALTER TABLE backtest_job ADD COLUMN IF NOT EXISTS wait_deadline_ms      BIGINT;    -- max time a follower may wait before re-election
 ALTER TABLE backtest_job ADD COLUMN IF NOT EXISTS compute_wake_reason   TEXT;      -- why a waiter was released: cache_ready | lock_expired | leader_failed
+ALTER TABLE backtest_job ADD COLUMN IF NOT EXISTS engine_attempt_charged BOOLEAN NOT NULL DEFAULT false; -- set true when the gate charges an engine attempt this claim; lets the reaper attribute a crash to engine vs pre-engine
 ```
+
+`engine_attempt_charged` is per-claim-cycle: set `true` at the gate's engine-commit, and reset to `false` whenever the job returns to `queued`/`waiting_for_compute` (requeue, wake, or defer). It is only meaningful under coalescing; with coalescing off it stays `false` and is unused.
 
 ### `ComputeLockStore` (sibling to `ResultCache`)
 
@@ -87,8 +95,8 @@ Interface + `PgComputeLockStore` + `InMemoryComputeLockStore` (test fake):
 
 After materialize + `computeIdentity`, keep the existing `result_cache.lookup` FIRST (INV-1). Only when `BACKTESTER_COALESCE_ENABLED` and it's a MISS:
 - `computeLock.acquire(computeIdentity, runId, workerId, now, ttl)`:
-  - **won → leader**: run the engine (existing path). On success: write `result_cache` template (existing) + best-effort `release`/`expire` lock. On terminal fail/timeout: `computeLock.expire(...)` (proactive), then the normal terminal transition.
-  - **lost (active lock held) → follower**: transition `running → waiting_for_compute`, persist `compute_identity` + `wait_deadline_ms = now + waitTtl`; the worker loop moves on (slot freed). No engine, no `attempts` bump.
+  - **won → leader**: **charge the engine attempt now** (`attempts++`, `engine_attempt_charged=true`) — this is the single place engine `attempts` is spent under coalescing — then run the engine (existing path). On success: write `result_cache` template (existing) + best-effort `release`/`expire` lock. On terminal fail/timeout: `computeLock.expire(...)` (proactive), then the normal terminal transition.
+  - **lost (active lock held) → follower**: transition `running → waiting_for_compute`, persist `compute_identity` + `wait_deadline_ms = now + waitTtl`, `compute_wait_attempts++`, reset `engine_attempt_charged=false`; the worker loop moves on (slot freed). No engine, `attempts` unchanged.
 
 ### Wake / reap step `wakeComputeWaiters(nowMs)` (store method, run at the reaper cadence)
 
@@ -99,15 +107,31 @@ For `waiting_for_compute` jobs, grouped by `compute_identity`:
 - **`compute_wait_attempts >= cap`** → poison: `waiting_for_compute → failed`, `terminal_code='compute_wait_exhausted'`.
 - **`wait_deadline_ms` exceeded** with lock still alive → treat as eligible for re-election (bump `compute_wait_attempts`, release as `lock_expired`) — NOT auto-fail (INV-2). Bounded by the poison cap. This is a safety re-check, not a forced takeover: the released waiter re-enters the gate and re-contends via `computeLock.acquire`, which **fails while the lock is alive** → the waiter re-defers to `waiting_for_compute`. So a slow-but-live leader can never be double-computed — the acquire is the single authoritative leadership gate. (Default the wait TTL ≥ the lock TTL so natural expiry-driven takeover fires first and the wait_deadline only catches genuinely stuck waiters.)
 
-### Claim path (`compute_wake_reason` awareness)
+### Reaper — crash attribution under coalescing
 
-`claimNextQueued` continues to claim `queued` jobs. A claimed job carrying `compute_wake_reason` re-runs materialize + gate. The **`attempts` bump moves to reflect INV-5**: a claim whose gate resolves back into `waiting_for_compute` must not spend an engine `attempt` — instead bump `compute_wait_attempts`. Concretely: for a `compute_wake_reason`-marked claim, defer the `attempts` increment until the gate commits to running the engine as leader; if it re-defers, increment `compute_wait_attempts` and clear the marker. (Plain, unmarked jobs keep the existing claim-time `attempts++`.)
+Deferred charging means a coalescing-enabled job that **crashes its worker before the gate charges an engine attempt** (crash during claim / materialize / lock-contention) has `attempts=0`, so the existing lease-expiry poison (`attempts>=engineCap`) would never fire → an unbounded requeue-crash loop on a job that reliably dies pre-engine. To preserve crash-poison without corrupting the engine-`attempts` meaning, `reapDeadlines` takes a `coalesceEnabled` opt (alongside the existing `leaseMaxAttempts`, plus a `computeWaitMaxAttempts`) and attributes an expired-lease `running` job:
+
+- **coalescing OFF** — unchanged: the claim already charged `attempts` at claim time, so the reaper uses the existing `attempts>=leaseCap` poison / `<cap` requeue path exactly as shipped. `engine_attempt_charged` is ignored.
+- **coalescing ON, `engine_attempt_charged=true`** (crash during/after engine execution): requeue if `attempts<leaseCap`, poison (`failed`, `lease_expired`) if `attempts>=leaseCap` — same as the OFF engine path.
+- **coalescing ON, `engine_attempt_charged=false`** (crash before engine): requeue AND `compute_wait_attempts++`; poison (`failed`, `compute_wait_exhausted`) if `compute_wait_attempts>=waitCap`. This bounds pre-engine crash loops under the *same* counter that bounds wait/re-election cycles — one coherent meaning: "non-engine claim cycles."
+
+### Claim path — deferred attempt charging (model A)
+
+`claimNextQueued` claims `queued` jobs (both fresh submissions and `compute_wake_reason`-marked re-claims) via the existing `FOR UPDATE SKIP LOCKED` → `running` + job-lease. The change is **who charges `attempts`**, gated by `BACKTESTER_COALESCE_ENABLED`:
+
+- **Coalescing OFF** — unchanged: the claim does `attempts++` at claim time, exactly as shipped (INV-6).
+- **Coalescing ON** — the claim sets `running` + lease but **does NOT `attempts++`**. Every claim (fresh first-follower included) then materializes and enters the gate, which is the sole place the outcome is known:
+  - gate wins the lock → leader → `attempts++` + `engine_attempt_charged=true`, runs engine;
+  - gate loses the lock → `waiting_for_compute` → `compute_wait_attempts++`, `attempts` untouched.
+
+This closes the contradiction: a fresh first-follower no longer spends an engine attempt for a claim that never ran the engine. The claim path signals "defer charging" via the coalescing flag (not the `compute_wake_reason` marker) so it applies uniformly to fresh and re-claimed jobs. `compute_wake_reason` is still cleared on (re)claim after the gate resolves.
 
 ### Config / heartbeat
 
 - `BACKTESTER_COALESCE_ENABLED` (default false) — `env.BACKTESTER_COALESCE_ENABLED === 'true'`; effective only when `dedupEnabled` is also true.
 - `BACKTESTER_COMPUTE_LOCK_TTL_MS` (default: the worker lease TTL) — the compute-lock lifetime; the leader **renews it in the existing heartbeat loop, separately from the job-lease**, so a long engine run never lets the lock lapse and trigger a spurious takeover. Coalescing requires a `workerId`/lease identity (present in Postgres-durable mode).
 - A follower wait TTL (`wait_deadline_ms` horizon) — default a small multiple of the lock TTL.
+- `BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS` (default = the engine `leaseMaxAttempts`, i.e. 3) — the `compute_wait_attempts` poison cap, passed to `reapDeadlines`/wake as `computeWaitMaxAttempts`.
 
 ## Data flow
 
@@ -121,7 +145,7 @@ For `waiting_for_compute` jobs, grouped by `compute_identity`:
 - **`ComputeLockStore` unit** (Pg-gated + InMemory): acquire wins on empty/expired, loses on active; renew extends only for owner; expire only for owner; takeover after expiry; first-writer-wins under contention.
 - **Gate**: won → leader runs engine (spy); lost → `waiting_for_compute`, engine NOT called, slot released, no `attempts` bump.
 - **Wake**: cache-present → release ALL (`cache_ready`); lock-expired-no-cache → elect exactly ONE (`lock_expired`/`leader_failed` by leader job state); lock-alive → keep; `compute_wait_attempts>=cap` → `failed(compute_wait_exhausted)`.
-- **INV-5 attempts**: a promoted claim that re-defers bumps `compute_wait_attempts` not `attempts`; a leader engine run bumps `attempts`.
+- **INV-5 attempts (deferred charging)**: coalescing-on, a fresh first-follower claim does NOT charge `attempts` at claim; the leader charges `attempts` (+`engine_attempt_charged`) at engine-commit; a claim that re-defers bumps `compute_wait_attempts`, not `attempts`; a pre-engine crash (lease expiry with `engine_attempt_charged=false`) → reaper requeues + `compute_wait_attempts++`, poisons at `waitCap` (`compute_wait_exhausted`); an engine-phase crash (`engine_attempt_charged=true`) poisons at `leaseCap` (`lease_expired`). Coalescing-off: claim-time `attempts++` and the reaper's `attempts>=cap` path are bit-for-bit unchanged (INV-6).
 - **Failure**: leader fail → proactive-expire → 1 promoted → engine; leader success → all followers re-stamp (`dedupedFrom` set, `completed`, INV-3).
 - **Acceptance concurrency** (the headline): N concurrent identical submissions → engine executes EXACTLY once, 1 `result_cache` entry, all N terminal `completed` with distinct runId-stamped `result_hash`.
 - **INV-6 OFF**: coalescing off → no `compute_lock` rows touched, no `waiting_for_compute` transitions, the dedup goldens + completed-cache behavior byte-identical.
