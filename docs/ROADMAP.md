@@ -186,7 +186,11 @@ remain follow-up specs.
 8. **Shared state before extra replicas:** move bundles/artifacts from host-local file stores to a cluster-visible store (S3/MinIO/NFS/CSI volume) before spreading workers across nodes. Keep content-addressed artifact semantics and deterministic `result_hash` intact.
 9. **Capacity controls:** prefer low per-Pod `WORKER_CONCURRENCY` (often 1-2) and scale Pod count. Budget actual pressure as `worker_concurrency * symbols_per_run * sandbox_cpus/memory`, because sandbox sessions are per module+symbol and Docker daemon contention can become the node bottleneck.
 10. **Tenant fairness and quotas:** add per-tenant/user queue limits, concurrency caps, and cancellation/expiry policy before opening this as a shared SaaS surface. The global Pg queue can stay shared, but admission and scheduling must prevent one tenant from monopolizing worker capacity.
-11. **Fingerprint-based dedup:** add result/in-flight coalescing keyed by request fingerprint + bundle hash + dataset fingerprint + engine/runtime version. Existing `requestFingerprint` is suitable as the run-affecting input key, but cached materialization must account for `runId` being part of current outcomes/result hashes.
+11. 🚧 **IN PROGRESS — Fingerprint-based dedup:** add result/in-flight coalescing keyed by request fingerprint + bundle hash + dataset fingerprint + engine/runtime version. Existing `requestFingerprint` is suitable as the run-affecting input key, but cached materialization must account for `runId` being part of current outcomes/result hashes. Design spec:
+    [`specs/2026-07-01-backtester-result-dedup-design.md`](superpowers/specs/2026-07-01-backtester-result-dedup-design.md);
+    plan: [`plans/2026-07-01-backtester-result-dedup.md`](superpowers/plans/2026-07-01-backtester-result-dedup.md).
+    `ResultCache` (in-memory + Pg) wired into `buildApp`/`WorkerDeps` behind `BACKTESTER_DEDUP_ENABLED`
+    (default off); see `OPERATIONS.md` § "Result dedup (Phase C item 11)".
 12. **Stronger sandbox isolation later:** evaluate gVisor/Kata/Firecracker only after the horizontal Docker worker path is proven. Preserve the current sandbox contract: no network/secrets, read-only mounts, resource-limit error taxonomy, deterministic cleanup, and stable IPC behavior.
 13. **Temporal later, for workflows not raw speed:** introduce Temporal only when the product becomes multi-step durable orchestration (generate strategy -> backtest -> evaluate -> re-prompt -> evidence), not as a replacement for the current Pg job queue.
 

@@ -52,6 +52,9 @@ export interface RunSubmitRequest extends Omit<BacktestRunRequest, 'runId'> {
   readonly callbackUrl?: string;
   readonly queueTimeoutMs?: number;
   readonly runTimeoutMs?: number;
+  /** Force a fresh compute, bypassing the result-dedup cache. Not run-affecting (excluded from the
+   *  fingerprint); a bypassed run still populates the cache on completion. */
+  readonly bypassCache?: boolean;
 }
 
 export interface RunJobHandle {

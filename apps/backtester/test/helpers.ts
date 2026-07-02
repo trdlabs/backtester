@@ -38,6 +38,7 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     workerMaxAttempts: 3,
     workerPollMs: 500,
     enableOverlayEngine: false,
+    dedupEnabled: false,
     sandbox: {
       harnessDir: HARNESS_DIR,
       image: 'node:24-alpine',

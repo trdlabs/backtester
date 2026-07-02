@@ -14,7 +14,13 @@ import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import { contentRef } from '../determinism/hash';
 import { persistRunArtifacts, type ArtifactStore } from '../artifacts/store';
 import { persistOverlayArtifacts } from '../artifacts/overlay-store';
-import { datasetFingerprint, materialize, type BacktesterDataPort } from '../data/reader';
+import {
+  datasetFingerprint,
+  materialize,
+  type BacktesterDataPort,
+  type MaterializedDataset,
+} from '../data/reader';
+import type { MarketTapeDataset } from '@trading/research-contracts/research';
 import { buildOverlayDataset } from '../engine/data-adapter';
 import { runOverlayBacktest } from '../engine/run-overlay';
 import { runStrategyBacktest } from '../engine/run-strategy';
@@ -31,7 +37,8 @@ import type { SandboxExecutorDeps } from '../engine/sandbox/sandbox-executor';
 import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
 import { TrustedMomentumExecutor, type ModuleExecutor } from '../runner/module-executor';
-import { runBacktest } from '../runner/run-backtest';
+import { runBacktest, type BacktestResult } from '../runner/run-backtest';
+import type { RunOutcome } from '../engine/artifacts';
 import { SandboxModuleExecutor, type SandboxConfig } from '../sandbox/sandbox-executor';
 import type { BundleStore } from '../sandbox/bundle-store';
 import type { OverlaySandboxSettings } from '../config';
@@ -42,6 +49,10 @@ import type { SigningKey } from '../evidence/signing.js';
 import { produceStrategyEvidence } from '../evidence/produce-strategy-evidence.js';
 import type { EvidenceScope } from '../evidence/body.js';
 import { runBoundedPool } from './pool.js';
+import { normalize, restamp, type DedupTemplate } from './dedup/restamp.js';
+import { computeIdentity } from './dedup/compute-identity.js';
+import type { ResultCache } from './dedup/result-cache.js';
+import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.js';
 
 export { RunnerError };
 
@@ -61,6 +72,10 @@ export interface WorkerDeps extends CompletionDeps {
   lease?: { workerId: string; ttlMs: number; maxAttempts: number };
   /** Ed25519 signing key for backtest evidence. Absent ⇒ evidence signing is OFF. */
   evidenceSigningKey?: SigningKey;
+  /** Fingerprint-based completed-result cache. Absent ⇒ dedup is OFF (kill-switch). */
+  resultCache?: ResultCache;
+  /** Master kill-switch: dedup only engages when true AND resultCache is present. */
+  dedupEnabled?: boolean;
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -118,6 +133,169 @@ export function overlaySandboxDeps(s: OverlaySandboxSettings): SandboxExecutorDe
   return { harnessDir, mount };
 }
 
+/**
+ * Boundary indirection: processNextQueued invokes bundle/executor/router construction through this
+ * object so tests can `vi.spyOn(workerInternals, 'sandboxBundleFor')` and prove a dedup HIT performs
+ * NONE of them (a bare intra-module call would not be interceptable by the spy). Compute-skip proof.
+ */
+export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor };
+
+type Engine = 'momentum' | 'overlay' | 'strategy';
+
+interface Finalized {
+  summary: RunResultSummary;
+  manifest: ArtifactManifest;
+  resultHash: ContentHash;
+}
+
+/**
+ * Post-payload finalize: persist artifacts + build the wire RunResultSummary + resultHash. Pure move
+ * of the per-branch tail — momentum uses persistRunArtifacts + the inline momentum summary; overlay
+ * and strategy use persistOverlayArtifacts + toOverlaySummary. `resultHash = contentRef(payload)`.
+ */
+async function finalizeResult(
+  deps: WorkerDeps,
+  engine: Engine,
+  payload: unknown,
+  claimed: JobRow,
+  datasetFingerprint: string,
+  evidenceRef?: ArtifactReference,
+): Promise<Finalized> {
+  const resultHash = contentRef(payload);
+  if (engine === 'momentum') {
+    const result = payload as BacktestResult;
+    const persisted = await persistRunArtifacts(deps.artifactStore, result, datasetFingerprint);
+    const summary: RunResultSummary = {
+      runId: claimed.runId,
+      status: 'completed',
+      metrics: result.metrics,
+      artifactRefs: persisted.artifactRefs,
+      evidence: {
+        seed: claimed.effectiveSeed,
+        contractVersion: API_CONTRACT_VERSION,
+        moduleVersions: [claimed.request.moduleRef],
+        datasetRef: claimed.datasetRef,
+        datasetFingerprint,
+        ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
+      },
+      resultHash,
+    };
+    return { summary, manifest: persisted.manifest, resultHash };
+  }
+  const outcome = payload as Extract<RunOutcome, { status: 'completed' }>;
+  const persisted = await persistOverlayArtifacts(deps.artifactStore, outcome, datasetFingerprint);
+  const summary = toOverlaySummary(
+    outcome,
+    claimed.runId,
+    persisted.artifactRefs,
+    resultHash,
+    datasetFingerprint,
+    claimed.bundleHash,
+    evidenceRef,
+  );
+  return { summary, manifest: persisted.manifest, resultHash };
+}
+
+function engineOf(claimed: JobRow): Engine {
+  const e = claimed.request.engine;
+  return e === 'overlay' || e === 'strategy' ? e : 'momentum';
+}
+
+interface Materialized {
+  engine: Engine;
+  datasetFingerprint: string;
+  engineRequest: BacktestRunRequest;
+  /** overlay/strategy tape (absent for momentum). */
+  marketTape?: MarketTapeDataset;
+  /** momentum dataset (absent for overlay/strategy). */
+  dataset?: MaterializedDataset;
+}
+
+/**
+ * Materialize the tape/dataset + compute the datasetFingerprint + build the engineRequest for a
+ * claimed job. Pure move of the per-branch "materialize" preamble — overlayTapeCache/momentumTapeCache
+ * usage is identical. Called ONCE before any sandbox/engine work so the dedup gate can key on the
+ * datasetFingerprint before deciding to run the engine.
+ */
+async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materialized> {
+  const engine = engineOf(claimed);
+  const runId = claimed.runId;
+  if (engine === 'overlay' || engine === 'strategy') {
+    const r = claimed.request;
+    const marketTape = await overlayTapeCache.getOrBuild(
+      tapeCacheKey({
+        datasetRef: r.datasetRef,
+        symbols: r.symbols,
+        timeframe: r.timeframe,
+        from: r.period.from,
+        to: r.period.to,
+      }),
+      () =>
+        buildOverlayDataset(deps.dataPort, {
+          datasetRef: r.datasetRef,
+          symbols: r.symbols,
+          timeframe: r.timeframe,
+          period: r.period,
+        }),
+    );
+    // Wire-summary fingerprint only — NOT part of the hashed RunOutcome (platform golden).
+    const dsFingerprint = contentRef(r.symbols.map((s) => marketTape.candles(s)));
+    const engineRequest: BacktestRunRequest = {
+      runId,
+      mode: r.mode,
+      moduleRef: r.moduleRef,
+      // overlayRefs is an overlay-only field — the strategy path never carried it (exact-behavior parity).
+      ...(engine === 'overlay' && r.overlayRefs !== undefined ? { overlayRefs: r.overlayRefs } : {}),
+      datasetRef: r.datasetRef,
+      symbols: r.symbols,
+      timeframe: r.timeframe,
+      period: r.period,
+      ...(r.params !== undefined ? { params: r.params } : {}),
+      ...(r.riskProfileRef !== undefined ? { riskProfileRef: r.riskProfileRef } : {}),
+      ...(r.executionProfileRef !== undefined ? { executionProfileRef: r.executionProfileRef } : {}),
+      seed: claimed.effectiveSeed,
+      metrics: r.metrics,
+      ...(r.robustnessChecks !== undefined ? { robustnessChecks: r.robustnessChecks } : {}),
+    };
+    return { engine, datasetFingerprint: dsFingerprint, engineRequest, marketTape };
+  }
+  // ===== MOMENTUM =====
+  const { tsFrom, tsTo } = periodMs(claimed.request.period);
+  const dataset = await momentumTapeCache.getOrBuild(
+    tapeCacheKey({
+      datasetRef: claimed.datasetRef,
+      symbols: claimed.request.symbols,
+      from: tsFrom,
+      to: tsTo,
+    }),
+    async () => {
+      const reader = await deps.dataPort.openDataset(claimed.datasetRef);
+      if (!reader) {
+        throw new RunnerError('missing_dataset', `unknown dataset: ${claimed.datasetRef}`);
+      }
+      return materialize(reader, claimed.datasetRef, {
+        tsFrom,
+        tsTo,
+        symbols: claimed.request.symbols,
+      });
+    },
+  );
+  const dsFingerprint = datasetFingerprint(dataset);
+  const engineRequest: BacktestRunRequest = {
+    runId,
+    mode: claimed.request.mode,
+    moduleRef: claimed.request.moduleRef,
+    datasetRef: claimed.datasetRef,
+    symbols: claimed.request.symbols,
+    timeframe: claimed.request.timeframe,
+    period: claimed.request.period,
+    ...(claimed.request.params !== undefined ? { params: claimed.request.params } : {}),
+    seed: claimed.effectiveSeed,
+    metrics: claimed.request.metrics,
+  };
+  return { engine, datasetFingerprint: dsFingerprint, engineRequest, dataset };
+}
+
 /** Claim and run one queued job. Returns the (now terminal) row, or undefined if the queue was empty. */
 export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | undefined> {
   const claimed = await deps.store.claimNextQueued(
@@ -131,92 +309,19 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
   let sandboxRouter: ExecutorRouter | undefined;
   let sandboxBundle: SandboxBundleHandle | undefined;
   try {
-    let summary: RunResultSummary;
-    let resultHash: ContentHash;
-    let manifest: ArtifactManifest;
-    let dsFingerprint: string;
-
+    // NOTE: the bundle is loaded here (pre-flight) rather than lazily in the miss-path so the strategy
+    // validation guards fire before tape materialization — preserving the sandbox error taxonomy
+    // (validation_error, not missing_dataset). Consequence: a dedup HIT on a bundle-carrying run still
+    // loads the bundle (cheap); it skips the expensive engine + sandbox EXECUTION, which is the dedup win.
+    // Follow-up: split into loadBundleManifest (early, for validation) + materializeBundleToDisk (lazy,
+    // miss-path) to let a bundle-path HIT skip the bundle materialization too.
     if (claimed.bundleHash !== undefined) {
-      sandboxBundle = await sandboxBundleFor(deps, claimed.bundleHash);
+      sandboxBundle = await workerInternals.sandboxBundleFor(deps, claimed.bundleHash);
     }
 
-    if (claimed.request.engine === 'overlay') {
-      // ===== OVERLAY PATH — lifted engine end-to-end (Slice 6a) =====
-      const r = claimed.request;
-      const marketTape = await overlayTapeCache.getOrBuild(
-        tapeCacheKey({
-          datasetRef: r.datasetRef,
-          symbols: r.symbols,
-          timeframe: r.timeframe,
-          from: r.period.from,
-          to: r.period.to,
-        }),
-        () =>
-          buildOverlayDataset(deps.dataPort, {
-            datasetRef: r.datasetRef,
-            symbols: r.symbols,
-            timeframe: r.timeframe,
-            period: r.period,
-          }),
-      );
-      // Wire-summary fingerprint only — NOT part of the hashed RunOutcome (platform golden).
-      dsFingerprint = contentRef(r.symbols.map((s) => marketTape.candles(s)));
-
-      const engineRequest: BacktestRunRequest = {
-        runId,
-        mode: r.mode,
-        moduleRef: r.moduleRef,
-        ...(r.overlayRefs !== undefined ? { overlayRefs: r.overlayRefs } : {}),
-        datasetRef: r.datasetRef,
-        symbols: r.symbols,
-        timeframe: r.timeframe,
-        period: r.period,
-        ...(r.params !== undefined ? { params: r.params } : {}),
-        ...(r.riskProfileRef !== undefined ? { riskProfileRef: r.riskProfileRef } : {}),
-        ...(r.executionProfileRef !== undefined
-          ? { executionProfileRef: r.executionProfileRef }
-          : {}),
-        seed: claimed.effectiveSeed,
-        metrics: r.metrics,
-        ...(r.robustnessChecks !== undefined ? { robustnessChecks: r.robustnessChecks } : {}),
-      };
-
-      let registry = buildTrustedRegistry();
-      if (claimed.bundleHash !== undefined) {
-        // Build the inline execution registry from the SAME canonical definition that `/v1/registry`
-        // advertises, adding only the submitted overlay bundle — so discovery and execution can't drift.
-        registry = buildInlineOverlayRegistry([sandboxBundle!.bundle]);
-        sandboxRouter = overlayRouterFor(deps);
-      }
-
-      const outcome = await runOverlayBacktest(engineRequest, {
-        registry,
-        marketTape,
-        ...(sandboxRouter ? { router: sandboxRouter } : {}),
-      });
-      if (outcome.status !== 'completed') {
-        throw new RunnerError(
-          'validation_error',
-          `overlay run rejected: ${JSON.stringify(outcome.validation.issues)}`,
-        );
-      }
-      resultHash = contentRef(outcome);
-      const persisted = await persistOverlayArtifacts(
-        deps.artifactStore,
-        outcome,
-        dsFingerprint,
-      );
-      manifest = persisted.manifest;
-      summary = toOverlaySummary(
-        outcome,
-        runId,
-        persisted.artifactRefs,
-        resultHash,
-        dsFingerprint,
-        claimed.bundleHash,
-      );
-    } else if (claimed.request.engine === 'strategy') {
-      // ===== STRATEGY PATH — kind:'strategy' lifecycle-bundle via sandbox (closes gap PR #57) =====
+    // Strategy pre-flight validation — MUST run before tape materialization: the strategy-dispatch
+    // tests drive an empty dataPort and assert these guards fire before any market-tape allocation.
+    if (claimed.request.engine === 'strategy') {
       if (claimed.bundleHash === undefined || sandboxBundle === undefined) {
         throw new RunnerError('validation_error', 'strategy run requires a submitted bundle (ESM bytes)');
       }
@@ -235,41 +340,96 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           `strategy run moduleRef ${claimed.request.moduleRef.id}@${claimed.request.moduleRef.version} does not match submitted bundle manifest ${sandboxBundle.bundle.manifest.id}@${sandboxBundle.bundle.manifest.version}`,
         );
       }
+    }
+
+    // Materialize the tape/dataset + datasetFingerprint + engineRequest ONCE, before any
+    // engine execution (the dedup gate keys on datasetFingerprint before deciding to run).
+    const materialized = await materializeFor(deps, claimed);
+    const dsFingerprint = materialized.datasetFingerprint;
+    const engineRequest = materialized.engineRequest;
+    const engine = materialized.engine;
+
+    // ── DEDUP GATE ────────────────────────────────────────────────────────────
+    // dedup engages only when the kill-switch is on AND a cache is wired.
+    // Evidence runs (curatedBaselineRef set) MUST always compute fresh: the signed evidenceRef is produced
+    // only on the miss path and is NOT part of computeIdentity, so a HIT would silently drop it. Bypass
+    // dedup entirely for them (no lookup, no populate).
+    const dedupOn = deps.dedupEnabled === true && deps.resultCache !== undefined && claimed.request.curatedBaselineRef === undefined;
+    // bypassCache skips the LOOKUP (force fresh) but a fresh successful run STILL populates below.
+    const doLookup = dedupOn && claimed.request.bypassCache !== true;
+    let sandboxPolicyVersion = '';
+    if (dedupOn) {
+      const policy = deps.overlaySandbox.policy;
+      sandboxPolicyVersion = `${policy.id}@${policy.version}`;
+    }
+
+    let finalized: Finalized | undefined;
+    let dedupedFrom: string | undefined;
+
+    if (doLookup) {
+      const identity = computeIdentity({
+        requestFingerprint: claimed.requestFingerprint,
+        datasetFingerprint: dsFingerprint,
+        sandboxPolicyVersion,
+      });
+      const hit = await deps.resultCache!.lookup(identity);
+      if (hit) {
+        try {
+          const template = (await deps.artifactStore.read(hit.templateRef as ContentHash)) as DedupTemplate;
+          if (template.engine === engine && template.templateVersion === DEDUP_TEMPLATE_VERSION) {
+            // Cache HIT: re-stamp the cached template under this runId. Performs NONE of executorFor /
+            // router / engine — the dedup win. (For a bundle-carrying run, sandboxBundleFor already ran
+            // in the pre-gate to preserve strategy validation error-taxonomy — the accepted partial;
+            // momentum HITs have no bundle and skip everything.)
+            const payload = restamp(template, runId);
+            finalized = await finalizeResult(deps, engine, payload, claimed, dsFingerprint);
+            dedupedFrom = hit.computeIdentity;
+          }
+          // else: shape/engine/version mismatch → leave finalized undefined → miss path recomputes.
+        } catch {
+          // A shared/durable cache (PgResultCache) can return a HIT for a template that lives only on
+          // another worker's disk (host-local FileArtifactStore) → read throws. A cache MUST degrade to
+          // recompute, never hard-fail: leave finalized undefined and fall through to the miss path.
+          finalized = undefined;
+        }
+      }
+    }
+
+    if (!finalized) {
+      // ===== MISS PATH — the ONLY place engine execution happens =====
+      let payload: unknown;
+      if (claimed.request.engine === 'overlay') {
+      // ===== OVERLAY PATH — lifted engine end-to-end (Slice 6a) =====
+      const marketTape = materialized.marketTape!;
+
+      let registry = buildTrustedRegistry();
+      if (claimed.bundleHash !== undefined) {
+        // Build the inline execution registry from the SAME canonical definition that `/v1/registry`
+        // advertises, adding only the submitted overlay bundle — so discovery and execution can't drift.
+        registry = buildInlineOverlayRegistry([sandboxBundle!.bundle]);
+        sandboxRouter = workerInternals.overlayRouterFor(deps);
+      }
+
+      const outcome = await runOverlayBacktest(engineRequest, {
+        registry,
+        marketTape,
+        ...(sandboxRouter ? { router: sandboxRouter } : {}),
+      });
+      if (outcome.status !== 'completed') {
+        throw new RunnerError(
+          'validation_error',
+          `overlay run rejected: ${JSON.stringify(outcome.validation.issues)}`,
+        );
+      }
+      payload = outcome;
+      finalized = await finalizeResult(deps, 'overlay', outcome, claimed, dsFingerprint);
+    } else if (claimed.request.engine === 'strategy') {
+      // ===== STRATEGY PATH — kind:'strategy' lifecycle-bundle via sandbox (closes gap PR #57) =====
+      // Pre-flight guards (bundle present, manifest.kind, moduleRef match) already ran above.
       const r = claimed.request;
-      const marketTape = await overlayTapeCache.getOrBuild(
-        tapeCacheKey({
-          datasetRef: r.datasetRef,
-          symbols: r.symbols,
-          timeframe: r.timeframe,
-          from: r.period.from,
-          to: r.period.to,
-        }),
-        () =>
-          buildOverlayDataset(deps.dataPort, {
-            datasetRef: r.datasetRef,
-            symbols: r.symbols,
-            timeframe: r.timeframe,
-            period: r.period,
-          }),
-      );
-      dsFingerprint = contentRef(r.symbols.map((s) => marketTape.candles(s)));
-      const engineRequest: BacktestRunRequest = {
-        runId,
-        mode: r.mode,
-        moduleRef: r.moduleRef,
-        datasetRef: r.datasetRef,
-        symbols: r.symbols,
-        timeframe: r.timeframe,
-        period: r.period,
-        ...(r.params !== undefined ? { params: r.params } : {}),
-        ...(r.riskProfileRef !== undefined ? { riskProfileRef: r.riskProfileRef } : {}),
-        ...(r.executionProfileRef !== undefined ? { executionProfileRef: r.executionProfileRef } : {}),
-        seed: claimed.effectiveSeed,
-        metrics: r.metrics,
-        ...(r.robustnessChecks !== undefined ? { robustnessChecks: r.robustnessChecks } : {}),
-      };
-      const registry = buildInlineOverlayRegistry([], [sandboxBundle.bundle]);
-      sandboxRouter = overlayRouterFor(deps);
+      const marketTape = materialized.marketTape!;
+      const registry = buildInlineOverlayRegistry([], [sandboxBundle!.bundle]);
+      sandboxRouter = workerInternals.overlayRouterFor(deps);
       const outcome = await runStrategyBacktest(engineRequest, {
         registry,
         marketTape,
@@ -281,10 +441,6 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           `strategy run rejected: ${JSON.stringify(outcome.validation.issues)}`,
         );
       }
-      resultHash = contentRef(outcome);
-      const persisted = await persistOverlayArtifacts(deps.artifactStore, outcome, dsFingerprint);
-      manifest = persisted.manifest;
-
       // ── E4: evidence block (run-once, additive) ──────────────────────────────
       // Runs ONLY when curatedBaselineRef is set AND a signing key is present.
       // Any failure leaves evidenceRef undefined — the run still completes with resultHash.
@@ -325,78 +481,42 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         }
       }
 
-      summary = toOverlaySummary(
-        outcome,
-        runId,
-        persisted.artifactRefs,
-        resultHash,
-        dsFingerprint,
-        claimed.bundleHash,
-        evidenceRef,
-      );
+      payload = outcome;
+      finalized = await finalizeResult(deps, 'strategy', outcome, claimed, dsFingerprint, evidenceRef);
     } else {
       // ===== MOMENTUM PATH — unchanged (golden eff10116… must not move) =====
-      executor = await executorFor(deps, claimed);
+      executor = await workerInternals.executorFor(deps, claimed);
 
-      const { tsFrom, tsTo } = periodMs(claimed.request.period);
-      const dataset = await momentumTapeCache.getOrBuild(
-        tapeCacheKey({
-          datasetRef: claimed.datasetRef,
-          symbols: claimed.request.symbols,
-          from: tsFrom,
-          to: tsTo,
-        }),
-        async () => {
-          const reader = await deps.dataPort.openDataset(claimed.datasetRef);
-          if (!reader) {
-            throw new RunnerError('missing_dataset', `unknown dataset: ${claimed.datasetRef}`);
-          }
-          return materialize(reader, claimed.datasetRef, {
-            tsFrom,
-            tsTo,
-            symbols: claimed.request.symbols,
-          });
-        },
-      );
-      dsFingerprint = datasetFingerprint(dataset);
-
-      const request: BacktestRunRequest = {
-        runId,
-        mode: claimed.request.mode,
-        moduleRef: claimed.request.moduleRef,
-        datasetRef: claimed.datasetRef,
-        symbols: claimed.request.symbols,
-        timeframe: claimed.request.timeframe,
-        period: claimed.request.period,
-        ...(claimed.request.params !== undefined ? { params: claimed.request.params } : {}),
-        seed: claimed.effectiveSeed,
-        metrics: claimed.request.metrics,
-      };
-
-      const result = await runBacktest(request, {
+      const dataset = materialized.dataset!;
+      const result = await runBacktest(engineRequest, {
         dataset,
         executor,
         ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
       });
-      const persisted = await persistRunArtifacts(deps.artifactStore, result, dsFingerprint);
-      manifest = persisted.manifest;
-      resultHash = contentRef(result);
+      payload = result;
+      finalized = await finalizeResult(deps, 'momentum', result, claimed, dsFingerprint);
+    }
 
-      summary = {
-        runId,
-        status: 'completed',
-        metrics: result.metrics,
-        artifactRefs: persisted.artifactRefs,
-        evidence: {
-          seed: request.seed,
-          contractVersion: API_CONTRACT_VERSION,
-          moduleVersions: [request.moduleRef],
-          datasetRef: request.datasetRef,
+      // Populate the cache on ANY completed fresh run — INCLUDING a bypassCache run (bypass skips
+      // lookup, not populate). Reachable only after the engine returned, before the terminal
+      // transition, so failed/timeout/validation_error runs (which threw) never cache.
+      if (dedupOn) {
+        const normalized = normalize(engine, payload, runId);
+        const templateRef = await deps.artifactStore.write(normalized);
+        await deps.resultCache!.put({
+          computeIdentity: computeIdentity({
+            requestFingerprint: claimed.requestFingerprint,
+            datasetFingerprint: dsFingerprint,
+            sandboxPolicyVersion,
+          }),
+          requestFingerprint: claimed.requestFingerprint,
           datasetFingerprint: dsFingerprint,
-          ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
-        },
-        resultHash,
-      };
+          computeVersion: DEDUP_COMPUTE_VERSION,
+          sandboxPolicyVersion,
+          templateRef,
+          createdAtMs: deps.clock(),
+        });
+      }
     }
 
     const now = deps.clock();
@@ -404,10 +524,11 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       atMs: now,
       terminalAtMs: now,
       lastActivityMs: now,
-      resultSummary: summary,
-      resultHash,
-      artifactManifest: manifest,
+      resultSummary: finalized.summary,
+      resultHash: finalized.resultHash,
+      artifactManifest: finalized.manifest,
       datasetFingerprint: dsFingerprint,
+      ...(dedupedFrom !== undefined ? { dedupedFrom } : {}),
     }, deps.lease?.workerId);
   } catch (err) {
     const code = err instanceof RunnerError ? err.code : 'runner_failure';

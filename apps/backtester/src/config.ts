@@ -96,6 +96,8 @@ export interface AppConfig {
   readonly workerHealthPort?: number;
   /** Enable the lifted overlay engine path (engine:'overlay' runs). Default off until the verify_018 parity gate is green. */
   readonly enableOverlayEngine: boolean;
+  /** Enable the fingerprint-based result-dedup cache. Default false (dark launch). */
+  readonly dedupEnabled: boolean;
   readonly sandbox: SandboxSettings;
   /** OVERLAY sandbox (Slice-6b-A) — distinct from `sandbox` (Slice-3). */
   readonly overlaySandbox: OverlaySandboxSettings;
@@ -224,6 +226,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     workerPollMs: pollMs,
     ...(workerHealthPort !== undefined ? { workerHealthPort } : {}),
     enableOverlayEngine: env.BACKTESTER_ENABLE_OVERLAY_ENGINE === 'true',
+    dedupEnabled: env.BACKTESTER_DEDUP_ENABLED === 'true',
     ...(env.BT_EVIDENCE_SIGNING_KEY ? { evidenceSigningKeyPem: env.BT_EVIDENCE_SIGNING_KEY } : {}),
     sandbox: {
       harnessDir: env.BACKTESTER_SANDBOX_HARNESS_DIR ?? resolve(HERE, '../sandbox-harness'),

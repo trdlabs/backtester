@@ -22,6 +22,8 @@ import {
 import { InMemoryJobStore, type JobStore } from './jobs/job-store';
 import { PgJobStore } from './jobs/pg-job-store';
 import { drainQueue, type WorkerDeps } from './jobs/worker';
+import { InMemoryResultCache } from './jobs/dedup/result-cache';
+import { PgResultCache } from './jobs/dedup/pg-result-cache';
 import { loadSigningKeyFromPem, type SigningKey } from './evidence/signing.js';
 import type { BundleStore } from './sandbox/bundle-store';
 import type { SandboxConfig } from './sandbox/sandbox-executor';
@@ -67,6 +69,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       store = new InMemoryJobStore();
     }
   }
+  const resultCache = ownedPool ? new PgResultCache(ownedPool) : new InMemoryResultCache();
 
   const dataPort =
     overrides.dataPort ??
@@ -117,6 +120,8 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     bundleStore,
     sandbox,
     overlaySandbox: config.overlaySandbox,
+    resultCache,
+    dedupEnabled: config.dedupEnabled,
     ...(overrides.evidenceSigningKey
       ? { evidenceSigningKey: overrides.evidenceSigningKey }
       : config.evidenceSigningKeyPem

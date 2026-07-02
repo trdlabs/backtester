@@ -55,6 +55,7 @@ interface JobDbRow {
   result_hash: string | null;
   artifact_manifest_json: ArtifactManifest | null;
   terminal_code: string | null;
+  deduped_from: string | null;
   timeline_json: RunTimelineEntry[];
 }
 
@@ -91,6 +92,7 @@ function rowToJob(r: JobDbRow): JobRow {
     resultHash: (r.result_hash as ContentHash | null) ?? undefined,
     artifactManifest: r.artifact_manifest_json ?? undefined,
     terminalCode: str(r.terminal_code),
+    dedupedFrom: str(r.deduped_from),
     timeline: r.timeline_json,
   };
 }
@@ -193,6 +195,7 @@ export class PgJobStore implements JobStore {
          artifact_manifest_json = COALESCE($11::jsonb, artifact_manifest_json),
          dataset_fingerprint    = COALESCE($12, dataset_fingerprint),
          terminal_code          = COALESCE($13, terminal_code),
+         deduped_from           = COALESCE($16, deduped_from),
          timeline_json          = timeline_json || $14::jsonb
        WHERE run_id = $2 AND status = $3
          AND ($15::text IS NULL OR leased_by = $15)`,
@@ -212,6 +215,7 @@ export class PgJobStore implements JobStore {
         patch.terminalCode ?? null,
         JSON.stringify(entry),
         expectLeasedBy ?? null,
+        patch.dedupedFrom ?? null,
       ],
     );
     return r.rowCount === 1;
