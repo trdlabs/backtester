@@ -98,6 +98,8 @@ export interface AppConfig {
   readonly enableOverlayEngine: boolean;
   /** Enable the fingerprint-based result-dedup cache. Default false (dark launch). */
   readonly dedupEnabled: boolean;
+  /** Enable per-job observability (terminal log line + /statsz). Default off. */
+  readonly jobObs: boolean;
   readonly sandbox: SandboxSettings;
   /** OVERLAY sandbox (Slice-6b-A) — distinct from `sandbox` (Slice-3). */
   readonly overlaySandbox: OverlaySandboxSettings;
@@ -227,6 +229,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(workerHealthPort !== undefined ? { workerHealthPort } : {}),
     enableOverlayEngine: env.BACKTESTER_ENABLE_OVERLAY_ENGINE === 'true',
     dedupEnabled: env.BACKTESTER_DEDUP_ENABLED === 'true',
+    jobObs: env.BACKTESTER_JOB_OBS === 'true',
     ...(env.BT_EVIDENCE_SIGNING_KEY ? { evidenceSigningKeyPem: env.BT_EVIDENCE_SIGNING_KEY } : {}),
     sandbox: {
       harnessDir: env.BACKTESTER_SANDBOX_HARNESS_DIR ?? resolve(HERE, '../sandbox-harness'),

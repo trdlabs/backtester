@@ -24,6 +24,7 @@ import { PgJobStore } from './jobs/pg-job-store';
 import { drainQueue, type WorkerDeps } from './jobs/worker';
 import { InMemoryResultCache } from './jobs/dedup/result-cache';
 import { PgResultCache } from './jobs/dedup/pg-result-cache';
+import { ObsRegistry } from './jobs/obs-registry.js';
 import { loadSigningKeyFromPem, type SigningKey } from './evidence/signing.js';
 import type { BundleStore } from './sandbox/bundle-store';
 import type { SandboxConfig } from './sandbox/sandbox-executor';
@@ -97,6 +98,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
   const clock = overrides.clock ?? ((): number => Date.now());
   const uid = overrides.uid ?? ((): string => randomUUID());
   const postWebhook = overrides.postWebhook ?? defaultWebhookPoster();
+  const obs = config.jobObs ? new ObsRegistry(clock()) : undefined;
 
   const sandbox: SandboxConfig = overrides.sandbox ?? {
     harnessDir: config.sandbox.harnessDir,
@@ -122,6 +124,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     overlaySandbox: config.overlaySandbox,
     resultCache,
     dedupEnabled: config.dedupEnabled,
+    ...(obs ? { obs } : {}),
     ...(overrides.evidenceSigningKey
       ? { evidenceSigningKey: overrides.evidenceSigningKey }
       : config.evidenceSigningKeyPem

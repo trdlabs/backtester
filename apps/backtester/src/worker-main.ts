@@ -28,10 +28,14 @@ async function main(): Promise<void> {
   let draining = false;
   const health =
     config.workerHealthPort !== undefined
-      ? await startWorkerHealthServer(config.workerHealthPort, {
-          live: () => !loopDone,
-          ready: () => !draining,
-        })
+      ? await startWorkerHealthServer(
+          config.workerHealthPort,
+          {
+            live: () => !loopDone,
+            ready: () => !draining,
+          },
+          deps.obs,
+        )
       : undefined;
 
   // eslint-disable-next-line no-console

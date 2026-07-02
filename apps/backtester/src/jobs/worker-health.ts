@@ -11,15 +11,26 @@ export interface WorkerHealthState {
   ready(): boolean;
 }
 
+export interface StatsProvider {
+  snapshot(): unknown;
+}
+
 export async function startWorkerHealthServer(
   port: number,
   state: WorkerHealthState,
+  stats?: StatsProvider,
 ): Promise<{ port: number; close(): Promise<void> }> {
   const server: Server = createServer((req, res) => {
     if (req.url === '/healthz') {
       res.writeHead(state.live() ? 200 : 503).end();
     } else if (req.url === '/readyz') {
       res.writeHead(state.ready() ? 200 : 503).end();
+    } else if (req.url === '/statsz') {
+      if (stats) {
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(stats.snapshot()));
+      } else {
+        res.writeHead(404).end();
+      }
     } else {
       res.writeHead(404).end();
     }

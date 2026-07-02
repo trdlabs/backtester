@@ -53,6 +53,7 @@ import { normalize, restamp, type DedupTemplate } from './dedup/restamp.js';
 import { computeIdentity } from './dedup/compute-identity.js';
 import type { ResultCache } from './dedup/result-cache.js';
 import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.js';
+import { ObsRegistry, type DedupClass, type JobObsSample } from './obs-registry.js';
 
 export { RunnerError };
 
@@ -76,6 +77,8 @@ export interface WorkerDeps extends CompletionDeps {
   resultCache?: ResultCache;
   /** Master kill-switch: dedup only engages when true AND resultCache is present. */
   dedupEnabled?: boolean;
+  /** Per-job observability registry. Absent ⇒ observability is OFF (no timing, no log line). */
+  obs?: ObsRegistry;
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -305,6 +308,11 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
   if (!claimed) return undefined;
   const runId = claimed.runId;
 
+  const tClaim = deps.obs ? deps.clock() : undefined;
+  let tMaterialized: number | undefined;
+  let tEngineDone: number | undefined;
+  let dedupClass: DedupClass = 'off';
+
   let executor: ModuleExecutor | undefined;
   let sandboxRouter: ExecutorRouter | undefined;
   let sandboxBundle: SandboxBundleHandle | undefined;
@@ -348,6 +356,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     const dsFingerprint = materialized.datasetFingerprint;
     const engineRequest = materialized.engineRequest;
     const engine = materialized.engine;
+    if (deps.obs) tMaterialized = deps.clock();
 
     // ── DEDUP GATE ────────────────────────────────────────────────────────────
     // dedup engages only when the kill-switch is on AND a cache is wired.
@@ -361,6 +370,16 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     if (dedupOn) {
       const policy = deps.overlaySandbox.policy;
       sandboxPolicyVersion = `${policy.id}@${policy.version}`;
+    }
+
+    if (deps.dedupEnabled === true && deps.resultCache !== undefined && claimed.request.curatedBaselineRef !== undefined) {
+      dedupClass = 'evidence_bypass';
+    } else if (!dedupOn) {
+      dedupClass = 'off';
+    } else if (!doLookup) {
+      dedupClass = 'bypass';
+    } else {
+      dedupClass = 'miss'; // refined below to 'hit' / 'stale_recompute' by the lookup
     }
 
     let finalized: Finalized | undefined;
@@ -384,13 +403,17 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
             const payload = restamp(template, runId);
             finalized = await finalizeResult(deps, engine, payload, claimed, dsFingerprint);
             dedupedFrom = hit.computeIdentity;
+            dedupClass = 'hit';
+          } else {
+            // shape/engine/version mismatch → leave finalized undefined → miss path recomputes.
+            dedupClass = 'stale_recompute';
           }
-          // else: shape/engine/version mismatch → leave finalized undefined → miss path recomputes.
         } catch {
           // A shared/durable cache (PgResultCache) can return a HIT for a template that lives only on
           // another worker's disk (host-local FileArtifactStore) → read throws. A cache MUST degrade to
           // recompute, never hard-fail: leave finalized undefined and fall through to the miss path.
           finalized = undefined;
+          dedupClass = 'stale_recompute';
         }
       }
     }
@@ -497,6 +520,8 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       finalized = await finalizeResult(deps, 'momentum', result, claimed, dsFingerprint);
     }
 
+      if (deps.obs) tEngineDone = deps.clock();
+
       // Populate the cache on ANY completed fresh run — INCLUDING a bypassCache run (bypass skips
       // lookup, not populate). Reachable only after the engine returned, before the terminal
       // transition, so failed/timeout/validation_error runs (which threw) never cache.
@@ -546,6 +571,29 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
   }
 
   const finished = await deps.store.get(runId);
+
+  if (deps.obs && tClaim !== undefined) {
+    try {
+      const tTerminal = deps.clock();
+      const sample: JobObsSample = {
+        runId,
+        engine: claimed.request.engine ?? 'momentum',
+        outcome: finished?.status ?? 'unknown',
+        ...(finished?.terminalCode !== undefined ? { terminalCode: finished.terminalCode } : {}),
+        dedup: dedupClass,
+        queueWaitMs: claimed.queuedAtMs !== undefined ? tClaim - claimed.queuedAtMs : null,
+        materializeMs: tMaterialized !== undefined ? tMaterialized - tClaim : null,
+        engineMs: tEngineDone !== undefined && tMaterialized !== undefined ? tEngineDone - tMaterialized : null,
+        totalMs: tTerminal - tClaim,
+      };
+      deps.obs.recordJob(sample);
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ evt: 'job_terminal', ...sample, ts: tTerminal }));
+    } catch {
+      // Observability is best-effort: it must never fail a job.
+    }
+  }
+
   if (finished) await publishCompletion(deps, finished);
   return finished;
 }
