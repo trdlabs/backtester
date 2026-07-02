@@ -460,9 +460,9 @@ export class PgJobStore implements JobStore {
     const r = await this.pool.query(
       `UPDATE backtest_job SET
          status = 'queued', compute_wake_reason = $2, engine_attempt_charged = false,
-         timeline_json = timeline_json || $4::jsonb
+         timeline_json = timeline_json || $3::jsonb
        WHERE status = 'waiting_for_compute' AND compute_identity = $1`,
-      [computeIdentity, reason, nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }])],
+      [computeIdentity, reason, JSON.stringify([{ status: 'queued', atMs: nowMs }])],
     );
     return r.rowCount ?? 0;
   }
