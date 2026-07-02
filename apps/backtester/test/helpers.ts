@@ -40,6 +40,9 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     enableOverlayEngine: false,
     dedupEnabled: false,
     jobObs: false,
+    coalesceEnabled: false,
+    computeLockTtlMs: 30_000,
+    computeWaitMaxAttempts: 3,
     sandbox: {
       harnessDir: HARNESS_DIR,
       image: 'node:24-alpine',
