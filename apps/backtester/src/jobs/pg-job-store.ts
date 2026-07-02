@@ -17,7 +17,7 @@ import type {
   RunSubmitRequest,
   RunTimelineEntry,
 } from '@trading/research-contracts';
-import { canTransition } from './lifecycle';
+import { canTransition, type InternalJobStatus } from './lifecycle';
 import type {
   JobEventRow,
   JobRow,
@@ -25,6 +25,7 @@ import type {
   JobStore,
   NewJob,
 } from './job-store';
+import type { ComputeWakeReason } from './coalesce/compute-lock.js';
 
 interface JobDbRow {
   run_id: string;
@@ -33,7 +34,7 @@ interface JobDbRow {
   request_fingerprint: string;
   correlation_id: string | null;
   workflow_id: string | null;
-  status: RunStatus;
+  status: InternalJobStatus;
   request_json: RunSubmitRequest;
   effective_seed: string;
   dataset_ref: string;
@@ -56,6 +57,11 @@ interface JobDbRow {
   artifact_manifest_json: ArtifactManifest | null;
   terminal_code: string | null;
   deduped_from: string | null;
+  compute_wait_attempts: string | number;
+  compute_identity: string | null;
+  wait_deadline_ms: string | null;
+  compute_wake_reason: string | null;
+  engine_attempt_charged: boolean;
   timeline_json: RunTimelineEntry[];
 }
 
@@ -93,6 +99,11 @@ function rowToJob(r: JobDbRow): JobRow {
     artifactManifest: r.artifact_manifest_json ?? undefined,
     terminalCode: str(r.terminal_code),
     dedupedFrom: str(r.deduped_from),
+    computeWaitAttempts: Number(r.compute_wait_attempts ?? 0),
+    computeIdentity: str(r.compute_identity),
+    waitDeadlineMs: num(r.wait_deadline_ms),
+    computeWakeReason: (r.compute_wake_reason as ComputeWakeReason | null) ?? undefined,
+    engineAttemptCharged: r.engine_attempt_charged ?? undefined,
     timeline: r.timeline_json,
   };
 }
@@ -175,13 +186,19 @@ export class PgJobStore implements JobStore {
 
   async transition(
     runId: string,
-    from: RunStatus,
-    to: RunStatus,
+    from: InternalJobStatus,
+    to: InternalJobStatus,
     patch: JobRowPatch,
     expectLeasedBy?: string,
   ): Promise<boolean> {
     if (!canTransition(from, to)) return false;
-    const entry: RunTimelineEntry[] = [{ status: to, atMs: patch.atMs }];
+    // RunTimelineEntry.status is public-contract-shaped (feeds toStatusView's timeline verbatim) —
+    // never record the internal 'waiting_for_compute' status there (INV-7). Suppress the entry entirely
+    // on a same-status self-transition (e.g. the engine-commit attempts charge does running→running) —
+    // only append when the status actually changed, to avoid a duplicate public timeline entry. An
+    // empty array makes `timeline_json || $14::jsonb` a no-op concatenation.
+    const entry: RunTimelineEntry[] =
+      from === to ? [] : [{ status: to === 'waiting_for_compute' ? 'running' : to, atMs: patch.atMs }];
     const r = await this.pool.query(
       `UPDATE backtest_job SET
          status = $1,
@@ -196,6 +213,12 @@ export class PgJobStore implements JobStore {
          dataset_fingerprint    = COALESCE($12, dataset_fingerprint),
          terminal_code          = COALESCE($13, terminal_code),
          deduped_from           = COALESCE($16, deduped_from),
+         compute_wait_attempts  = COALESCE($17, compute_wait_attempts),
+         compute_identity       = COALESCE($18, compute_identity),
+         wait_deadline_ms       = COALESCE($19, wait_deadline_ms),
+         compute_wake_reason    = COALESCE($20, compute_wake_reason),
+         engine_attempt_charged = COALESCE($21, engine_attempt_charged),
+         attempts               = COALESCE($22, attempts),
          timeline_json          = timeline_json || $14::jsonb
        WHERE run_id = $2 AND status = $3
          AND ($15::text IS NULL OR leased_by = $15)`,
@@ -216,6 +239,12 @@ export class PgJobStore implements JobStore {
         JSON.stringify(entry),
         expectLeasedBy ?? null,
         patch.dedupedFrom ?? null,
+        patch.computeWaitAttempts ?? null,
+        patch.computeIdentity ?? null,
+        patch.waitDeadlineMs ?? null,
+        patch.computeWakeReason ?? null,
+        patch.engineAttemptCharged ?? null,
+        patch.attempts ?? null,
       ],
     );
     return r.rowCount === 1;
@@ -224,6 +253,7 @@ export class PgJobStore implements JobStore {
   async claimNextQueued(
     nowMs: number,
     lease?: { workerId: string; ttlMs: number },
+    opts?: { coalesceEnabled?: boolean },
   ): Promise<JobRow | undefined> {
     const entry: RunTimelineEntry[] = [{ status: 'running', atMs: nowMs }];
     const r = await this.pool.query<JobDbRow>(
@@ -241,11 +271,11 @@ export class PgJobStore implements JobStore {
          run_deadline_ms = $1::bigint + j.run_timeout_ms,
          leased_by = $3,
          lease_expires_at = CASE WHEN $3::text IS NULL THEN NULL ELSE $1::bigint + $4::bigint END,
-         attempts = CASE WHEN $3::text IS NULL THEN j.attempts ELSE j.attempts + 1 END,
+         attempts = CASE WHEN $3::text IS NULL OR $5::boolean THEN j.attempts ELSE j.attempts + 1 END,
          timeline_json = j.timeline_json || $2::jsonb
        FROM next WHERE j.run_id = next.run_id
        RETURNING j.*`,
-      [nowMs, JSON.stringify(entry), lease?.workerId ?? null, lease?.ttlMs ?? 0],
+      [nowMs, JSON.stringify(entry), lease?.workerId ?? null, lease?.ttlMs ?? 0, opts?.coalesceEnabled ?? false],
     );
     return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
   }
@@ -331,8 +361,13 @@ export class PgJobStore implements JobStore {
     );
   }
 
-  async reapDeadlines(nowMs: number, opts?: { leaseMaxAttempts?: number }): Promise<JobRow[]> {
+  async reapDeadlines(
+    nowMs: number,
+    opts?: { leaseMaxAttempts?: number; coalesceEnabled?: boolean; computeWaitMaxAttempts?: number },
+  ): Promise<JobRow[]> {
     const maxAttempts = opts?.leaseMaxAttempts ?? 3;
+    const coalesceEnabled = opts?.coalesceEnabled ?? false;
+    const waitCap = opts?.computeWaitMaxAttempts ?? 3;
     const expired = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
          status = 'expired', terminal_at_ms = $1::bigint, terminal_code = 'queue_deadline_exceeded',
@@ -341,6 +376,41 @@ export class PgJobStore implements JobStore {
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'expired', atMs: nowMs }])],
     );
+
+    let coalescePoisoned: { rows: JobDbRow[] } = { rows: [] };
+    if (coalesceEnabled) {
+      // Coalescing crash-attribution (INV-6: gated on coalesceEnabled — the plain attempts-based
+      // path below is unchanged, and its WHERE clauses explicitly exclude engine_attempt_charged =
+      // false rows once coalescing is on, so a job never double-attributes across both paths).
+      // Crash BEFORE the engine charged its attempt: re-arm compute_wait_attempts instead of
+      // consuming the engine `attempts` budget; poison only once THAT counter is exhausted.
+      coalescePoisoned = await this.pool.query<JobDbRow>(
+        `UPDATE backtest_job SET
+           status = 'failed', terminal_at_ms = $1::bigint, terminal_code = 'compute_wait_exhausted',
+           timeline_json = timeline_json || $2::jsonb
+         WHERE status = 'running' AND lease_expires_at IS NOT NULL
+           AND $1::bigint > lease_expires_at AND engine_attempt_charged = false
+           AND compute_wait_attempts >= $3
+         RETURNING *`,
+        [nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }]), waitCap],
+      );
+      await this.pool.query(
+        `UPDATE backtest_job SET
+           status = 'queued', queued_at_ms = $1::bigint, leased_by = NULL, lease_expires_at = NULL,
+           compute_wait_attempts = compute_wait_attempts + 1,
+           timeline_json = timeline_json || $2::jsonb
+         WHERE status = 'running' AND lease_expires_at IS NOT NULL
+           AND $1::bigint > lease_expires_at AND engine_attempt_charged = false
+           AND compute_wait_attempts < $3`,
+        [nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }]), waitCap],
+      );
+    }
+    // Crash DURING/AFTER the engine (or coalescing disabled): existing attempts-based path. When
+    // coalesceEnabled, the engine_attempt_charged = false rows have already been handled above, so
+    // this clause is scoped to engine_attempt_charged IS DISTINCT FROM false (true or NULL) to avoid
+    // double-handling; when coalesceEnabled is false that extra clause is always-true and this SQL is
+    // byte-identical to the pre-Task-7 query (INV-6).
+    const engineChargedFilter = coalesceEnabled ? 'AND engine_attempt_charged IS DISTINCT FROM false' : '';
     // Poison: expired-lease running jobs at/over the attempts cap → terminal failure.
     const poisoned = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
@@ -348,6 +418,7 @@ export class PgJobStore implements JobStore {
          timeline_json = timeline_json || $2::jsonb
        WHERE status = 'running' AND lease_expires_at IS NOT NULL
          AND $1::bigint > lease_expires_at AND attempts >= $3
+         ${engineChargedFilter}
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }]), maxAttempts],
     );
@@ -357,7 +428,8 @@ export class PgJobStore implements JobStore {
          status = 'queued', queued_at_ms = $1::bigint, leased_by = NULL, lease_expires_at = NULL,
          timeline_json = timeline_json || $2::jsonb
        WHERE status = 'running' AND lease_expires_at IS NOT NULL
-         AND $1::bigint > lease_expires_at AND attempts < $3`,
+         AND $1::bigint > lease_expires_at AND attempts < $3
+         ${engineChargedFilter}`,
       [nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }]), maxAttempts],
     );
     const timedOut = await this.pool.query<JobDbRow>(
@@ -368,6 +440,64 @@ export class PgJobStore implements JobStore {
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'timed_out', atMs: nowMs }])],
     );
-    return [...expired.rows, ...poisoned.rows, ...timedOut.rows].map(rowToJob);
+    return [...expired.rows, ...coalescePoisoned.rows, ...poisoned.rows, ...timedOut.rows].map(rowToJob);
+  }
+
+  async listComputeWaiters(): Promise<JobRow[]> {
+    const r = await this.pool.query<JobDbRow>(
+      `SELECT * FROM backtest_job WHERE status = 'waiting_for_compute'`,
+    );
+    return r.rows.map(rowToJob);
+  }
+
+  async releaseAllComputeWaiters(
+    computeIdentity: string,
+    reason: ComputeWakeReason,
+    nowMs: number,
+  ): Promise<number> {
+    // Does NOT touch queued_at_ms — preserves FIFO position (INV: releaseAll/electOne must not
+    // overwrite queued_at_ms).
+    const r = await this.pool.query(
+      `UPDATE backtest_job SET
+         status = 'queued', compute_wake_reason = $2, engine_attempt_charged = false,
+         timeline_json = timeline_json || $4::jsonb
+       WHERE status = 'waiting_for_compute' AND compute_identity = $1`,
+      [computeIdentity, reason, nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }])],
+    );
+    return r.rowCount ?? 0;
+  }
+
+  async electOneComputeWaiter(
+    computeIdentity: string,
+    reason: ComputeWakeReason,
+    nowMs: number,
+  ): Promise<JobRow | undefined> {
+    const r = await this.pool.query<JobDbRow>(
+      `UPDATE backtest_job SET
+         status = 'queued', compute_wake_reason = $2,
+         engine_attempt_charged = false,
+         timeline_json = timeline_json || $3::jsonb
+       WHERE run_id = (
+         SELECT run_id FROM backtest_job
+         WHERE status = 'waiting_for_compute' AND compute_identity = $1
+         ORDER BY COALESCE(queued_at_ms, accepted_at_ms) ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT 1
+       )
+       RETURNING *`,
+      [computeIdentity, reason, JSON.stringify([{ status: 'queued', atMs: nowMs }])],
+    );
+    return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
+  }
+
+  async poisonComputeWaiter(runId: string, nowMs: number): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE backtest_job SET
+         status = 'failed', terminal_at_ms = $2::bigint, terminal_code = 'compute_wait_exhausted',
+         timeline_json = timeline_json || $3::jsonb
+       WHERE run_id = $1 AND status = 'waiting_for_compute'`,
+      [runId, nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }])],
+    );
+    return r.rowCount === 1;
   }
 }

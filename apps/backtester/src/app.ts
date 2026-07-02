@@ -24,6 +24,9 @@ import { PgJobStore } from './jobs/pg-job-store';
 import { drainQueue, type WorkerDeps } from './jobs/worker';
 import { InMemoryResultCache } from './jobs/dedup/result-cache';
 import { PgResultCache } from './jobs/dedup/pg-result-cache';
+import { InMemoryComputeLockStore } from './jobs/coalesce/compute-lock.js';
+import { PgComputeLockStore } from './jobs/coalesce/pg-compute-lock.js';
+import { wakeComputeWaiters } from './jobs/coalesce/wake.js';
 import { ObsRegistry } from './jobs/obs-registry.js';
 import { loadSigningKeyFromPem, type SigningKey } from './evidence/signing.js';
 import type { BundleStore } from './sandbox/bundle-store';
@@ -71,6 +74,9 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     }
   }
   const resultCache = ownedPool ? new PgResultCache(ownedPool) : new InMemoryResultCache();
+  const computeLock = config.coalesceEnabled
+    ? (ownedPool ? new PgComputeLockStore(ownedPool) : new InMemoryComputeLockStore())
+    : undefined;
 
   const dataPort =
     overrides.dataPort ??
@@ -124,6 +130,10 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     overlaySandbox: config.overlaySandbox,
     resultCache,
     dedupEnabled: config.dedupEnabled,
+    ...(computeLock ? { computeLock } : {}),
+    coalesceEnabled: config.coalesceEnabled,
+    computeLockTtlMs: config.computeLockTtlMs,
+    computeWaitMaxAttempts: config.computeWaitMaxAttempts,
     ...(obs ? { obs } : {}),
     ...(overrides.evidenceSigningKey
       ? { evidenceSigningKey: overrides.evidenceSigningKey }
@@ -133,7 +143,11 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
   };
 
   const drain = (): Promise<number> => drainQueue(workerDeps, config.workerConcurrency);
-  const reap = (): Promise<unknown> => reapAndPublish(completionDeps);
+  const reap = (): Promise<unknown> =>
+    reapAndPublish(completionDeps, {
+      coalesceEnabled: config.coalesceEnabled,
+      computeWaitMaxAttempts: config.computeWaitMaxAttempts,
+    });
   const flushOutbox = (): Promise<number> => deliverOutbox(completionDeps);
 
   let timer: NodeJS.Timeout | undefined;
@@ -145,6 +159,15 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       await drain();
       await reap();
       await flushOutbox();
+      if (config.coalesceEnabled && computeLock) {
+        await wakeComputeWaiters({
+          store,
+          resultCache,
+          computeLock,
+          clock,
+          computeWaitMaxAttempts: config.computeWaitMaxAttempts,
+        });
+      }
     } finally {
       busy = false;
     }
@@ -175,6 +198,8 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     enableOverlayEngine: config.enableOverlayEngine,
     maxConcurrency: 1,
     kick,
+    coalesceEnabled: config.coalesceEnabled,
+    computeWaitMaxAttempts: config.computeWaitMaxAttempts,
   });
 
   const dispose = async (): Promise<void> => {

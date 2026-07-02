@@ -15,7 +15,7 @@ import { validateBundle } from '../sandbox/bundle';
 import type { BacktesterDataPort } from '../data/reader';
 import type { ArtifactStore } from '../artifacts/store';
 import { toStatusView, type JobStore } from '../jobs/job-store';
-import { isTerminal } from '../jobs/lifecycle';
+import { isTerminal, publicStatus } from '../jobs/lifecycle';
 import { publishCompletion, reapAndPublish, type CompletionDeps } from '../jobs/completion';
 import { submitRun, SubmitError, type SubmitDeps } from '../jobs/submit';
 import { buildRegistryDescriptor } from './registry-route.js';
@@ -28,6 +28,11 @@ export interface ServerDeps extends SubmitDeps, CompletionDeps {
   maxConcurrency: number;
   /** Schedules a worker drain after a run is enqueued (noop in tests that drain manually). */
   kick: () => void;
+  /** Threaded through to the on-demand reapAndPublish() calls below so a client-poll-triggered reap
+   * gets the same coalescing compute-wait attribution as the periodic worker-loop reap. Undefined/false
+   * when coalescing is off ⇒ reapAndPublish's opts are false/undefined ⇒ INV-6 byte-identical OFF path. */
+  coalesceEnabled?: boolean;
+  computeWaitMaxAttempts?: number;
 }
 
 function unauthorized(reply: FastifyReply): FastifyReply {
@@ -110,7 +115,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   app.get('/v1/runs/:runId/status', async (req, reply) => {
     const { runId } = req.params as { runId: string };
-    await reapAndPublish(deps);
+    await reapAndPublish(deps, { coalesceEnabled: deps.coalesceEnabled, computeWaitMaxAttempts: deps.computeWaitMaxAttempts });
     const job = await deps.store.get(runId);
     if (!job) return reply.code(404).send({ category: 'validation_error', code: 'run_not_found', message: runId });
     return toStatusView(job);
@@ -118,13 +123,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   app.get('/v1/runs/:runId/result', async (req, reply) => {
     const { runId } = req.params as { runId: string };
-    await reapAndPublish(deps);
+    await reapAndPublish(deps, { coalesceEnabled: deps.coalesceEnabled, computeWaitMaxAttempts: deps.computeWaitMaxAttempts });
     const job = await deps.store.get(runId);
     if (!job) return reply.code(404).send({ category: 'validation_error', code: 'run_not_found', message: runId });
     if (job.resultSummary) return job.resultSummary;
     return reply.code(409).send({
       runId,
-      status: job.status,
+      // INV-7: waiting_for_compute is internal-only — project to the public RunStatus before
+      // this leaves the process, same as toStatusView.
+      status: publicStatus(job.status),
       ...(job.terminalCode !== undefined ? { terminalCode: job.terminalCode } : {}),
       message: isTerminal(job.status) ? 'run produced no result summary' : 'run not complete',
     });

@@ -51,6 +51,8 @@ import type { EvidenceScope } from '../evidence/body.js';
 import { runBoundedPool } from './pool.js';
 import { normalize, restamp, type DedupTemplate } from './dedup/restamp.js';
 import { computeIdentity } from './dedup/compute-identity.js';
+import { type ComputeLockStore } from './coalesce/compute-lock.js';
+import { wakeComputeWaiters } from './coalesce/wake.js';
 import type { ResultCache } from './dedup/result-cache.js';
 import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.js';
 import { ObsRegistry, type DedupClass, type JobObsSample } from './obs-registry.js';
@@ -77,6 +79,16 @@ export interface WorkerDeps extends CompletionDeps {
   resultCache?: ResultCache;
   /** Master kill-switch: dedup only engages when true AND resultCache is present. */
   dedupEnabled?: boolean;
+  /** In-flight compute coordination lock. Absent ⇒ coalescing OFF. */
+  computeLock?: ComputeLockStore;
+  /** Master coalescing kill-switch: engages only when true AND computeLock present AND dedup on. */
+  coalesceEnabled?: boolean;
+  computeLockTtlMs?: number;
+  computeWaitMaxAttempts?: number;
+  /** Heartbeat hooks — the drain loop renews leader locks (Task 8). Here we register on lock-win and
+   *  unregister in the finally; both are best-effort (absent ⇒ no-op). */
+  registerLeader?: (computeIdentity: string) => void;
+  unregisterLeader?: (computeIdentity: string) => void;
   /** Per-job observability registry. Absent ⇒ observability is OFF (no timing, no log line). */
   obs?: ObsRegistry;
 }
@@ -301,9 +313,14 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
 
 /** Claim and run one queued job. Returns the (now terminal) row, or undefined if the queue was empty. */
 export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | undefined> {
+  // Under coalescing the claim DEFERS the `attempts++` charge to engine-commit (INV-5). The defer
+  // decision can only use deps-level flags (the request is not yet known); the per-request refinement
+  // (dedupOn / bypassCache) happens at the engine-commit charge below.
+  const claimCoalesce = deps.coalesceEnabled === true && deps.computeLock !== undefined && deps.lease !== undefined;
   const claimed = await deps.store.claimNextQueued(
     deps.clock(),
     deps.lease ? { workerId: deps.lease.workerId, ttlMs: deps.lease.ttlMs } : undefined,
+    { coalesceEnabled: claimCoalesce },
   );
   if (!claimed) return undefined;
   const runId = claimed.runId;
@@ -316,6 +333,12 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
   let executor: ModuleExecutor | undefined;
   let sandboxRouter: ExecutorRouter | undefined;
   let sandboxBundle: SandboxBundleHandle | undefined;
+  // Coalescing state hoisted to function scope so the catch/finally (proactive lock-expire + leader
+  // unregister) can read what the try body computed. All stay unset/false when coalescing is off.
+  let identity: string | undefined;
+  let coalesceOn = false;
+  let engineCharged = false;
+  let leaderIdentity: string | undefined;
   try {
     // NOTE: the bundle is loaded here (pre-flight) rather than lazily in the miss-path so the strategy
     // validation guards fire before tape materialization — preserving the sandbox error taxonomy
@@ -370,6 +393,12 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     if (dedupOn) {
       const policy = deps.overlaySandbox.policy;
       sandboxPolicyVersion = `${policy.id}@${policy.version}`;
+      // Compute once and reuse for lookup / coalescing lock / populate (do NOT recompute).
+      identity = computeIdentity({
+        requestFingerprint: claimed.requestFingerprint,
+        datasetFingerprint: dsFingerprint,
+        sandboxPolicyVersion,
+      });
     }
 
     if (deps.dedupEnabled === true && deps.resultCache !== undefined && claimed.request.curatedBaselineRef !== undefined) {
@@ -382,16 +411,36 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       dedupClass = 'miss'; // refined below to 'hit' / 'stale_recompute' by the lookup
     }
 
+    // ── COALESCING FLAGS ──────────────────────────────────────────────────────
+    // coalesceCapable MIRRORS the claim-time defer decision EXACTLY (same static condition, no
+    // dedupOn, no bypassCache) — the claim already deferred attempts++ under coalescing whenever this
+    // condition held, so EVERY engine path that had its charge deferred must be able to charge it at
+    // engine-commit, INCLUDING an evidence run (curatedBaselineRef set ⇒ dedupOn === false) and a
+    // bypassCache run. Including dedupOn here would leave evidence_bypass runs at attempts === 0
+    // despite having run the engine (INV-5 lists evidence_bypass explicitly).
+    // coalesceOn is the (stricter) LOCK-ELECTION gate: only genuinely coalescable requests — dedupOn
+    // true AND not bypassCache — contend the compute lock / can defer to waiting_for_compute.
+    const coalesceCapable = deps.coalesceEnabled === true && deps.computeLock !== undefined && deps.lease !== undefined;
+    coalesceOn = coalesceCapable && dedupOn && claimed.request.bypassCache !== true;
+
+    // INV-5: the attempts charge moves to engine-commit. Under coalescing the claim deferred it, so
+    // charge it here — once, idempotently — immediately before the engine runs on ANY path. No-op when
+    // coalescing is not capable (the claim already charged ⇒ INV-6 byte-identical).
+    const chargeEngineAttempt = async (): Promise<void> => {
+      if (!coalesceCapable || engineCharged) return;
+      engineCharged = true;
+      await deps.store.transition(runId, 'running', 'running', {
+        atMs: deps.clock(),
+        attempts: claimed.attempts + 1,
+        engineAttemptCharged: true,
+      }, deps.lease?.workerId);
+    };
+
     let finalized: Finalized | undefined;
     let dedupedFrom: string | undefined;
 
     if (doLookup) {
-      const identity = computeIdentity({
-        requestFingerprint: claimed.requestFingerprint,
-        datasetFingerprint: dsFingerprint,
-        sandboxPolicyVersion,
-      });
-      const hit = await deps.resultCache!.lookup(identity);
+      const hit = await deps.resultCache!.lookup(identity!);
       if (hit) {
         try {
           const template = (await deps.artifactStore.read(hit.templateRef as ContentHash)) as DedupTemplate;
@@ -420,6 +469,36 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
 
     if (!finalized) {
       // ===== MISS PATH — the ONLY place engine execution happens =====
+      // ── COALESCING GATE ──────────────────────────────────────────────────────
+      // INV-1 cache-first preserved: reached only on a genuine MISS (no HIT, no stale re-stamp).
+      // Elect a single leader per computeIdentity; a follower (lost the lock) defers to
+      // waiting_for_compute WITHOUT running the engine (attempts unchanged — the claim deferred them).
+      // bypassCache never coalesces (coalesceOn excludes it), so it always falls through to run fresh.
+      if (coalesceOn) {
+        const workerId = deps.lease!.workerId;
+        const lockTtl = deps.computeLockTtlMs ?? deps.lease!.ttlMs;
+        const won = await deps.computeLock!.acquire(identity!, runId, workerId, deps.clock(), lockTtl);
+        if (!won) {
+          // Follower: lost the election → defer. NO engine, attempts unchanged (INV-5). The finally
+          // block still runs cleanup; do NOT publishCompletion (waiting_for_compute is non-terminal).
+          const now = deps.clock();
+          // waitDeadlineMs is intentionally NOT set here: follower self-heal rides lock-TTL expiry
+          // (wakeComputeWaiters re-elects once the leader's lock lapses) + the run_deadline reaper +
+          // the compute_wait attempts cap, not a separate per-waiter deadline (dead-field cleanup —
+          // the field was written but listComputeWaiters never read it against nowMs).
+          await deps.store.transition(runId, 'running', 'waiting_for_compute', {
+            atMs: now,
+            computeIdentity: identity!,
+            computeWaitAttempts: claimed.computeWaitAttempts + 1,
+            engineAttemptCharged: false,
+          }, workerId);
+          return await deps.store.get(runId);
+        }
+        // Won → leader: register for heartbeat renewal (best-effort), then run the engine, charging
+        // the deferred attempt at engine-commit (below).
+        leaderIdentity = identity!;
+        deps.registerLeader?.(identity!);
+      }
       let payload: unknown;
       if (claimed.request.engine === 'overlay') {
       // ===== OVERLAY PATH — lifted engine end-to-end (Slice 6a) =====
@@ -433,6 +512,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         sandboxRouter = workerInternals.overlayRouterFor(deps);
       }
 
+      await chargeEngineAttempt(); // INV-5: engine-commit charge (overlay path)
       const outcome = await runOverlayBacktest(engineRequest, {
         registry,
         marketTape,
@@ -453,6 +533,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       const marketTape = materialized.marketTape!;
       const registry = buildInlineOverlayRegistry([], [sandboxBundle!.bundle]);
       sandboxRouter = workerInternals.overlayRouterFor(deps);
+      await chargeEngineAttempt(); // INV-5: engine-commit charge (strategy path)
       const outcome = await runStrategyBacktest(engineRequest, {
         registry,
         marketTape,
@@ -471,6 +552,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       let evidenceRef: ArtifactReference | undefined;
       if (claimed.request.curatedBaselineRef !== undefined && deps.evidenceSigningKey !== undefined) {
         try {
+          await chargeEngineAttempt(); // INV-5: engine-commit charge (curated-evidence baseline run; idempotent)
           const curated = await runOverlayBacktest(
             { ...engineRequest, moduleRef: claimed.request.curatedBaselineRef },
             { registry: buildTrustedRegistry(), marketTape },
@@ -511,6 +593,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       executor = await workerInternals.executorFor(deps, claimed);
 
       const dataset = materialized.dataset!;
+      await chargeEngineAttempt(); // INV-5: engine-commit charge (momentum path)
       const result = await runBacktest(engineRequest, {
         dataset,
         executor,
@@ -529,11 +612,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         const normalized = normalize(engine, payload, runId);
         const templateRef = await deps.artifactStore.write(normalized);
         await deps.resultCache!.put({
-          computeIdentity: computeIdentity({
-            requestFingerprint: claimed.requestFingerprint,
-            datasetFingerprint: dsFingerprint,
-            sandboxPolicyVersion,
-          }),
+          computeIdentity: identity!,
           requestFingerprint: claimed.requestFingerprint,
           datasetFingerprint: dsFingerprint,
           computeVersion: DEDUP_COMPUTE_VERSION,
@@ -564,10 +643,19 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       terminalAtMs: now,
       terminalCode: code,
     }, deps.lease?.workerId);
+    // INV-4: this run OWNS the compute lock (won the election, registered as leader) and then
+    // failed/timed out → proactively expire it so a waiting follower wakes promptly (leader_failed)
+    // instead of blocking for the full ttl. Gated on lock OWNERSHIP (leaderIdentity), not on whether
+    // the engine-commit charge fired: a leader that throws BEFORE charging (e.g. executorFor throws)
+    // still holds the lock and must release it. Best-effort.
+    if (leaderIdentity !== undefined) {
+      await deps.computeLock!.expire(leaderIdentity, deps.lease!.workerId, deps.clock()).catch(() => {});
+    }
   } finally {
     await executor?.close?.();
     sandboxRouter?.closeAll();
     await sandboxBundle?.cleanup();
+    if (leaderIdentity !== undefined) deps.unregisterLeader?.(leaderIdentity);
   }
 
   const finished = await deps.store.get(runId);
@@ -612,17 +700,44 @@ export async function runWorkerLoop(
   opts: { concurrency: number; heartbeatMs: number; pollMs: number; signal: AbortSignal },
 ): Promise<void> {
   let pendingRenew: Promise<unknown> = Promise.resolve();
+  // Active-leader identities for this worker: populated by the gate's registerLeader (Task 6, lock-win)
+  // and cleared by unregisterLeader (terminal/defer finally). The beat below renews each so a long
+  // engine run never lets the compute-lock lapse into a spurious takeover.
+  const activeLeaders = new Set<string>();
+  deps.registerLeader = (computeIdentity: string) => activeLeaders.add(computeIdentity);
+  deps.unregisterLeader = (computeIdentity: string) => activeLeaders.delete(computeIdentity);
   const beat = setInterval(() => {
     if (deps.lease) {
       pendingRenew = deps.store
         .renewLease(deps.lease.workerId, deps.clock() + deps.lease.ttlMs)
         .catch(() => {}); // ignore post-shutdown errors (pool may be tearing down)
+      // Compute-lock renew is SEPARATE from and additional to the job-lease renew above — only when
+      // coalescing is on (INV-6: coalescing-off loop behavior unchanged). Best-effort, like the lease renew.
+      if (deps.computeLock && deps.coalesceEnabled) {
+        const until = deps.clock() + (deps.computeLockTtlMs ?? deps.lease.ttlMs);
+        for (const ci of activeLeaders) {
+          void deps.computeLock.renew(ci, deps.lease.workerId, until).catch(() => {});
+        }
+      }
     }
   }, opts.heartbeatMs);
   try {
     while (!opts.signal.aborted) {
       const processed = await drainQueue(deps, opts.concurrency);
-      await reapAndPublish(deps, { leaseMaxAttempts: deps.lease?.maxAttempts });
+      await reapAndPublish(deps, {
+        leaseMaxAttempts: deps.lease?.maxAttempts,
+        coalesceEnabled: deps.coalesceEnabled,
+        computeWaitMaxAttempts: deps.computeWaitMaxAttempts,
+      });
+      if (deps.coalesceEnabled && deps.computeLock && deps.resultCache) {
+        await wakeComputeWaiters({
+          store: deps.store,
+          resultCache: deps.resultCache,
+          computeLock: deps.computeLock,
+          clock: deps.clock,
+          computeWaitMaxAttempts: deps.computeWaitMaxAttempts ?? 3,
+        });
+      }
       if (opts.signal.aborted) break;
       if (processed === 0) {
         await new Promise<void>((resolve) => {

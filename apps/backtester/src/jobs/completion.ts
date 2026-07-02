@@ -49,9 +49,11 @@ export function defaultWebhookPoster(timeoutMs = 10_000): WebhookPoster {
 }
 
 function synthesizeSummary(job: JobRow): RunResultSummary {
+  // Only invoked from the isTerminal(job.status)-guarded publishCompletion path (see below):
+  // 'waiting_for_compute' is non-terminal, so job.status is a real terminal RunStatus here (INV-7).
   return {
     runId: job.runId,
-    status: job.status,
+    status: job.status as TerminalRunStatus,
     metrics: {},
     artifactRefs: [],
     evidence: {
@@ -110,7 +112,7 @@ export async function publishCompletion(deps: CompletionDeps, job: JobRow): Prom
 /** Reap queue/run deadline misses and publish their completion events. Returns the reaped rows. */
 export async function reapAndPublish(
   deps: CompletionDeps,
-  opts?: { leaseMaxAttempts?: number },
+  opts?: { leaseMaxAttempts?: number; coalesceEnabled?: boolean; computeWaitMaxAttempts?: number },
 ): Promise<JobRow[]> {
   const reaped = await deps.store.reapDeadlines(deps.clock(), opts);
   for (const job of reaped) await publishCompletion(deps, job);
