@@ -134,4 +134,23 @@ describe.skipIf(!PG_AVAILABLE)('renewLease [postgres]', () => {
       await teardown();
     }
   });
+
+  it('transition applies an explicit attempts patch and leaves attempts unchanged when omitted', async () => {
+    const { store, teardown } = await pgFactory.create();
+    try {
+      await enqueue(store, 'r1');
+      await store.claimNextQueued(5000, { workerId: 'w1', ttlMs: 30_000 }); // attempts -> 1
+      expect((await store.get('r1'))?.attempts).toBe(1);
+
+      // No `attempts` field in the patch — must be a no-op (COALESCE($n, attempts)).
+      await store.transition('r1', 'running', 'queued', { atMs: 6000 }, 'w1');
+      expect((await store.get('r1'))?.attempts).toBe(1);
+
+      // Explicit `attempts` patch — must write through (deferred engine-commit charge).
+      await store.transition('r1', 'queued', 'running', { atMs: 7000, attempts: 5 });
+      expect((await store.get('r1'))?.attempts).toBe(5);
+    } finally {
+      await teardown();
+    }
+  });
 });

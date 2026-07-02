@@ -216,6 +216,7 @@ export class PgJobStore implements JobStore {
          wait_deadline_ms       = COALESCE($19, wait_deadline_ms),
          compute_wake_reason    = COALESCE($20, compute_wake_reason),
          engine_attempt_charged = COALESCE($21, engine_attempt_charged),
+         attempts               = COALESCE($22, attempts),
          timeline_json          = timeline_json || $14::jsonb
        WHERE run_id = $2 AND status = $3
          AND ($15::text IS NULL OR leased_by = $15)`,
@@ -241,6 +242,7 @@ export class PgJobStore implements JobStore {
         patch.waitDeadlineMs ?? null,
         patch.computeWakeReason ?? null,
         patch.engineAttemptCharged ?? null,
+        patch.attempts ?? null,
       ],
     );
     return r.rowCount === 1;
