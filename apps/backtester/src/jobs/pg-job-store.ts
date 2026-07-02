@@ -25,6 +25,7 @@ import type {
   JobStore,
   NewJob,
 } from './job-store';
+import type { ComputeWakeReason } from './coalesce/compute-lock.js';
 
 interface JobDbRow {
   run_id: string;
@@ -56,6 +57,11 @@ interface JobDbRow {
   artifact_manifest_json: ArtifactManifest | null;
   terminal_code: string | null;
   deduped_from: string | null;
+  compute_wait_attempts: string | number;
+  compute_identity: string | null;
+  wait_deadline_ms: string | null;
+  compute_wake_reason: string | null;
+  engine_attempt_charged: boolean;
   timeline_json: RunTimelineEntry[];
 }
 
@@ -93,6 +99,11 @@ function rowToJob(r: JobDbRow): JobRow {
     artifactManifest: r.artifact_manifest_json ?? undefined,
     terminalCode: str(r.terminal_code),
     dedupedFrom: str(r.deduped_from),
+    computeWaitAttempts: Number(r.compute_wait_attempts ?? 0),
+    computeIdentity: str(r.compute_identity),
+    waitDeadlineMs: num(r.wait_deadline_ms),
+    computeWakeReason: (r.compute_wake_reason as ComputeWakeReason | null) ?? undefined,
+    engineAttemptCharged: r.engine_attempt_charged ?? undefined,
     timeline: r.timeline_json,
   };
 }
@@ -200,6 +211,11 @@ export class PgJobStore implements JobStore {
          dataset_fingerprint    = COALESCE($12, dataset_fingerprint),
          terminal_code          = COALESCE($13, terminal_code),
          deduped_from           = COALESCE($16, deduped_from),
+         compute_wait_attempts  = COALESCE($17, compute_wait_attempts),
+         compute_identity       = COALESCE($18, compute_identity),
+         wait_deadline_ms       = COALESCE($19, wait_deadline_ms),
+         compute_wake_reason    = COALESCE($20, compute_wake_reason),
+         engine_attempt_charged = COALESCE($21, engine_attempt_charged),
          timeline_json          = timeline_json || $14::jsonb
        WHERE run_id = $2 AND status = $3
          AND ($15::text IS NULL OR leased_by = $15)`,
@@ -220,6 +236,11 @@ export class PgJobStore implements JobStore {
         JSON.stringify(entry),
         expectLeasedBy ?? null,
         patch.dedupedFrom ?? null,
+        patch.computeWaitAttempts ?? null,
+        patch.computeIdentity ?? null,
+        patch.waitDeadlineMs ?? null,
+        patch.computeWakeReason ?? null,
+        patch.engineAttemptCharged ?? null,
       ],
     );
     return r.rowCount === 1;
@@ -228,6 +249,7 @@ export class PgJobStore implements JobStore {
   async claimNextQueued(
     nowMs: number,
     lease?: { workerId: string; ttlMs: number },
+    opts?: { coalesceEnabled?: boolean },
   ): Promise<JobRow | undefined> {
     const entry: RunTimelineEntry[] = [{ status: 'running', atMs: nowMs }];
     const r = await this.pool.query<JobDbRow>(
@@ -245,11 +267,11 @@ export class PgJobStore implements JobStore {
          run_deadline_ms = $1::bigint + j.run_timeout_ms,
          leased_by = $3,
          lease_expires_at = CASE WHEN $3::text IS NULL THEN NULL ELSE $1::bigint + $4::bigint END,
-         attempts = CASE WHEN $3::text IS NULL THEN j.attempts ELSE j.attempts + 1 END,
+         attempts = CASE WHEN $3::text IS NULL OR $5::boolean THEN j.attempts ELSE j.attempts + 1 END,
          timeline_json = j.timeline_json || $2::jsonb
        FROM next WHERE j.run_id = next.run_id
        RETURNING j.*`,
-      [nowMs, JSON.stringify(entry), lease?.workerId ?? null, lease?.ttlMs ?? 0],
+      [nowMs, JSON.stringify(entry), lease?.workerId ?? null, lease?.ttlMs ?? 0, opts?.coalesceEnabled ?? false],
     );
     return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
   }

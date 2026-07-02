@@ -13,6 +13,7 @@ import type {
   RunTimelineEntry,
 } from '@trading/research-contracts';
 import { canTransition, isTerminal, publicStatus, type InternalJobStatus } from './lifecycle';
+import type { ComputeWakeReason } from './coalesce/compute-lock.js';
 
 export interface JobRow {
   jobId: string;
@@ -50,6 +51,16 @@ export interface JobRow {
   /** Provenance: computeIdentity of the cache entry this run was served from (dedup HIT). Observability
    *  only — NEVER part of result_hash. Absent for freshly-computed runs. */
   dedupedFrom?: string;
+  /** Number of times this job has re-armed its compute-lock wait (coalescing follower path). */
+  computeWaitAttempts: number;
+  /** Identity of the compute-coordination lock this job is following/leading (coalescing). */
+  computeIdentity?: string;
+  /** Epoch ms deadline for the current compute-lock wait (coalescing follower path). */
+  waitDeadlineMs?: number;
+  /** Reason the follower last woke from its compute-lock wait (coalescing). */
+  computeWakeReason?: ComputeWakeReason;
+  /** Whether this job's engine `attempts` charge has already been committed (deferred-charge claim). */
+  engineAttemptCharged?: boolean;
   timeline: RunTimelineEntry[];
 }
 
@@ -84,6 +95,12 @@ export interface JobRowPatch {
   terminalCode?: string;
   /** Dedup provenance (computeIdentity of the served cache entry). Observability only. */
   dedupedFrom?: string;
+  computeWaitAttempts?: number;
+  computeIdentity?: string;
+  waitDeadlineMs?: number;
+  computeWakeReason?: ComputeWakeReason;
+  engineAttemptCharged?: boolean;
+  attempts?: number;
 }
 
 export type JobEventType =
@@ -114,7 +131,11 @@ export interface JobStore {
   insertOrGet(job: NewJob): Promise<{ job: JobRow; created: boolean }>;
   get(runId: string): Promise<JobRow | undefined>;
   transition(runId: string, from: InternalJobStatus, to: InternalJobStatus, patch: JobRowPatch, expectLeasedBy?: string): Promise<boolean>;
-  claimNextQueued(nowMs: number, lease?: { workerId: string; ttlMs: number }): Promise<JobRow | undefined>;
+  claimNextQueued(
+    nowMs: number,
+    lease?: { workerId: string; ttlMs: number },
+    opts?: { coalesceEnabled?: boolean },
+  ): Promise<JobRow | undefined>;
   renewLease(workerId: string, untilMs: number): Promise<void>;
   list(filter?: { status?: RunStatus; correlationId?: string; workflowId?: string }): Promise<JobRow[]>;
   appendEvent(ev: JobEventRow): Promise<void>;
@@ -141,6 +162,7 @@ export class InMemoryJobStore implements JobStore {
       ...job,
       status: 'accepted',
       attempts: 0,
+      computeWaitAttempts: 0,
       timeline: [{ status: 'accepted', atMs: job.acceptedAtMs }],
     };
     this.jobs.set(row.runId, row);
@@ -174,6 +196,12 @@ export class InMemoryJobStore implements JobStore {
     if (patch.datasetFingerprint !== undefined) job.datasetFingerprint = patch.datasetFingerprint;
     if (patch.terminalCode !== undefined) job.terminalCode = patch.terminalCode;
     if (patch.dedupedFrom !== undefined) job.dedupedFrom = patch.dedupedFrom;
+    if (patch.computeWaitAttempts !== undefined) job.computeWaitAttempts = patch.computeWaitAttempts;
+    if (patch.computeIdentity !== undefined) job.computeIdentity = patch.computeIdentity;
+    if (patch.waitDeadlineMs !== undefined) job.waitDeadlineMs = patch.waitDeadlineMs;
+    if (patch.computeWakeReason !== undefined) job.computeWakeReason = patch.computeWakeReason;
+    if (patch.engineAttemptCharged !== undefined) job.engineAttemptCharged = patch.engineAttemptCharged;
+    if (patch.attempts !== undefined) job.attempts = patch.attempts;
     // RunTimelineEntry.status is public-contract-shaped (feeds toStatusView's timeline verbatim) —
     // never record the internal 'waiting_for_compute' status there (INV-7).
     job.timeline.push({ status: to === 'waiting_for_compute' ? 'running' : to, atMs: patch.atMs });
@@ -183,6 +211,7 @@ export class InMemoryJobStore implements JobStore {
   async claimNextQueued(
     nowMs: number,
     lease?: { workerId: string; ttlMs: number },
+    opts?: { coalesceEnabled?: boolean },
   ): Promise<JobRow | undefined> {
     const queued = [...this.jobs.values()]
       .filter((j) => j.status === 'queued')
@@ -202,7 +231,9 @@ export class InMemoryJobStore implements JobStore {
     if (lease !== undefined) {
       next.leasedBy = lease.workerId;
       next.leaseExpiresAt = nowMs + lease.ttlMs;
-      next.attempts += 1;
+      if (!opts?.coalesceEnabled) {
+        next.attempts += 1;
+      }
     }
     return next;
   }
