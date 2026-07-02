@@ -193,10 +193,12 @@ export class PgJobStore implements JobStore {
   ): Promise<boolean> {
     if (!canTransition(from, to)) return false;
     // RunTimelineEntry.status is public-contract-shaped (feeds toStatusView's timeline verbatim) —
-    // never record the internal 'waiting_for_compute' status there (INV-7).
-    const entry: RunTimelineEntry[] = [
-      { status: to === 'waiting_for_compute' ? 'running' : to, atMs: patch.atMs },
-    ];
+    // never record the internal 'waiting_for_compute' status there (INV-7). Suppress the entry entirely
+    // on a same-status self-transition (e.g. the engine-commit attempts charge does running→running) —
+    // only append when the status actually changed, to avoid a duplicate public timeline entry. An
+    // empty array makes `timeline_json || $14::jsonb` a no-op concatenation.
+    const entry: RunTimelineEntry[] =
+      from === to ? [] : [{ status: to === 'waiting_for_compute' ? 'running' : to, atMs: patch.atMs }];
     const r = await this.pool.query(
       `UPDATE backtest_job SET
          status = $1,
@@ -441,7 +443,7 @@ export class PgJobStore implements JobStore {
     return [...expired.rows, ...coalescePoisoned.rows, ...poisoned.rows, ...timedOut.rows].map(rowToJob);
   }
 
-  async listComputeWaiters(nowMs: number): Promise<JobRow[]> {
+  async listComputeWaiters(): Promise<JobRow[]> {
     const r = await this.pool.query<JobDbRow>(
       `SELECT * FROM backtest_job WHERE status = 'waiting_for_compute'`,
     );

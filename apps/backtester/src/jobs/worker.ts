@@ -482,10 +482,13 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           // Follower: lost the election → defer. NO engine, attempts unchanged (INV-5). The finally
           // block still runs cleanup; do NOT publishCompletion (waiting_for_compute is non-terminal).
           const now = deps.clock();
+          // waitDeadlineMs is intentionally NOT set here: follower self-heal rides lock-TTL expiry
+          // (wakeComputeWaiters re-elects once the leader's lock lapses) + the run_deadline reaper +
+          // the compute_wait attempts cap, not a separate per-waiter deadline (dead-field cleanup —
+          // the field was written but listComputeWaiters never read it against nowMs).
           await deps.store.transition(runId, 'running', 'waiting_for_compute', {
             atMs: now,
             computeIdentity: identity!,
-            waitDeadlineMs: now + lockTtl * 2,
             computeWaitAttempts: claimed.computeWaitAttempts + 1,
             engineAttemptCharged: false,
           }, workerId);
@@ -640,10 +643,13 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       terminalAtMs: now,
       terminalCode: code,
     }, deps.lease?.workerId);
-    // INV-4: the leader failed/timed out AFTER taking the lock → proactively expire it so a waiting
-    // follower wakes promptly (leader_failed) instead of blocking for the full ttl. Best-effort.
-    if (coalesceOn && engineCharged && identity !== undefined) {
-      await deps.computeLock!.expire(identity, deps.lease!.workerId, deps.clock()).catch(() => {});
+    // INV-4: this run OWNS the compute lock (won the election, registered as leader) and then
+    // failed/timed out → proactively expire it so a waiting follower wakes promptly (leader_failed)
+    // instead of blocking for the full ttl. Gated on lock OWNERSHIP (leaderIdentity), not on whether
+    // the engine-commit charge fired: a leader that throws BEFORE charging (e.g. executorFor throws)
+    // still holds the lock and must release it. Best-effort.
+    if (leaderIdentity !== undefined) {
+      await deps.computeLock!.expire(leaderIdentity, deps.lease!.workerId, deps.clock()).catch(() => {});
     }
   } finally {
     await executor?.close?.();

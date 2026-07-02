@@ -23,7 +23,7 @@ export async function wakeComputeWaiters(
   deps: WakeDeps,
 ): Promise<{ released: number; poisoned: number }> {
   const now = deps.clock();
-  const waiters = await deps.store.listComputeWaiters(now);
+  const waiters = await deps.store.listComputeWaiters();
 
   const byCi = new Map<string, JobRow[]>();
   for (const w of waiters) {

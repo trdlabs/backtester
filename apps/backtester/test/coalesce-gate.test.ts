@@ -15,7 +15,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { processNextQueued, type WorkerDeps } from '../src/jobs/worker.js';
+import { processNextQueued, workerInternals, type WorkerDeps } from '../src/jobs/worker.js';
 import { InMemoryComputeLockStore } from '../src/jobs/coalesce/compute-lock.js';
 import { InMemoryJobStore, type NewJob } from '../src/jobs/job-store.js';
 import { InMemoryArtifactStore } from '../src/artifacts/store.js';
@@ -172,7 +172,42 @@ describe('coalescing gate — momentum', () => {
     expect(row?.status).toBe('waiting_for_compute'); // internal status
     expect(row?.attempts).toBe(0); // claim deferred the charge; follower never runs the engine
     expect(row?.computeWaitAttempts).toBe(1); // one wait cycle
+    expect(row?.waitDeadlineMs).toBeUndefined(); // Fix D: dead field — no longer written by the follower transition
     expect(b?.status).toBe('waiting_for_compute');
+  });
+
+  it('INV-4: leader wins the lock but throws BEFORE the engine-commit charge (executorFor throws) → the lock is still proactively expired (gated on lock OWNERSHIP, not engineCharged), so a follower can win a fresh election almost immediately instead of blocking for the full ttl', async () => {
+    const lock = new InMemoryComputeLockStore();
+    let now = CLOCK;
+    const { store, deps } = makeCtx({ dedupEnabled: true, coalesceEnabled: true, computeLock: lock });
+    deps.clock = () => now;
+
+    // Derive the identity BEFORE spying (the probe run inside momentumIdentity uses the real executor).
+    const identity = await momentumIdentity(deps);
+
+    // executorFor is the first thing the momentum path calls, strictly BEFORE chargeEngineAttempt —
+    // so this reproduces "leader wins, then throws pre-charge" exactly (engineCharged stays false).
+    const executorSpy = vi.spyOn(workerInternals, 'executorFor').mockRejectedValueOnce(new Error('boom'));
+
+    await enqueue(store, 'run-leader-throws');
+    const leaderResult = await processNextQueued(deps);
+    expect(leaderResult?.status).toBe('failed');
+    expect(leaderResult?.attempts).toBe(0); // charge never fired — proves engineCharged was false here
+    executorSpy.mockRestore();
+
+    // Pre-fix this check used `coalesceOn && engineCharged && identity !== undefined` — engineCharged
+    // is false here, so the lock would NOT have been expired and this assertion would fail.
+    const lockAfterFailure = await lock.get(identity);
+    expect(lockAfterFailure?.lockExpiresAtMs).toBe(now); // proactively expired to "now", not left at now+ttl
+
+    // Advance time past the (now-collapsed) expiry and prove a follower wins a fresh election right
+    // away — the INV-4 payoff: no need to wait out the full lockTtl (60_000ms here).
+    now += 1;
+    await enqueue(store, 'run-follower-after-throw');
+    const followerResult = await processNextQueued(deps);
+    expect(followerResult?.status).toBe('completed');
+    const lockAfterFollower = await lock.get(identity);
+    expect(lockAfterFollower?.leaderRunId).toBe('run-follower-after-throw');
   });
 
   it('bypassCache=true bypasses coalescing: even with an ACTIVE lock the run does NOT defer — engine runs fresh', async () => {

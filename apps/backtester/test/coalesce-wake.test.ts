@@ -111,4 +111,29 @@ describe('wakeComputeWaiters', () => {
     expect(row?.status).toBe('failed');
     expect(row?.terminalCode).toBe('compute_wait_exhausted');
   });
+
+  // Fix D (waitDeadlineMs dead-field cleanup): worker.ts's follower transition no longer sets
+  // waitDeadlineMs at all, and listComputeWaiters() takes no nowMs — follower self-heal rides
+  // lock-TTL expiry (this wake step) + the run_deadline reaper + the compute_wait attempts cap.
+  // A waiter with no waitDeadlineMs must still wake normally through the lock_expired path.
+  it('waiter with no waitDeadlineMs set still wakes via lock_expired (listComputeWaiters needs no nowMs)', async () => {
+    const d = mk();
+    await d.store.insertOrGet(newJob('w-nodeadline', CI));
+    await d.store.transition('w-nodeadline', 'accepted', 'queued', { atMs: 1000, queuedAtMs: 1000 });
+    await d.store.transition('w-nodeadline', 'queued', 'running', { atMs: 1000, startedAtMs: 1000 });
+    await d.store.transition('w-nodeadline', 'running', 'waiting_for_compute', {
+      atMs: 1000,
+      computeIdentity: CI,
+      computeWaitAttempts: 0,
+      // deliberately no waitDeadlineMs — mirrors the post-Fix-D worker.ts follower transition
+    });
+    expect((await d.store.get('w-nodeadline'))?.waitDeadlineMs).toBeUndefined();
+
+    await d.computeLock.acquire(CI, 'leader', 'w0', 0, 100); // expires 100, now 5000 → expired
+    const r = await wakeComputeWaiters(deps(d));
+    expect(r.released).toBe(1);
+    const row = await d.store.get('w-nodeadline');
+    expect(row?.status).toBe('queued');
+    expect(row?.computeWakeReason).toBe('lock_expired');
+  });
 });

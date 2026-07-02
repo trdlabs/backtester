@@ -147,8 +147,11 @@ export interface JobStore {
   /** Outbox: terminal events still pending/failed delivery, oldest first. */
   listDeliverable(limit: number): Promise<JobEventRow[]>;
   markDelivered(eventUid: string, ok: boolean): Promise<void>;
-  /** Coalescing wake step (Task 7). All jobs currently in the internal waiting_for_compute status. */
-  listComputeWaiters(nowMs: number): Promise<JobRow[]>;
+  /** Coalescing wake step (Task 7). All jobs currently in the internal waiting_for_compute status.
+   *  No time filter: a stuck-but-renewing leader is handled by lock-TTL expiry (wakeComputeWaiters
+   *  re-elects once the lock lapses), the run_deadline reaper, and the compute_wait attempts cap —
+   *  not by a per-waiter deadline, so this intentionally takes no nowMs. */
+  listComputeWaiters(): Promise<JobRow[]>;
   /** Release every waiting_for_compute job for computeIdentity → queued (cache_ready). Does NOT
    *  overwrite queued_at_ms (preserves FIFO position). Returns the number of jobs released. */
   releaseAllComputeWaiters(
@@ -224,8 +227,12 @@ export class InMemoryJobStore implements JobStore {
     if (patch.engineAttemptCharged !== undefined) job.engineAttemptCharged = patch.engineAttemptCharged;
     if (patch.attempts !== undefined) job.attempts = patch.attempts;
     // RunTimelineEntry.status is public-contract-shaped (feeds toStatusView's timeline verbatim) —
-    // never record the internal 'waiting_for_compute' status there (INV-7).
-    job.timeline.push({ status: to === 'waiting_for_compute' ? 'running' : to, atMs: patch.atMs });
+    // never record the internal 'waiting_for_compute' status there (INV-7). Suppress the entry entirely
+    // on a same-status self-transition (e.g. the engine-commit attempts charge does running→running) —
+    // only push when the status actually changed, to avoid a duplicate public timeline entry.
+    if (from !== to) {
+      job.timeline.push({ status: to === 'waiting_for_compute' ? 'running' : to, atMs: patch.atMs });
+    }
     return true;
   }
 
@@ -368,7 +375,7 @@ export class InMemoryJobStore implements JobStore {
     return reaped;
   }
 
-  async listComputeWaiters(nowMs: number): Promise<JobRow[]> {
+  async listComputeWaiters(): Promise<JobRow[]> {
     return [...this.jobs.values()].filter((j) => j.status === 'waiting_for_compute');
   }
 

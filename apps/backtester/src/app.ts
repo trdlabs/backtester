@@ -198,6 +198,8 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     enableOverlayEngine: config.enableOverlayEngine,
     maxConcurrency: 1,
     kick,
+    coalesceEnabled: config.coalesceEnabled,
+    computeWaitMaxAttempts: config.computeWaitMaxAttempts,
   });
 
   const dispose = async (): Promise<void> => {
