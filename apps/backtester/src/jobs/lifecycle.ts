@@ -19,7 +19,11 @@ export type InternalJobStatus = RunStatus | 'waiting_for_compute';
 const ALLOWED_TRANSITIONS: Record<InternalJobStatus, readonly InternalJobStatus[]> = {
   accepted: ['queued', 'canceled'],
   queued: ['running', 'canceled', 'expired'],
-  running: ['completed', 'failed', 'canceled', 'timed_out', 'queued', 'waiting_for_compute'],
+  // 'running' -> 'running' is a deliberate self-transition: the coalescing engine-commit charge
+  // (worker.ts::chargeEngineAttempt) persists `attempts`/`engineAttemptCharged` via a same-status
+  // transition (no status change, only a JobRowPatch write) before the engine runs. Without this,
+  // that write is rejected by canTransition and the deferred attempts++ charge is silently lost.
+  running: ['running', 'completed', 'failed', 'canceled', 'timed_out', 'queued', 'waiting_for_compute'],
   waiting_for_compute: ['queued', 'failed', 'canceled'],
   completed: [],
   failed: [],

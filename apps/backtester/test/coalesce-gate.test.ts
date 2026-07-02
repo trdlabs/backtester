@@ -95,6 +95,13 @@ async function enqueueBypass(store: InMemoryJobStore, runId: string): Promise<vo
   await store.transition(runId, 'accepted', 'queued', { atMs: CLOCK, queuedAtMs: CLOCK });
 }
 
+// curatedBaselineRef set ⇒ dedupOn === false (evidence_bypass, INV-5). Momentum ignores
+// curatedBaselineRef for evidence production, but the dedup/coalescing gate still reads it.
+async function enqueueEvidence(store: InMemoryJobStore, runId: string): Promise<void> {
+  await store.insertOrGet(momentumJob(runId, { curatedBaselineRef: { id: 'baseline', version: '1.0.0' } }));
+  await store.transition(runId, 'accepted', 'queued', { atMs: CLOCK, queuedAtMs: CLOCK });
+}
+
 // Derive the deterministic momentum computeIdentity the gate will compute, WITHOUT touching the
 // test's result cache: a throwaway probe run with dedup OFF just persists datasetFingerprint.
 async function momentumIdentity(deps: WorkerDeps): Promise<string> {
@@ -180,5 +187,20 @@ describe('coalescing gate — momentum', () => {
     expect(r?.status).toBe('completed');
     expect(runSpy).toHaveBeenCalledTimes(1); // engine ran fresh despite the active lock
     expect((await store.get('run-bypass'))?.status).not.toBe('waiting_for_compute');
+  });
+
+  it('evidence run (curatedBaselineRef set ⇒ dedupOn false) under coalescing: engine runs directly (no lock election), attempts charged at engine-commit', async () => {
+    const lock = new InMemoryComputeLockStore();
+    const { store, deps } = makeCtx({ dedupEnabled: true, coalesceEnabled: true, computeLock: lock });
+    const runSpy = vi.spyOn(runBacktestModule, 'runBacktest');
+
+    await enqueueEvidence(store, 'run-evidence');
+    const r = await processNextQueued(deps);
+    expect(r?.status).toBe('completed');
+    expect(runSpy).toHaveBeenCalledTimes(1); // dedupOn false → no lock election → runs directly
+    const row = await store.get('run-evidence');
+    expect(row?.status).not.toBe('waiting_for_compute');
+    expect(row?.attempts).toBe(1); // deferred at claim, charged once at engine-commit
+    expect(row?.engineAttemptCharged).toBe(true);
   });
 });

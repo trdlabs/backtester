@@ -411,14 +411,16 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     }
 
     // ── COALESCING FLAGS ──────────────────────────────────────────────────────
-    // coalesceCapable mirrors the claim-time defer decision REFINED with dedupOn — it deliberately
-    // IGNORES bypassCache, because the claim already deferred attempts++ under coalescing, so EVERY
-    // engine path (including a bypassCache run) must charge the deferred attempt at engine-commit.
-    // coalesceOn additionally excludes bypassCache: a bypassCache run forces fresh compute, so it
-    // never takes the lock / defers to waiting_for_compute.
-    const coalesceCapable = deps.coalesceEnabled === true && deps.computeLock !== undefined && dedupOn
-      && deps.lease !== undefined;
-    coalesceOn = coalesceCapable && claimed.request.bypassCache !== true;
+    // coalesceCapable MIRRORS the claim-time defer decision EXACTLY (same static condition, no
+    // dedupOn, no bypassCache) — the claim already deferred attempts++ under coalescing whenever this
+    // condition held, so EVERY engine path that had its charge deferred must be able to charge it at
+    // engine-commit, INCLUDING an evidence run (curatedBaselineRef set ⇒ dedupOn === false) and a
+    // bypassCache run. Including dedupOn here would leave evidence_bypass runs at attempts === 0
+    // despite having run the engine (INV-5 lists evidence_bypass explicitly).
+    // coalesceOn is the (stricter) LOCK-ELECTION gate: only genuinely coalescable requests — dedupOn
+    // true AND not bypassCache — contend the compute lock / can defer to waiting_for_compute.
+    const coalesceCapable = deps.coalesceEnabled === true && deps.computeLock !== undefined && deps.lease !== undefined;
+    coalesceOn = coalesceCapable && dedupOn && claimed.request.bypassCache !== true;
 
     // INV-5: the attempts charge moves to engine-commit. Under coalescing the claim deferred it, so
     // charge it here — once, idempotently — immediately before the engine runs on ANY path. No-op when
