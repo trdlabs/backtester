@@ -100,6 +100,12 @@ export interface AppConfig {
   readonly dedupEnabled: boolean;
   /** Enable per-job observability (terminal log line + /statsz). Default off. */
   readonly jobObs: boolean;
+  /** Enable in-flight request coalescing (leader/follower). Default off; effective only with dedupEnabled. */
+  readonly coalesceEnabled: boolean;
+  /** Compute-lock TTL (ms). Default = workerLeaseTtlMs. */
+  readonly computeLockTtlMs: number;
+  /** compute_wait_attempts poison cap. Default 3. */
+  readonly computeWaitMaxAttempts: number;
   readonly sandbox: SandboxSettings;
   /** OVERLAY sandbox (Slice-6b-A) — distinct from `sandbox` (Slice-3). */
   readonly overlaySandbox: OverlaySandboxSettings;
@@ -230,6 +236,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     enableOverlayEngine: env.BACKTESTER_ENABLE_OVERLAY_ENGINE === 'true',
     dedupEnabled: env.BACKTESTER_DEDUP_ENABLED === 'true',
     jobObs: env.BACKTESTER_JOB_OBS === 'true',
+    coalesceEnabled: env.BACKTESTER_COALESCE_ENABLED === 'true',
+    computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
+    computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     ...(env.BT_EVIDENCE_SIGNING_KEY ? { evidenceSigningKeyPem: env.BT_EVIDENCE_SIGNING_KEY } : {}),
     sandbox: {
       harnessDir: env.BACKTESTER_SANDBOX_HARNESS_DIR ?? resolve(HERE, '../sandbox-harness'),
