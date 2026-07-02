@@ -52,6 +52,7 @@ import { runBoundedPool } from './pool.js';
 import { normalize, restamp, type DedupTemplate } from './dedup/restamp.js';
 import { computeIdentity } from './dedup/compute-identity.js';
 import { type ComputeLockStore } from './coalesce/compute-lock.js';
+import { wakeComputeWaiters } from './coalesce/wake.js';
 import type { ResultCache } from './dedup/result-cache.js';
 import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.js';
 import { ObsRegistry, type DedupClass, type JobObsSample } from './obs-registry.js';
@@ -717,7 +718,20 @@ export async function runWorkerLoop(
   try {
     while (!opts.signal.aborted) {
       const processed = await drainQueue(deps, opts.concurrency);
-      await reapAndPublish(deps, { leaseMaxAttempts: deps.lease?.maxAttempts });
+      await reapAndPublish(deps, {
+        leaseMaxAttempts: deps.lease?.maxAttempts,
+        coalesceEnabled: deps.coalesceEnabled,
+        computeWaitMaxAttempts: deps.computeWaitMaxAttempts,
+      });
+      if (deps.coalesceEnabled && deps.computeLock && deps.resultCache) {
+        await wakeComputeWaiters({
+          store: deps.store,
+          resultCache: deps.resultCache,
+          computeLock: deps.computeLock,
+          clock: deps.clock,
+          computeWaitMaxAttempts: deps.computeWaitMaxAttempts ?? 3,
+        });
+      }
       if (opts.signal.aborted) break;
       if (processed === 0) {
         await new Promise<void>((resolve) => {

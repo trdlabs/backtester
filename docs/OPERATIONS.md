@@ -214,6 +214,15 @@ successfully. Off by default — a pure opt-in.
   loads the bundle (needed to serve the response) but skips the expensive engine + sandbox execution.
   Momentum (non-bundle) HITs skip all compute, including bundle load.
 
+### In-flight coalescing (Phase C)
+
+`BACKTESTER_COALESCE_ENABLED=true` (default off; requires `BACKTESTER_DEDUP_ENABLED=true`) coalesces
+concurrent identical runs: the first (leader) runs the engine; the rest (followers) defer internally
+(`waiting_for_compute`, shown as `running` in the public API) and complete via re-stamp once the leader's
+result is cached — or take over if the leader fails/crashes. Postgres-durable only. Tunables:
+`BACKTESTER_COMPUTE_LOCK_TTL_MS` (default = worker lease TTL), `BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS`
+(default 3). Off = byte-identical to the shipped dedup behavior.
+
 ### Job observability (Phase C — dedup enablement)
 
 Set `BACKTESTER_JOB_OBS=true` (default off) to turn on minimal per-job observability. Two channels:
