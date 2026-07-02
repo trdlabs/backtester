@@ -49,9 +49,11 @@ export function defaultWebhookPoster(timeoutMs = 10_000): WebhookPoster {
 }
 
 function synthesizeSummary(job: JobRow): RunResultSummary {
+  // Only invoked from the isTerminal(job.status)-guarded publishCompletion path (see below):
+  // 'waiting_for_compute' is non-terminal, so job.status is a real terminal RunStatus here (INV-7).
   return {
     runId: job.runId,
-    status: job.status,
+    status: job.status as TerminalRunStatus,
     metrics: {},
     artifactRefs: [],
     evidence: {

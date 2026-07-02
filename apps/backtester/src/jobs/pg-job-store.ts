@@ -17,7 +17,7 @@ import type {
   RunSubmitRequest,
   RunTimelineEntry,
 } from '@trading/research-contracts';
-import { canTransition } from './lifecycle';
+import { canTransition, type InternalJobStatus } from './lifecycle';
 import type {
   JobEventRow,
   JobRow,
@@ -175,13 +175,17 @@ export class PgJobStore implements JobStore {
 
   async transition(
     runId: string,
-    from: RunStatus,
-    to: RunStatus,
+    from: InternalJobStatus,
+    to: InternalJobStatus,
     patch: JobRowPatch,
     expectLeasedBy?: string,
   ): Promise<boolean> {
     if (!canTransition(from, to)) return false;
-    const entry: RunTimelineEntry[] = [{ status: to, atMs: patch.atMs }];
+    // RunTimelineEntry.status is public-contract-shaped (feeds toStatusView's timeline verbatim) —
+    // never record the internal 'waiting_for_compute' status there (INV-7).
+    const entry: RunTimelineEntry[] = [
+      { status: to === 'waiting_for_compute' ? 'running' : to, atMs: patch.atMs },
+    ];
     const r = await this.pool.query(
       `UPDATE backtest_job SET
          status = $1,

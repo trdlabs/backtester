@@ -12,7 +12,7 @@ import type {
   RunSubmitRequest,
   RunTimelineEntry,
 } from '@trading/research-contracts';
-import { canTransition, isTerminal } from './lifecycle';
+import { canTransition, isTerminal, type InternalJobStatus } from './lifecycle';
 
 export interface JobRow {
   jobId: string;
@@ -21,7 +21,7 @@ export interface JobRow {
   requestFingerprint: string;
   correlationId?: string;
   workflowId?: string;
-  status: RunStatus;
+  status: InternalJobStatus;
   request: RunSubmitRequest;
   effectiveSeed: number;
   datasetRef: string;
@@ -113,7 +113,7 @@ export interface JobEventRow {
 export interface JobStore {
   insertOrGet(job: NewJob): Promise<{ job: JobRow; created: boolean }>;
   get(runId: string): Promise<JobRow | undefined>;
-  transition(runId: string, from: RunStatus, to: RunStatus, patch: JobRowPatch, expectLeasedBy?: string): Promise<boolean>;
+  transition(runId: string, from: InternalJobStatus, to: InternalJobStatus, patch: JobRowPatch, expectLeasedBy?: string): Promise<boolean>;
   claimNextQueued(nowMs: number, lease?: { workerId: string; ttlMs: number }): Promise<JobRow | undefined>;
   renewLease(workerId: string, untilMs: number): Promise<void>;
   list(filter?: { status?: RunStatus; correlationId?: string; workflowId?: string }): Promise<JobRow[]>;
@@ -154,8 +154,8 @@ export class InMemoryJobStore implements JobStore {
 
   async transition(
     runId: string,
-    from: RunStatus,
-    to: RunStatus,
+    from: InternalJobStatus,
+    to: InternalJobStatus,
     patch: JobRowPatch,
     expectLeasedBy?: string,
   ): Promise<boolean> {
@@ -174,7 +174,9 @@ export class InMemoryJobStore implements JobStore {
     if (patch.datasetFingerprint !== undefined) job.datasetFingerprint = patch.datasetFingerprint;
     if (patch.terminalCode !== undefined) job.terminalCode = patch.terminalCode;
     if (patch.dedupedFrom !== undefined) job.dedupedFrom = patch.dedupedFrom;
-    job.timeline.push({ status: to, atMs: patch.atMs });
+    // RunTimelineEntry.status is public-contract-shaped (feeds toStatusView's timeline verbatim) —
+    // never record the internal 'waiting_for_compute' status there (INV-7).
+    job.timeline.push({ status: to === 'waiting_for_compute' ? 'running' : to, atMs: patch.atMs });
     return true;
   }
 
@@ -288,10 +290,12 @@ export class InMemoryJobStore implements JobStore {
 }
 
 export function toStatusView(job: JobRow): RunStatusView {
+  // waiting_for_compute is internal-only (INV-7) — externally a follower is still 'running'.
+  const publicStatus: RunStatus = job.status === 'waiting_for_compute' ? 'running' : job.status;
   return {
     runId: job.runId,
     jobId: job.jobId,
-    status: job.status,
+    status: publicStatus,
     timeline: job.timeline,
     ...(job.terminalCode !== undefined ? { terminalCode: job.terminalCode } : {}),
   };
