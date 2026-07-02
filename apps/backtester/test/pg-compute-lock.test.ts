@@ -29,13 +29,28 @@ describe.skipIf(!PG_AVAILABLE)('PgComputeLockStore (Postgres conformance)', () =
     await adminPool.end();
   });
 
-  it('acquire wins on empty/expired, loses while alive, renews/expires by owner', async () => {
+  it('acquire wins on empty/expired, loses while alive; renew/expire enforce the owner guard', async () => {
     expect(await store.acquire('ci1', 'run-A', 'w1', 1000, 100)).toBe(true);
     expect(await store.acquire('ci1', 'run-B', 'w2', 1050, 100)).toBe(false);
-    expect(await store.acquire('ci1', 'run-B', 'w2', 1200, 100)).toBe(true); // 1200 > 1100 → takeover
+    expect(await store.acquire('ci1', 'run-B', 'w2', 1200, 100)).toBe(true); // 1200 > 1100 → takeover, expires = 1200 + 100 = 1300
+
     await store.renew('ci1', 'w1', 9999); // not owner (w2) → no-op
-    expect((await store.get('ci1'))?.lockOwnerWorkerId).toBe('w2');
-    await store.expire('ci1', 'w2', 5000); // owner → proactive expire
-    expect(await store.acquire('ci1', 'run-C', 'w3', 5001, 100)).toBe(true);
+    {
+      const lk = await store.get('ci1');
+      expect(lk?.lockOwnerWorkerId).toBe('w2');
+      // Discriminating: a broken `AND lock_owner_worker_id = $2` guard would have written 9999 here.
+      expect(lk?.lockExpiresAtMs).toBe(1300);
+    }
+
+    await store.renew('ci1', 'w2', 5000); // owner → extends
+    expect((await store.get('ci1'))?.lockExpiresAtMs).toBe(5000);
+
+    await store.expire('ci1', 'w1', 6000); // not owner (w2) → no-op
+    // Discriminating: a broken owner guard would have force-expired the lock to 6000 here.
+    expect((await store.get('ci1'))?.lockExpiresAtMs).toBe(5000);
+
+    await store.expire('ci1', 'w2', 7000); // owner → proactive expire
+    expect((await store.get('ci1'))?.lockExpiresAtMs).toBe(7000);
+    expect(await store.acquire('ci1', 'run-C', 'w3', 7001, 100)).toBe(true); // now takeable
   });
 });
