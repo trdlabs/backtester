@@ -32,6 +32,13 @@ export function isTerminal(status: InternalJobStatus): boolean {
   return TERMINAL.includes(status as RunStatus);
 }
 
+// INV-7: waiting_for_compute is internal-only and must never cross the public contract boundary.
+// Every site that serializes a job's status into a public HTTP/contract shape MUST route through
+// this projection (toStatusView and the /result 409 fallback both do).
+export function publicStatus(status: InternalJobStatus): RunStatus {
+  return status === 'waiting_for_compute' ? 'running' : status;
+}
+
 export function canTransition(from: InternalJobStatus, to: InternalJobStatus): boolean {
   return ALLOWED_TRANSITIONS[from].includes(to);
 }

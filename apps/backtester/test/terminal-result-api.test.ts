@@ -172,6 +172,33 @@ for (const factory of STORE_FACTORIES) {
       });
 
       // -----------------------------------------------------------------------
+      // GET /result — waiting_for_compute (internal-only) must project to 'running' (INV-7)
+      // -----------------------------------------------------------------------
+      it('GET /result projects internal waiting_for_compute status to running (INV-7)', async () => {
+        const { app, store, cleanup } = await makeApp(factory);
+        try {
+          await app.server.inject({
+            method: 'POST',
+            url: '/v1/runs',
+            headers: AUTH,
+            payload: runBody({ runId: 'wfc-r' }),
+          });
+          await store.claimNextQueued(NOW);
+          const ok = await store.transition('wfc-r', 'running', 'waiting_for_compute', { atMs: NOW });
+          expect(ok).toBe(true);
+
+          const res = await app.server.inject({ url: '/v1/runs/wfc-r/result', headers: AUTH });
+          expect(res.statusCode).toBe(409);
+          const body = res.json<{ status: string; message: string }>();
+          // Must NOT leak the internal 'waiting_for_compute' status onto the public HTTP body.
+          expect(body.status).toBe('running');
+          expect(body.message).toBe('run not complete');
+        } finally {
+          await cleanup();
+        }
+      });
+
+      // -----------------------------------------------------------------------
       // GET /result — unknown run → 404
       // -----------------------------------------------------------------------
       it('GET /result returns 404 for unknown run', async () => {

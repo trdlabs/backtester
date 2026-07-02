@@ -33,7 +33,7 @@ interface JobDbRow {
   request_fingerprint: string;
   correlation_id: string | null;
   workflow_id: string | null;
-  status: RunStatus;
+  status: InternalJobStatus;
   request_json: RunSubmitRequest;
   effective_seed: string;
   dataset_ref: string;

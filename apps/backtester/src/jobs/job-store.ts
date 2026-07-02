@@ -12,7 +12,7 @@ import type {
   RunSubmitRequest,
   RunTimelineEntry,
 } from '@trading/research-contracts';
-import { canTransition, isTerminal, type InternalJobStatus } from './lifecycle';
+import { canTransition, isTerminal, publicStatus, type InternalJobStatus } from './lifecycle';
 
 export interface JobRow {
   jobId: string;
@@ -291,11 +291,10 @@ export class InMemoryJobStore implements JobStore {
 
 export function toStatusView(job: JobRow): RunStatusView {
   // waiting_for_compute is internal-only (INV-7) — externally a follower is still 'running'.
-  const publicStatus: RunStatus = job.status === 'waiting_for_compute' ? 'running' : job.status;
   return {
     runId: job.runId,
     jobId: job.jobId,
-    status: publicStatus,
+    status: publicStatus(job.status),
     timeline: job.timeline,
     ...(job.terminalCode !== undefined ? { terminalCode: job.terminalCode } : {}),
   };

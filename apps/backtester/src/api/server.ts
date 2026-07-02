@@ -15,7 +15,7 @@ import { validateBundle } from '../sandbox/bundle';
 import type { BacktesterDataPort } from '../data/reader';
 import type { ArtifactStore } from '../artifacts/store';
 import { toStatusView, type JobStore } from '../jobs/job-store';
-import { isTerminal } from '../jobs/lifecycle';
+import { isTerminal, publicStatus } from '../jobs/lifecycle';
 import { publishCompletion, reapAndPublish, type CompletionDeps } from '../jobs/completion';
 import { submitRun, SubmitError, type SubmitDeps } from '../jobs/submit';
 import { buildRegistryDescriptor } from './registry-route.js';
@@ -124,7 +124,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (job.resultSummary) return job.resultSummary;
     return reply.code(409).send({
       runId,
-      status: job.status,
+      // INV-7: waiting_for_compute is internal-only — project to the public RunStatus before
+      // this leaves the process, same as toStatusView.
+      status: publicStatus(job.status),
       ...(job.terminalCode !== undefined ? { terminalCode: job.terminalCode } : {}),
       message: isTerminal(job.status) ? 'run produced no result summary' : 'run not complete',
     });
