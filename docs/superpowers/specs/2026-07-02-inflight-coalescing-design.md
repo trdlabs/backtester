@@ -48,6 +48,7 @@ The compute-lock reuses **exactly this lease/SKIP-LOCKED/reaper idiom**, applied
   - lock lost → `waiting_for_compute`: `attempts` unchanged, `compute_wait_attempts++`;
   - a `compute_wake_reason` re-claim that re-defers likewise bumps `compute_wait_attempts`, not `attempts`.
   A **second counter `compute_wait_attempts`** bounds *non-engine claim cycles* — both waits/re-elections AND pre-engine crashes (see §Reaper) — with its own poison cap, keeping the engine-`attempts` poison cap meaning exactly "engine executions". Coalescing OFF keeps the existing claim-time `attempts++` unchanged (INV-6).
+- **INV-7 — no public contract change.** `waiting_for_compute` is backtester-internal only. The public SDK `RunStatus` (`packages/sdk/src/contracts/run.ts`) is NOT modified; `toStatusView`/webhooks/outbox/status-polling only ever emit the shipped `RunStatus` set (a follower projects as `running`). No SDK version bump, no lab/client changes. **The plan must not edit `packages/sdk/src/contracts/run.ts`.**
 - **INV-6 — coalescing OFF is a no-op.** With `BACKTESTER_COALESCE_ENABLED` off (default): NO `compute_lock` reads/writes, NO `waiting_for_compute` transitions, completed-cache behavior exactly as shipped (#73/#75). **Claim-time `attempts++` is preserved exactly** — deferred charging (model A) and the reaper's `engine_attempt_charged` attribution apply ONLY when coalescing is on; off, `attempts`/reaper/poison behave bit-for-bit as today. The existing dedup goldens / byte-equivalence hold unchanged.
 
 ## Components
@@ -86,10 +87,15 @@ Interface + `PgComputeLockStore` + `InMemoryComputeLockStore` (test fake):
 - `expire(computeIdentity, workerId, nowMs): Promise<void>` — proactive-expire (`lock_expires_at_ms = nowMs`) only while owner matches; called on the leader's terminal fail/timeout.
 - (Optional `release` on success = cleanup only; not correctness-critical per INV-4.)
 
-### Lifecycle / status
+### Lifecycle / status — internal-only status (NO public contract change)
 
-- `RunStatus += 'waiting_for_compute'` (non-terminal) in `@trading/research-contracts`.
-- `lifecycle.ts::canTransition` adds: `running → waiting_for_compute`, `waiting_for_compute → queued` (wake), `waiting_for_compute → failed` (poison, `compute_wait_exhausted`).
+`waiting_for_compute` is a **backtester-internal** scheduler state, NOT a public lifecycle status. The public SDK `RunStatus` (`packages/sdk/src/contracts/run.ts`) is **not touched** — coalescing is a worker-internal optimization; from the outside a follower waiting on a leader's compute is legitimately still `running`.
+
+- Introduce a backtester-internal `InternalJobStatus = RunStatus | 'waiting_for_compute'` (in `lifecycle.ts` or a sibling internal-types module). `JobRow.status`, `PgJobStore`/`InMemoryJobStore`, `lifecycle.ts`, the reaper, and the wake step all operate on `InternalJobStatus`.
+- `lifecycle.ts::ALLOWED_TRANSITIONS` becomes `Record<InternalJobStatus, readonly InternalJobStatus[]>`, adding: `running → waiting_for_compute`; `waiting_for_compute → queued` (wake) / `→ failed` (poison, `compute_wait_exhausted`) / `→ canceled`.
+- **`toStatusView` (public status projection) maps `waiting_for_compute → 'running'`** so the public `RunStatusView.status`, webhooks/outbox, and status polling only ever emit the shipped `RunStatus` set. A follower shows `running` until it completes.
+- Terminal completion of a follower is a normal `completed` (own `runId`/`result_hash`/`dedupedFrom`) — public consumers see `running → completed`, exactly as any run today.
+- **No SDK version bump, no lab/client changes.**
 
 ### Gate (`processNextQueued`)
 
@@ -151,6 +157,7 @@ This closes the contradiction: a fresh first-follower no longer spends an engine
 - **Failure**: leader fail → proactive-expire → 1 promoted → engine; leader success → all followers re-stamp (`dedupedFrom` set, `completed`, INV-3).
 - **Acceptance concurrency** (the headline): N concurrent identical submissions → engine executes EXACTLY once, 1 `result_cache` entry, all N terminal `completed` with distinct runId-stamped `result_hash`.
 - **INV-6 OFF**: coalescing off → no `compute_lock` rows touched, no `waiting_for_compute` transitions, the dedup goldens + completed-cache behavior byte-identical.
+- **INV-7 internal status**: `toStatusView` maps `waiting_for_compute → 'running'`; a status poll / webhook during the wait window emits `running` (never `waiting_for_compute`); `packages/sdk/src/contracts/run.ts` is unchanged (public `RunStatus` set intact).
 
 ## Acceptance
 
@@ -158,6 +165,7 @@ This closes the contradiction: a fresh first-follower no longer spends an engine
 - Leader failure/crash never fails the follower group; exactly one new leader is elected; recovery is bounded by the compute-lock TTL (proactive-expire makes explicit failure immediate).
 - `attempts`/poison semantics for real engine runs are unchanged; wait cycles are bounded by a separate `compute_wait_attempts` cap.
 - Coalescing off (default) is a proven no-op over the shipped dedup behavior.
+- No public contract change: the SDK `RunStatus` set is unchanged; a waiting follower projects as `running` through `toStatusView`/webhooks/status-polling; `packages/sdk/src/contracts/run.ts` is not edited.
 
 ## Follow-ups (out of this slice)
 
