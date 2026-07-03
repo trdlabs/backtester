@@ -233,42 +233,9 @@ git commit -m "feat(engine): BACKTESTER_BAR_BATCHING/BATCH_BARS flags threaded t
 
 - [ ] **Step 1: Harness — failing test first**
 
-`handleHookBatch(msg)` in entry.mjs (verbatim implementation to add after `handleHook`):
-
-```javascript
-async function handleHookBatch(msg) {
-  const { seq, hook, bars } = msg;
-  try {
-    for (let j = 0; j < bars.length; j += 1) {
-      const { snapshot, newBar, newOi, newLiq } = bars[j];
-      if (newBar !== null && newBar !== undefined) buffer.push(newBar);
-      if (newOi !== undefined) oiBuffer.push(newOi);
-      if (newLiq !== undefined) liqBuffer.push(newLiq);
-      const ctx = rehydrateContext(snapshot, buffer, rng, oiBuffer, liqBuffer);
-      const fn = pickHook(hook);
-      let out = [];
-      if (fn !== undefined) {
-        try {
-          out = normalize(await fn.call(instance, ctx));
-        } catch (e) {
-          // Early failure: bars 0..j-1 completed; attribute the failing bar.
-          errBatch(seq, hook, classifyError(e), e && e.message ? e.message : e, j);
-          return;
-        }
-      }
-      if (out.length > 0) {
-        okBatch(seq, j, out); // early-stop: entries after j are NEVER executed
-        return;
-      }
-    }
-    okBatch(seq, bars.length - 1, []); // fully-empty batch
-  } catch (e) {
-    errBatch(seq, hook, classifyError(e), e && e.message ? e.message : e, 0);
-  }
-}
-```
-
-plus line builders next to `ok`/`err`:
+The batch iteration logic lives in a NEW sibling helper `hook-batch.mjs` (defined in full under
+"Testability" below — that is the single source of truth); `entry.mjs` only gains a thin
+`handleHookBatch` wrapper delegating to it, plus line builders next to `ok`/`err`:
 
 ```javascript
 const okBatch = (seq, stoppedAt, decisions) =>
@@ -284,7 +251,55 @@ and the dispatch branch in `main()` after the `t === 'hook'` case:
       await handleHookBatch(msg);
 ```
 
-Test `harness-hook-batch.test.ts`: spawn `node sandbox-harness-overlay/entry.mjs` (find how existing harness tests do it — `grep -ln "entry.mjs" apps/backtester/test`; if no direct-spawn precedent exists, drive it via child_process with a fixture bundle dir on the command line the same way the SANDBOX mounts it — read entry.mjs's init handling for the expected env/argv). Cases: (a) 5-bar batch, module signals on bar 2 ⇒ `okBatch stoppedAt=2` with those decisions, and a followup `hook` message for bar 3 sees history buffers advanced by exactly 3 bars (state continuity); (b) all-empty ⇒ `stoppedAt=4, decisions=[]`; (c) module throws on bar 1 ⇒ `err` with `barOffset:1`; (d) interleaving `hook` then `hookBatch` then `hook` keeps seq/ordering.
+**Testability (CONCRETE — no direct entry.mjs spawn):** `entry.mjs` imports the module from the
+container-absolute `/sandbox/bundle/${entryPoint}`, so it cannot run on the host. Extract the batch
+iteration into a sibling helper the harness imports and vitest imports directly:
+
+- Create `apps/backtester/sandbox-harness-overlay/hook-batch.mjs`:
+
+```javascript
+// Pure batch iteration (17b) — shared by entry.mjs and host-side unit tests. `deps` carries the
+// harness's live closures so this file owns NO module state.
+// deps: { buffer, oiBuffer, liqBuffer, rng, instance, rehydrateContext, pickHook, normalize }
+export async function runHookBatch(bars, hook, deps) {
+  const { buffer, oiBuffer, liqBuffer, rng, instance, rehydrateContext, pickHook, normalize } = deps;
+  for (let j = 0; j < bars.length; j += 1) {
+    const { snapshot, newBar, newOi, newLiq } = bars[j];
+    if (newBar !== null && newBar !== undefined) buffer.push(newBar);
+    if (newOi !== undefined) oiBuffer.push(newOi);
+    if (newLiq !== undefined) liqBuffer.push(newLiq);
+    const ctx = rehydrateContext(snapshot, buffer, rng, oiBuffer, liqBuffer);
+    const fn = pickHook(hook);
+    let out = [];
+    if (fn !== undefined) {
+      try {
+        out = normalize(await fn.call(instance, ctx));
+      } catch (e) {
+        return { kind: 'err', barOffset: j, cause: e }; // bars 0..j-1 completed
+      }
+    }
+    if (out.length > 0) return { kind: 'ok', stoppedAt: j, decisions: out };
+  }
+  return { kind: 'ok', stoppedAt: bars.length - 1, decisions: [] };
+}
+```
+
+- `entry.mjs`'s `handleHookBatch` becomes a thin wrapper: `import { runHookBatch } from './hook-batch.mjs';`
+  then `const r = await runHookBatch(msg.bars, msg.hook, { buffer, oiBuffer, liqBuffer, rng, instance, rehydrateContext, pickHook, normalize });`
+  → `r.kind === 'ok' ? okBatch(msg.seq, r.stoppedAt, r.decisions) : errBatch(msg.seq, msg.hook, classifyError(r.cause), r.cause?.message ?? r.cause, r.barOffset)`.
+  (The sibling relative import resolves inside the mounted harness dir — the container sees both files.)
+- **Check the harness packaging**: `scripts/build-sandbox-harness-overlay.mjs` (repo entry point) may copy/bundle `entry.mjs` — if it enumerates files, add `hook-batch.mjs`; run the build script and any `verify`/sync gate that pins harness contents, and state in the report what the script does with the new file.
+
+Test `harness-hook-batch.test.ts` imports `runHookBatch` DIRECTLY (vitest handles `.mjs`) with a
+fake `instance` (scripted per-bar answers), identity `rehydrateContext` fake, `pickHook = () => fn`,
+`normalize = (x) => x ?? []`, and real arrays for the buffers. Cases: (a) 5-bar batch, signal on
+bar 2 ⇒ `{ stoppedAt: 2, decisions }` AND `buffer.length` advanced by exactly 3 (state
+continuity — entries 3..4 not consumed); (b) all-empty ⇒ `{ stoppedAt: 4, decisions: [] }`;
+(c) instance throws on bar 1 ⇒ `{ kind: 'err', barOffset: 1 }` and `buffer.length === 2` (bar 1's
+newBar was pushed before the throw — assert whatever the real code does and DOCUMENT it: the
+harness pushes increments before invoking the hook, so a failing bar's newBar IS consumed;
+the host-side rewind contract in the session must agree with this exact boundary); (d) hook absent
+(`pickHook` returns undefined) ⇒ all bars empty ⇒ fully-empty result.
 
 - [ ] **Step 2: Channel + session**
 
@@ -313,14 +328,15 @@ Test `harness-hook-batch.test.ts`: spawn `node sandbox-harness-overlay/entry.mjs
       return { ok: true, stoppedAt: outcome.stoppedAt, decisions: outcome.decisions };
     }
     if (outcome.kind === 'err' && outcome.barOffset !== undefined) {
-      const failed = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
-      // attribute the failing bar
-      const err = { ...failed.error!, barIndex: firstBarIndexBefore + 1 + outcome.barOffset };
-      this.fail(err);
-      return { ok: false, stoppedAt: outcome.barOffset - 1, error: err };
+      // mapFailure returns a SessionError directly; re-point barIndex at the failing bar.
+      const mapped: SessionError = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
+      const error: SessionError = { ...mapped, barIndex: firstBarIndexBefore + 1 + outcome.barOffset };
+      this.fail(error); // fail-closed side effects (close + latch); its HookResult return is unused here
+      return { ok: false, stoppedAt: outcome.barOffset - 1, error };
     }
-    const failedGeneric = this.fail(this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed'));
-    return { ok: false, stoppedAt: -1, error: failedGeneric.error };
+    const error: SessionError = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
+    this.fail(error);
+    return { ok: false, stoppedAt: -1, error };
   }
 ```
 
