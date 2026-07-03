@@ -254,7 +254,19 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     - BullMQ worker created without `concurrency` option (default 1) — one experiment in flight per lab process; add a knob.
     - Executors poll (`PLATFORM_RUN_MAX_POLLS`=30 × `PLATFORM_RUN_POLL_DELAY_MS`=2000 ≈ 60 s hard budget) and fail the experiment `INCONCLUSIVE 'run_pending'` on expiry, even though `callbackUrl` + outbox webhooks are plumbed end-to-end — switch to webhook-driven completion with poll fallback; `run_pending` should resume, not fail.
     - Baseline lane is serial (sanity → train → holdout); train ∥ holdout is free parallelism once the sanity boundary resolves.
-16. **Tier 2 — ingress backpressure + connection hardening (prerequisite for any load growth).**
+16. ✅ **Tier 2 lite SHIPPED + cross-repo loop CLOSED (2026-07-04).** Backtester PR #80 (squash
+    `570e667`): `BACKTESTER_PG_POOL_MAX` + `BACKTESTER_PG_STATEMENT_TIMEOUT_MS` (migrations on a
+    dedicated no-opts pool), `JobStore.findByResumeToken` + anchored submit flow (replay pre-lookup
+    BEFORE bundle write), `BACKTESTER_QUEUE_MAX_DEPTH` → 429 `rate_limit`/`queue_full` +
+    `Retry-After`, SDK safe retry. Regression fix PR #81 (async dispose leaked containers — one
+    detached `sh -c kill;rm` now). **sdk-v0.7.0 RELEASED** (PR #82: Retry-After clamp 60s +
+    `retryAfterS` on `BacktesterRateLimitError`). **Lab re-pin + `rate_limited` mapping MERGED**
+    (trading-lab#131, squash `e716fab`). **Controlled backpressure test PASS** (cap 2, burst 6):
+    live 429 `{status:429, code:queue_full, category:rate_limit, retryAfterS:5}` → lab maps
+    `rate_limited`; resumeToken replay 202-bypasses a constrained queue; 6/6 drained, no backlog.
+    Known semantics (documented): a SIMULTANEOUS submit wave passes the racy cap check — the cap
+    guards standing backlog, not one wave. REMAINING in item 16 (later slices): bundle-by-ref,
+    LISTEN/NOTIFY. Original item text:
     - `POST /v1/runs` has NO backpressure: no rate limit, no queue-depth cap, no 429 — a 500-submit burst is silently accepted and expires after 6 h. Add queue-depth cap → `429` + `Retry-After`; add SDK retry/backoff and a `rate_limited` mapping in lab's `toGatewayError` (currently absent).
     - `db/pool.ts` passes only `connectionString` — pg default `max=10` connections, no knob, no statement timeout; submit ≈ 4–5 sequential Pg round trips, so bursts + worker claim/heartbeat traffic contend invisibly. Add `BACKTESTER_PG_POOL_MAX` + timeouts.
     - Bundle-by-ref: `BundleStore` is already content-addressed — expose `PUT /v1/bundles` + submit by hash. Lifts the ~1 MiB inline-bundle body pressure and stops lab re-uploading identical bytes per grid point.
