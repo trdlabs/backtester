@@ -639,15 +639,15 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       ...(dedupedFrom !== undefined ? { dedupedFrom } : {}),
     }, deps.lease?.workerId);
   } catch (err) {
+    const code = err instanceof RunnerError ? err.code : 'runner_failure';
     caughtErrorDetail = boundedErrorDetail(err);
     // eslint-disable-next-line no-console
     console.error(JSON.stringify({
       evt: 'job_error',
       runId,
-      code: err instanceof RunnerError ? err.code : 'runner_failure',
+      code,
       detail: caughtErrorDetail,
     }));
-    const code = err instanceof RunnerError ? err.code : 'runner_failure';
     const terminalStatus = err instanceof RunnerError ? err.terminalStatus : 'failed';
     const now = deps.clock();
     await deps.store.transition(runId, 'running', terminalStatus, {
