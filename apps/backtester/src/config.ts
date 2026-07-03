@@ -76,6 +76,10 @@ export interface AppConfig {
   readonly dataApiPageLimit: number;
   /** Postgres connection string. When set, the service uses PgJobStore; otherwise in-memory. */
   readonly databaseUrl?: string;
+  /** Max pooled Pg connections per process (pg default 10; raise with worker fleet math). */
+  readonly pgPoolMax: number;
+  /** statement_timeout (ms) on app-pool connections; 0 = off. Migrations are exempt by construction. */
+  readonly pgStatementTimeoutMs: number;
   readonly defaultQueueTimeoutMs: number;
   readonly defaultRunTimeoutMs: number;
   /** When true the HTTP server runs a background worker tick; tests drain manually instead. */
@@ -223,6 +227,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(env.BACKTESTER_MOCK_PLATFORM_TOKEN ? { mockPlatformToken: env.BACKTESTER_MOCK_PLATFORM_TOKEN } : {}),
     dataApiPageLimit: Number(env.BACKTESTER_DATA_API_PAGE_LIMIT ?? 1000),
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
+    pgPoolMax: Math.max(1, Number(env.BACKTESTER_PG_POOL_MAX ?? 10) || 10),
+    pgStatementTimeoutMs: Math.max(0, Number(env.BACKTESTER_PG_STATEMENT_TIMEOUT_MS ?? 0) || 0),
     defaultQueueTimeoutMs: Number(env.BACKTESTER_QUEUE_TIMEOUT_MS ?? 6 * 60 * 60 * 1000),
     defaultRunTimeoutMs: Number(env.BACKTESTER_RUN_TIMEOUT_MS ?? 2 * 60 * 60 * 1000),
     autoWorker: (env.BACKTESTER_AUTO_WORKER ?? 'true') !== 'false',

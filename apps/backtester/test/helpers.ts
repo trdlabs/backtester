@@ -28,6 +28,8 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     storeBackend: 'filesystem',
     dataSource: 'fixture',
     dataApiPageLimit: 1000,
+    pgPoolMax: 10,
+    pgStatementTimeoutMs: 0,
     defaultQueueTimeoutMs: 3_600_000,
     defaultRunTimeoutMs: 3_600_000,
     autoWorker: false,
