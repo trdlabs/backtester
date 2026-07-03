@@ -143,6 +143,32 @@ export class SandboxModuleExecutor implements ModuleExecutor {
     return rv.decisions;
   }
 
+  /**
+   * 17b: batch variant of `executeStrategyHook` — one IPC message covering a flat stretch, with
+   * early stop on the first non-empty decision. Fail-closed mirror of `executeStrategyHook`'s
+   * record+empty semantics: a session error records the diagnostic and returns an empty-decision
+   * result whose `stoppedAt` is clamped into `[0, ctxs.length - 1]` (never negative) so the engine
+   * always makes forward progress by at least one bar, exactly like a lockstep failure would.
+   */
+  async executeStrategyHookBatch(
+    _module: StrategyModule,
+    ctxs: readonly StrategyContext[],
+  ): Promise<{ stoppedAt: number; decisions: readonly StrategyDecision[] }> {
+    const r = await this.sessionFor(ctxs[0]!).callHookBatch(ctxs);
+    if (!r.ok) {
+      if (r.error !== undefined) this.record(r.error, ctxs[Math.max(0, r.stoppedAt + 1)] ?? ctxs[0]!);
+      // Fail-closed mirror of lockstep: completed prefix bars stand; the failing bar contributes
+      // empty decisions; the run continues (subsequent calls fail fast on the dead session).
+      return { stoppedAt: Math.max(0, Math.min(r.stoppedAt + 1, ctxs.length - 1)), decisions: [] };
+    }
+    const rv = this.revalidator.revalidateStrategy(r.decisions);
+    if (!rv.ok) {
+      this.record({ code: 'decision_schema_invalid', detail: rv.message, hook: 'onBarClose' }, ctxs[r.stoppedAt]!);
+      return { stoppedAt: r.stoppedAt, decisions: [] };
+    }
+    return { stoppedAt: r.stoppedAt, decisions: rv.decisions };
+  }
+
   async executeOverlayApply(_overlay: HypothesisOverlayModule, ctx: StrategyContext): Promise<readonly OverlayDecision[]> {
     const r = await this.sessionFor(ctx).callHook('apply', ctx);
     if (!r.ok) {

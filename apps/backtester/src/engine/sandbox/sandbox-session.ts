@@ -266,7 +266,18 @@ export class SandboxSession {
 
     this.seq += 1;
     channel.send({ t: 'hookBatch', seq: this.seq, hook: 'onBarClose', bars });
+    const profT0 = SandboxSession.profileEnabled ? performance.now() : 0;
     const outcome = await channel.receive(this.callDeadline());
+    if (SandboxSession.profileEnabled) {
+      this.profIpcWaitMs += performance.now() - profT0;
+    }
+    // 17b review item (a): credit stoppedAt + 1 hook calls (parity with callHook's per-call +1 —
+    // same profileEnabled gate), wrapping every return below so profHookCalls reflects the actual
+    // number of bars the harness executed regardless of which branch produced the result.
+    const finish = (result: BatchHookResult): BatchHookResult => {
+      if (SandboxSession.profileEnabled) this.profHookCalls += result.stoppedAt + 1;
+      return result;
+    };
 
     if (outcome.kind === 'okBatch') {
       // 17b — stoppedAt MUST address a real per-entry snapshot. parseLine only checks
@@ -285,14 +296,14 @@ export class SandboxSession {
           'sandbox_crashed',
         );
         this.fail(error);
-        return { ok: false, stoppedAt: -1, error };
+        return finish({ ok: false, stoppedAt: -1, error });
       }
       // Harness executed 0..stoppedAt; roll host-side bar bookkeeping back for the discarded tail
       // so the next lockstep/batch call re-sends those bars' newBar increments (see doc above).
       const restore = bookkeepingAfter[outcome.stoppedAt];
       this.barIndex = restore.barIndex;
       this.lastBarTs = restore.lastBarTs;
-      return { ok: true, stoppedAt: outcome.stoppedAt, decisions: outcome.decisions };
+      return finish({ ok: true, stoppedAt: outcome.stoppedAt, decisions: outcome.decisions });
     }
     if (outcome.kind === 'err' && outcome.barOffset !== undefined) {
       const { barOffset } = outcome;
@@ -303,14 +314,14 @@ export class SandboxSession {
         const mapped: SessionError = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
         const error: SessionError = { ...mapped, barIndex: bookkeepingAfter[barOffset].barIndex };
         this.fail(error); // fail-closed side effects (close + latch); its HookResult return is unused here
-        return { ok: false, stoppedAt: barOffset - 1, error };
+        return finish({ ok: false, stoppedAt: barOffset - 1, error });
       }
       // barOffset out of range for this batch — cannot trust it to index bookkeepingAfter; fall
       // through to the generic (non-barOffset) error mapping below instead of indexing blindly.
     }
     const error: SessionError = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
     this.fail(error);
-    return { ok: false, stoppedAt: -1, error };
+    return finish({ ok: false, stoppedAt: -1, error });
   }
 
   /** Закрыть контейнер: EOF на stdin + принудительная детерминированная очистка (idempotent). */

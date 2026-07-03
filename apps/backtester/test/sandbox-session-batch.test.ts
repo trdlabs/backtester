@@ -148,6 +148,31 @@ describe('SandboxSession.callHookBatch (17b — inert protocol, scripted fake ch
     expect(sentReq.snapshot.barIndex).toBe(3);
   });
 
+  it('okBatch stoppedAt = N-2 (only the LAST built bar discarded): the NEXT call resends that bar\'s newBar (ts-collision-proof rewind pin)', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+
+    const ctxs = [0, 1, 2, 3, 4].map((i) => makeCtx(i * BAR_MS)); // N=5
+    const batchPromise = session.callHookBatch(ctxs);
+    driver.stdout.write(`${JSON.stringify({ t: 'okBatch', seq: 1, stoppedAt: 3, decisions: ['SIGNAL'] })}\n`); // N-2 = 3
+
+    const result = await batchPromise;
+    expect(result).toEqual({ ok: true, stoppedAt: 3, decisions: ['SIGNAL'] });
+
+    // Only entry 4 (the last built bar) was never consumed by the harness. Bookkeeping must rewind
+    // to "state after entry 3" so the NEXT call for bar 4 sees a fresh newBar (ts collision would
+    // otherwise silently drop bar 4's newBar if barIndex/lastBarTs were left at "after entry 4").
+    const nextPromise = session.callHook('onBarClose', ctxs[4]!);
+    driver.stdout.write(`${JSON.stringify({ t: 'ok', seq: 2, decisions: [] })}\n`);
+    await nextPromise;
+
+    expect(driver.sent).toHaveLength(3); // [0]=init, [1]=hookBatch request, [2]=this callHook request
+    const sentReq = driver.sent[2] as { t: string; newBar: { ts: number } | null; snapshot: { barIndex: number } };
+    expect(sentReq.t).toBe('hook');
+    expect(sentReq.newBar).toEqual({ ts: 4 * BAR_MS, open: 1, high: 1, low: 1, close: 1, volume: 1 });
+    expect(sentReq.snapshot.barIndex).toBe(4);
+  });
+
   it('err with barOffset attributes error.barIndex to the failing bar and fails the session closed', async () => {
     const { session, driver } = newSession();
     await scriptOpen(driver, session);

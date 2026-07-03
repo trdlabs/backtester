@@ -8,7 +8,7 @@
 import { CONTRACT_VERSION, SUPPORTED_MARKET_DATA_KINDS, platformContractContext } from '@trading/research-contracts/research';
 import type { Bar } from '@trading/research-contracts/research';
 import type { CoverageModel, MarketTapeDataset } from '@trading/research-contracts/research';
-import type { StrategyDecision } from '@trading/research-contracts/research';
+import type { StrategyContext, StrategyDecision } from '@trading/research-contracts/research';
 import type { BacktestRunRequest, Ref } from '@trading/research-contracts/research';
 import type { ValidationCode, ValidationIssue, ValidationResult } from '@trading/research-contracts/research';
 import { validate } from './validation/index.js';
@@ -324,7 +324,7 @@ interface BarEnv {
   readonly gridMinutes: number;
   readonly fundingCol: ReturnType<NonNullable<MarketTapeDataset['funding']>> | undefined;
   readonly gridTs: readonly number[];
-  /** 17b: inert plumbing — nothing reads this yet (Task 4 wires the batch path). */
+  /** 17b: flat-stretch batching config, read by `runSymbol`'s loop (Task 4). Absent ⇒ lockstep. */
   readonly batch?: { readonly maxBars: number };
 }
 
@@ -527,6 +527,36 @@ async function runSymbol(
 
   for (let t = 0; t < n; t += 1) {
     preBarStages(env, t);
+
+    const batchCfg = env.batch;
+    if (
+      batchCfg !== undefined &&
+      batchCfg.maxBars >= 2 &&
+      strategyExec.executeStrategyHookBatch !== undefined &&
+      portfolio.position === null &&
+      portfolio.pending === null &&
+      overlays.entry.length === 0 &&
+      overlays.post.length === 0 &&
+      t + 1 < n
+    ) {
+      // Flat stretch: snapshots for t..t+k are a pure function of the tape (portfolio constant).
+      const upTo = Math.min(n, t + batchCfg.maxBars);
+      const ctxs: StrategyContext[] = [];
+      for (let j = t; j < upTo; j += 1) {
+        ctxs.push(builder.build(j, stateAt(portfolio, candles[j].close)));
+      }
+      const { stoppedAt, decisions } = await strategyExec.executeStrategyHookBatch(module, ctxs);
+      // Empty prefix: SAME per-bar body with base = null (byte-identical bookkeeping).
+      for (let j = 0; j < stoppedAt; j += 1) {
+        await processBar(env, t + j, null);
+        if (j < stoppedAt - 1) preBarStages(env, t + j + 1); // no-ops while flat; keeps stage order
+      }
+      if (stoppedAt > 0) preBarStages(env, t + stoppedAt);
+      await processBar(env, t + stoppedAt, firstDecision(decisions));
+      t += stoppedAt; // loop's t += 1 completes the stoppedAt + 1 advance
+      continue;
+    }
+
     const ctx = builder.build(t, stateAt(portfolio, candles[t].close));
     const base = firstDecision(await strategyExec.executeStrategyHook(module, 'onBarClose', ctx));
     await processBar(env, t, base);

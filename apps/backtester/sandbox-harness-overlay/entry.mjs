@@ -117,20 +117,26 @@ async function handleHook(msg) {
 // it imports the untrusted bundle from a container-absolute path). Still INERT: nothing on the host
 // sends {t:'hookBatch'} yet.
 async function handleHookBatch(msg) {
-  const r = await runHookBatch(msg.bars, msg.hook, {
-    buffer,
-    oiBuffer,
-    liqBuffer,
-    rng,
-    instance,
-    rehydrateContext,
-    pickHook,
-    normalize,
-  });
-  if (r.kind === 'ok') {
-    okBatch(msg.seq, r.stoppedAt, r.decisions);
-  } else {
-    errBatch(msg.seq, msg.hook, classifyError(r.cause), r.cause && r.cause.message ? r.cause.message : r.cause, r.barOffset);
+  try {
+    const r = await runHookBatch(msg.bars, msg.hook, {
+      buffer,
+      oiBuffer,
+      liqBuffer,
+      rng,
+      instance,
+      rehydrateContext,
+      pickHook,
+      normalize,
+    });
+    if (r.kind === 'ok') {
+      okBatch(msg.seq, r.stoppedAt, r.decisions);
+    } else {
+      errBatch(msg.seq, msg.hook, classifyError(r.cause), r.cause && r.cause.message ? r.cause.message : r.cause, r.barOffset);
+    }
+  } catch (e) {
+    // Mirror handleHook's catch: an escape from runHookBatch itself (e.g. rehydrateContext throwing
+    // outside its own per-bar try/catch) must still yield a coded error, not harness death.
+    errBatch(msg.seq, msg.hook, classifyError(e), e && e.message ? e.message : e, 0);
   }
 }
 
