@@ -215,7 +215,25 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     - Enable `BACKTESTER_DEDUP_ENABLED` + `BACKTESTER_COALESCE_ENABLED` + `BACKTESTER_JOB_OBS` in the working env (validated PASS, item 11a; code defaults stay OFF).
     - `/statsz`: add queue depth + oldest-queued age (`countByStatus()` follow-up) — today a backlog is invisible; this is also the KEDA scaling metric.
     - Fix `/v1/capabilities` advertising a stale hardcoded `maxConcurrency: 1`.
-15. **Tier 1 — lab-side parallelism (`trading-lab`; biggest ROI, no engine changes).**
+15. ✅ **SHIPPED + MEASURED — Tier 1 — lab-side parallelism (`trading-lab`; biggest ROI, no engine changes).**
+    Merged as trading-lab PR #126 (squash `b82d0ea`, 2026-07-03): bounded-parallel `ParamGridRunner`
+    (`RESEARCH_GRID_CONCURRENCY`, default 4), BullMQ `LAB_QUEUE_CONCURRENCY` knob (default 1),
+    train ∥ holdout overlap, `run_pending` resume deferred to the webhook/resume spec.
+    **Measured** (2026-07-03, real long_oi bundle × 8-point grid via the shipped
+    executor path, local split stack: fresh mock-platform w/ discover-1m #21 + Pg + Docker sandbox,
+    dedup/coalesce/obs ON, disjoint params so 16/16 fresh engine runs):
+    - 1 worker process (`WORKER_CONCURRENCY=4`): 1.51× — in-process slots do NOT overlap the
+      strategy engine (sync-IPC serialization, the known #2-pool result); `queueWait` ramps while
+      jobs chain one-by-one.
+    - 4 worker processes × concurrency 1 (the OPERATIONS-recommended shape): **82.8 s → 46.5 s
+      = 1.78×**, engine-time in flight ≈ 3.4×, per-run engine inflates 9.3 s → 19.8 s from
+      single-host Docker/CPU contention — matches the known ~1.8×/host ceiling (item 9).
+    **Conclusion:** lab-side serialization is gone (submission saturates all worker slots);
+    the next wall-clock win is Tier 3 scale-out (more worker nodes), not more lab concurrency.
+    Operational note: for strategy workloads prefer process-per-slot workers; in-process
+    `WORKER_CONCURRENCY>1` only helps the async overlay engine.
+
+15b. **(was 15) Original Tier 1 item text for reference:**
     - `ParamGridRunner.runGrid` submits strictly sequentially (`for … await`, up to 8 points/round) — parallel submit-all-then-poll (bounded) turns "8 × ~30 s serial" into "~30 s parallel"; grid points differ by params so server-side coalescing can NOT collapse them.
     - BullMQ worker created without `concurrency` option (default 1) — one experiment in flight per lab process; add a knob.
     - Executors poll (`PLATFORM_RUN_MAX_POLLS`=30 × `PLATFORM_RUN_POLL_DELAY_MS`=2000 ≈ 60 s hard budget) and fail the experiment `INCONCLUSIVE 'run_pending'` on expiry, even though `callbackUrl` + outbox webhooks are plumbed end-to-end — switch to webhook-driven completion with poll fallback; `run_pending` should resume, not fail.
