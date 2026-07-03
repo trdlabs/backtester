@@ -110,6 +110,10 @@ export interface AppConfig {
   readonly computeLockTtlMs: number;
   /** compute_wait_attempts poison cap. Default 3. */
   readonly computeWaitMaxAttempts: number;
+  /** Queued-jobs cap; a NEW submit beyond it gets 429 queue_full. 0 = unlimited. */
+  readonly queueMaxDepth: number;
+  /** Retry-After (seconds) advertised on 429. */
+  readonly queueRetryAfterS: number;
   readonly sandbox: SandboxSettings;
   /** OVERLAY sandbox (Slice-6b-A) — distinct from `sandbox` (Slice-3). */
   readonly overlaySandbox: OverlaySandboxSettings;
@@ -245,6 +249,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     coalesceEnabled: env.BACKTESTER_COALESCE_ENABLED === 'true',
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
+    queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),
+    queueRetryAfterS: Math.max(1, Number(env.BACKTESTER_QUEUE_RETRY_AFTER_S ?? 30) || 30),
     ...(env.BT_EVIDENCE_SIGNING_KEY ? { evidenceSigningKeyPem: env.BT_EVIDENCE_SIGNING_KEY } : {}),
     sandbox: {
       harnessDir: env.BACKTESTER_SANDBOX_HARNESS_DIR ?? resolve(HERE, '../sandbox-harness'),

@@ -209,6 +209,8 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     kick,
     coalesceEnabled: config.coalesceEnabled,
     computeWaitMaxAttempts: config.computeWaitMaxAttempts,
+    queueMaxDepth: config.queueMaxDepth,
+    queueRetryAfterS: config.queueRetryAfterS,
   });
 
   const dispose = async (): Promise<void> => {

@@ -45,6 +45,8 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     coalesceEnabled: false,
     computeLockTtlMs: 30_000,
     computeWaitMaxAttempts: 3,
+    queueMaxDepth: 0,
+    queueRetryAfterS: 30,
     sandbox: {
       harnessDir: HARNESS_DIR,
       image: 'node:24-alpine',

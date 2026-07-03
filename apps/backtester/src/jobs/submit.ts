@@ -35,6 +35,8 @@ export interface SubmitDeps {
   defaultRunTimeoutMs: number;
   enableOverlayEngine: boolean;
   bundleStore?: BundleStore;
+  queueMaxDepth?: number;
+  queueRetryAfterS?: number;
 }
 
 const VALID_MODES = new Set(['research', 'review', 'promotion']);
@@ -146,6 +148,20 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promi
     if (existing) {
       assertReplayFingerprint(existing, fingerprint);
       return { handle: toHandle(existing, true), created: false };
+    }
+  }
+
+  // Backpressure backstop (approximate by design — a small race near the cap is acceptable):
+  // only NEW jobs are capped; replays re-attached above never reach here.
+  const cap = deps.queueMaxDepth ?? 0;
+  if (cap > 0) {
+    const { depth } = await deps.store.countQueueStats(now);
+    if (depth >= cap) {
+      throw new SubmitError(429, 'queue_full', `queue depth ${depth} >= cap ${cap}`, {
+        category: 'rate_limit',
+        retryAfterS: deps.queueRetryAfterS ?? 30,
+        extras: { queueDepth: depth, maxDepth: cap },
+      });
     }
   }
 
