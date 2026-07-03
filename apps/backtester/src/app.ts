@@ -66,8 +66,17 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
   let store = overrides.store;
   if (!store) {
     if (config.databaseUrl) {
-      ownedPool = createPool(config.databaseUrl);
-      await migrate(ownedPool);
+      // Migrations run on a dedicated no-opts pool: DDL must never inherit statement_timeout.
+      const migrationPool = createPool(config.databaseUrl);
+      try {
+        await migrate(migrationPool);
+      } finally {
+        await migrationPool.end();
+      }
+      ownedPool = createPool(config.databaseUrl, undefined, {
+        max: config.pgPoolMax,
+        statementTimeoutMs: config.pgStatementTimeoutMs,
+      });
       store = new PgJobStore(ownedPool);
     } else {
       store = new InMemoryJobStore();
@@ -200,6 +209,8 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     kick,
     coalesceEnabled: config.coalesceEnabled,
     computeWaitMaxAttempts: config.computeWaitMaxAttempts,
+    queueMaxDepth: config.queueMaxDepth,
+    queueRetryAfterS: config.queueRetryAfterS,
   });
 
   const dispose = async (): Promise<void> => {

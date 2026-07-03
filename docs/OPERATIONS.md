@@ -191,6 +191,22 @@ you do not exhaust a node's Docker daemon.
 topology the API cannot see how many worker replicas exist. Fleet capacity = `worker_pods ×
 WORKER_CONCURRENCY` — see the capacity-budget formula above.
 
+## Backpressure & connection hardening (Phase D Tier 2 lite)
+
+- `BACKTESTER_PG_POOL_MAX` (default 10): per-process pool cap. Fleet math: `worker_pods ×
+  pool_max` must stay under Postgres `max_connections` with headroom for the API pod and admin
+  sessions; 10–20/process is typical.
+- `BACKTESTER_PG_STATEMENT_TIMEOUT_MS` (default 0 = off; recommended 30000): statement_timeout on
+  app-pool connections. Migrations always run on a dedicated no-timeout pool.
+- `BACKTESTER_QUEUE_MAX_DEPTH` (default 0 = unlimited; recommended ≈ worker_slots ×
+  queue_timeout / avg_run_seconds): a NEW submit beyond the cap gets `429 { category: 'rate_limit',
+  code: 'queue_full', queueDepth, maxDepth }` + `Retry-After` (`BACKTESTER_QUEUE_RETRY_AFTER_S`,
+  default 30). resumeToken replays always pass (crash-recovery contract) and never re-upload
+  bundles. The cap is approximate under concurrency — a backstop, not a semaphore.
+- SDK (`BacktesterClient`): retries default ON — 429 always (numeric-seconds `Retry-After`
+  honored; the HTTP-date form is ignored → backoff), network/502-504 only for GETs or submits
+  carrying a `resumeToken`. `retry: { maxAttempts: 1 }` disables.
+
 ## Result dedup (Phase C item 11)
 
 Skips redundant compute (engine + sandbox execution) for a run whose identity was already computed

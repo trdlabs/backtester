@@ -28,6 +28,8 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     storeBackend: 'filesystem',
     dataSource: 'fixture',
     dataApiPageLimit: 1000,
+    pgPoolMax: 10,
+    pgStatementTimeoutMs: 0,
     defaultQueueTimeoutMs: 3_600_000,
     defaultRunTimeoutMs: 3_600_000,
     autoWorker: false,
@@ -43,6 +45,8 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     coalesceEnabled: false,
     computeLockTtlMs: 30_000,
     computeWaitMaxAttempts: 3,
+    queueMaxDepth: 0,
+    queueRetryAfterS: 30,
     sandbox: {
       harnessDir: HARNESS_DIR,
       image: 'node:24-alpine',

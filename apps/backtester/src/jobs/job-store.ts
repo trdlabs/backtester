@@ -130,6 +130,8 @@ export interface JobEventRow {
 export interface JobStore {
   insertOrGet(job: NewJob): Promise<{ job: JobRow; created: boolean }>;
   get(runId: string): Promise<JobRow | undefined>;
+  /** Cheap replay pre-lookup: the job previously inserted with this resumeToken, if any. */
+  findByResumeToken(resumeToken: string): Promise<JobRow | undefined>;
   /** Live queue gauge for /statsz (KEDA metric): queued count + age of the oldest queued job. */
   countQueueStats(nowMs: number): Promise<{ depth: number; oldestQueuedAgeMs: number | null }>;
   transition(runId: string, from: InternalJobStatus, to: InternalJobStatus, patch: JobRowPatch, expectLeasedBy?: string): Promise<boolean>;
@@ -198,6 +200,12 @@ export class InMemoryJobStore implements JobStore {
 
   async get(runId: string): Promise<JobRow | undefined> {
     return this.jobs.get(runId);
+  }
+
+  async findByResumeToken(resumeToken: string): Promise<JobRow | undefined> {
+    const runId = this.byKey.get(resumeToken);
+    const job = runId ? this.jobs.get(runId) : undefined;
+    return job?.resumeToken === resumeToken ? job : undefined;
   }
 
   async countQueueStats(nowMs: number): Promise<{ depth: number; oldestQueuedAgeMs: number | null }> {

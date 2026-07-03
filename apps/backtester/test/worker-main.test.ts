@@ -25,15 +25,21 @@ describe('worker-main', () => {
     const env = { ...process.env };
     delete env.DATABASE_URL;
     delete env.BACKTESTER_TEST_DATABASE_URL;
-    const { code, stderr } = await new Promise<{ code: number | null; stderr: string }>((res) => {
-      const child = execFile(
-        'pnpm',
-        ['exec', 'tsx', 'src/worker-main.ts'],
-        { cwd: appDir, env, timeout: 25_000 },
-        (_err, _stdout, se) => res({ code: child.exitCode, stderr: se }),
-      );
-    });
-    expect(code).not.toBe(0);
-    expect(stderr).toMatch(/DATABASE_URL/);
-  }, 30_000);
+    const { code, stderr, err } = await new Promise<{ code: number | null; stderr: string; err: Error | null }>(
+      (res) => {
+        const child = execFile(
+          'pnpm',
+          ['exec', 'tsx', 'src/worker-main.ts'],
+          // Generous timeout: under a loaded machine (full-gate parallelism, pnpm store lock
+          // contention) `pnpm exec tsx` cold-start can exceed 25s — an execFile timeout kill
+          // yields exitCode null + EMPTY stderr, which flaked this test as "'' to match
+          // /DATABASE_URL/" while the production fail-fast behavior was fine.
+          { cwd: appDir, env, timeout: 60_000 },
+          (e, _stdout, se) => res({ code: child.exitCode, stderr: se, err: e }),
+        );
+      },
+    );
+    expect(code, `spawn err: ${err?.message ?? 'none'}`).not.toBe(0);
+    expect(stderr, `spawn err: ${err?.message ?? 'none'}`).toMatch(/DATABASE_URL/);
+  }, 75_000);
 });

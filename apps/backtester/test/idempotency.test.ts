@@ -1,11 +1,32 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { RunJobHandle } from '@trading/research-contracts';
+import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
+import { createModuleManifest } from '@trading-backtester/sdk/builder';
 import { InMemoryJobStore } from '../src/jobs/job-store';
 import { requestFingerprint, storedRequestFingerprint } from '../src/jobs/fingerprint';
 import { submitRun } from '../src/jobs/submit';
 import { AUTH, makeApp, runBody } from './helpers';
 import { STORE_FACTORIES } from './store-factories';
+
+const BUNDLE_SRC = 'export function signals(c){ return c.map(()=>false); }';
+
+const BUNDLE_MANIFEST = createModuleManifest({
+  id: 'idempotency-fixture',
+  version: '1.0.0',
+  kind: 'strategy',
+  name: 'Idempotency replay fixture',
+  summary: 's',
+  rationale: 'r',
+  hooks: ['onBarClose'],
+  paramsSchema: { type: 'object' },
+  capabilities: { platformSdk: true },
+  dataNeeds: { closedCandlesUpToCurrent: true },
+});
+
+function bundle(over: Partial<ModuleBundle> = {}): ModuleBundle {
+  return { manifest: BUNDLE_MANIFEST, entry: 'module.mjs', files: { 'module.mjs': BUNDLE_SRC }, ...over };
+}
 
 // ---------------------------------------------------------------------------
 // Replay integrity: guard recomputes stored fingerprint with CURRENT algorithm
@@ -133,6 +154,23 @@ for (const factory of STORE_FACTORIES) {
           payload: runBody({ metrics: ['not_a_metric'] }),
         });
         expect(r.statusCode).toBe(400);
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it('ESTABLISHED replay with matching resumeToken does not re-write the bundle (pre-lookup path; a concurrent first-submit race may still pay one put before the insertOrGet backstop — out of scope here)', async () => {
+      const { app, cleanup } = await makeApp(factory);
+      try {
+        const payload = runBody({ resumeToken: 'tok-pre', moduleBundle: bundle() });
+        const first = await app.server.inject({ method: 'POST', url: '/v1/runs', headers: AUTH, payload });
+        expect(first.statusCode).toBe(202);
+        // Spy AFTER the first submit: the replay must not touch the bundle store at all.
+        const putSpy = vi.spyOn(app.workerDeps.bundleStore!, 'put');
+        const replay = await app.server.inject({ method: 'POST', url: '/v1/runs', headers: AUTH, payload });
+        expect(replay.statusCode).toBe(202);
+        expect((replay.json() as RunJobHandle).idempotentReplay).toBe(true);
+        expect(putSpy).not.toHaveBeenCalled();
       } finally {
         await cleanup();
       }

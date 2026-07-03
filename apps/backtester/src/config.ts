@@ -76,6 +76,10 @@ export interface AppConfig {
   readonly dataApiPageLimit: number;
   /** Postgres connection string. When set, the service uses PgJobStore; otherwise in-memory. */
   readonly databaseUrl?: string;
+  /** Max pooled Pg connections per process (pg default 10; raise with worker fleet math). */
+  readonly pgPoolMax: number;
+  /** statement_timeout (ms) on app-pool connections; 0 = off. Migrations are exempt by construction. */
+  readonly pgStatementTimeoutMs: number;
   readonly defaultQueueTimeoutMs: number;
   readonly defaultRunTimeoutMs: number;
   /** When true the HTTP server runs a background worker tick; tests drain manually instead. */
@@ -106,6 +110,10 @@ export interface AppConfig {
   readonly computeLockTtlMs: number;
   /** compute_wait_attempts poison cap. Default 3. */
   readonly computeWaitMaxAttempts: number;
+  /** Queued-jobs cap; a NEW submit beyond it gets 429 queue_full. 0 = unlimited. */
+  readonly queueMaxDepth: number;
+  /** Retry-After (seconds) advertised on 429. */
+  readonly queueRetryAfterS: number;
   readonly sandbox: SandboxSettings;
   /** OVERLAY sandbox (Slice-6b-A) — distinct from `sandbox` (Slice-3). */
   readonly overlaySandbox: OverlaySandboxSettings;
@@ -223,6 +231,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(env.BACKTESTER_MOCK_PLATFORM_TOKEN ? { mockPlatformToken: env.BACKTESTER_MOCK_PLATFORM_TOKEN } : {}),
     dataApiPageLimit: Number(env.BACKTESTER_DATA_API_PAGE_LIMIT ?? 1000),
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
+    pgPoolMax: Math.max(1, Number(env.BACKTESTER_PG_POOL_MAX ?? 10) || 10),
+    pgStatementTimeoutMs: Math.max(0, Number(env.BACKTESTER_PG_STATEMENT_TIMEOUT_MS ?? 0) || 0),
     defaultQueueTimeoutMs: Number(env.BACKTESTER_QUEUE_TIMEOUT_MS ?? 6 * 60 * 60 * 1000),
     defaultRunTimeoutMs: Number(env.BACKTESTER_RUN_TIMEOUT_MS ?? 2 * 60 * 60 * 1000),
     autoWorker: (env.BACKTESTER_AUTO_WORKER ?? 'true') !== 'false',
@@ -239,6 +249,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     coalesceEnabled: env.BACKTESTER_COALESCE_ENABLED === 'true',
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
+    queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),
+    queueRetryAfterS: Math.max(1, Number(env.BACKTESTER_QUEUE_RETRY_AFTER_S ?? 30) || 30),
     ...(env.BT_EVIDENCE_SIGNING_KEY ? { evidenceSigningKeyPem: env.BT_EVIDENCE_SIGNING_KEY } : {}),
     sandbox: {
       harnessDir: env.BACKTESTER_SANDBOX_HARNESS_DIR ?? resolve(HERE, '../sandbox-harness'),

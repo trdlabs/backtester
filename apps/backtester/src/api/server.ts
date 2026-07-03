@@ -97,7 +97,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return reply.code(202).send(outcome.handle);
     } catch (err) {
       if (err instanceof SubmitError) {
-        return reply.code(err.statusCode).send({ category: 'validation_error', code: err.code, message: err.message });
+        if (err.retryAfterS !== undefined) reply.header('retry-after', String(err.retryAfterS));
+        return reply
+          .code(err.statusCode)
+          .send({ category: err.category, code: err.code, message: err.message, ...(err.extras ?? {}) });
       }
       throw err;
     }
