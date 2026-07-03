@@ -1,7 +1,7 @@
 # Speculative bar batching (Phase D item 17b) — design
 
-Date: 2026-07-05
-Status: draft, awaiting user review
+Date: 2026-07-05 (rev 2 — user review applied)
+Status: approved for planning
 Context: ROADMAP 17b. IPC profile (17a, WSL2): sandboxed strategy-run engine time ≈ 45–50%
 IPC-wait (~3 ms/hook × ~1300 hooks), ~20% container open, ~30% host CPU. The per-hook round trip
 is the single largest cost component. This spec batches the FLAT stretches — where snapshots are a
@@ -62,22 +62,43 @@ Harness → host:
 Harness semantics: iterate entries in order against the live instance exactly as `handleHook`
 does today (same barIndex/history advancement per entry); stop after the first entry whose
 decisions are non-empty; entries after `stoppedAt` are NEVER executed (their inputs are
-discarded). An error in any entry fails the whole call with today's error shape + the failing
-bar attributed (`barIndex` rides the existing error detail).
+discarded).
+
+**Error attribution:** an error in entry `j` fails the whole call with today's error SHAPE plus a
+`barOffset: j` field on the error line; the host maps it so `SessionError.barIndex` points at the
+FAILING bar (`batchFirstBarIndex + j`), not at the batch's first bar — failure taxonomy codes
+unchanged, only the index is precise.
 
 Host semantics (`runSymbol` loop): while the §3 gate holds, collect up to N bars, send one
-`hookBatch`, then advance the loop cursor to `stoppedAt`, apply bar-k decisions via the normal
-path (risk/exec/portfolio), and continue — in lockstep while in-position, back to batching when
-flat again. `seq` stays one-per-message; the host's barIndex bookkeeping mirrors the harness's
-per-entry advancement (both sides advance by `stoppedAt + 1` bars).
+`hookBatch`, then advance the loop cursor by `stoppedAt + 1` bars, apply bar-k decisions via the
+normal path (risk/exec/portfolio), and continue — in lockstep while in-position, back to batching
+when flat again. `seq` stays one-per-message; the host's barIndex bookkeeping mirrors the
+harness's per-entry advancement (both sides advance by `stoppedAt + 1` bars).
 
-### 3. Batching gate (engine-side, conservative)
+**Host-side per-bar side effects for the empty prefix (byte-identity anchor):** for EVERY executed
+bar `0..stoppedAt` the host runs the SAME per-bar bookkeeping it runs in lockstep — decision
+records, equity-curve points, per-bar cursors/counters, and anything else that feeds artifacts or
+`result_hash` — byte-for-byte, even when that bar's decisions are `[]`. Batching changes only how
+the module's ANSWERS travel, never what the host records per bar. The plan must identify every
+per-bar write in the lockstep loop and route the batched prefix through the identical code (shared
+helper, not a re-implementation).
 
-Batch ONLY when ALL hold: flag on; kind = strategy sandbox executor (bundle provenance); hook is
-`onBarClose`; no open position; no pending orders/decisions from the previous bar; zero overlays
-attached (the strategy route passes none by construction); more than 1 bar remains. Anything else
-⇒ lockstep, bar by bar, exactly today's path. The gate is re-evaluated every iteration — one
-in-position bar flips to lockstep, the first flat bar after close flips back.
+**Fully-empty batch:** all N answers empty ⇒ `stoppedAt = N - 1`, `decisions: []`; the host walks
+the empty per-bar path for all N bars and the loop continues batching from bar N.
+
+### 3. Batching gate (engine-side, conservative) + executor seam
+
+**Seam:** `ModuleExecutor` gains an OPTIONAL method
+`executeStrategyHookBatch?(module, bars): Promise<BatchHookResult>` implemented ONLY by
+`SandboxModuleExecutor`; `TrustedMomentumExecutor` / `InProcessTrustedModuleExecutor` / overlay
+paths do not implement it and stay lockstep untouched. The engine batches only when the method
+exists AND the gate holds — no `instanceof` checks, no engine knowledge of executor internals.
+
+Batch ONLY when ALL hold: flag on; the executor exposes the batch method (⇒ sandbox strategy
+path); hook is `onBarClose`; no open position; no pending orders/decisions from the previous bar;
+zero overlays attached (the strategy route passes none by construction); more than 1 bar remains.
+Anything else ⇒ lockstep, bar by bar, exactly today's path. The gate is re-evaluated every
+iteration — one in-position bar flips to lockstep, the first flat bar after close flips back.
 
 ### 4. Deadlines and caps
 
@@ -102,15 +123,19 @@ gate must be strict).
 
 - **Golden byte-identity (REQUIRED, Docker-gated):** for real bundles (`short_after_pump`,
   `long_oi` fixture) and the existing golden tapes: run lockstep (flag off) and batched (flag on,
-  N=64 AND N=3 — small N forces many batch boundaries) ⇒ `result_hash` byte-identical. Include a
-  tape where a signal fires MID-batch and one where trades cluster (in-position stretches
-  interleave with flat ones).
+  **N=64, N=3 AND N=2** — small N forces many batch boundaries; N=2 is the minimal boundary case)
+  ⇒ `result_hash` byte-identical. Include a tape where a signal fires MID-batch and one where
+  trades cluster (in-position stretches interleave with flat ones).
 - Harness unit (node, no Docker — drive entry.mjs's handler with a fake stdin): early-stop at
-  first non-empty decisions; state continuity (batch of k then lockstep bar k+1 ≡ lockstep all
-  the way — assert identical module outputs); error in entry j fails the call with bar-j
-  attribution.
-- Engine unit: gate never batches in-position / with pending decisions / for overlays; cursor
-  advancement (`stoppedAt` handling) against a scripted fake channel; N clamping.
+  first non-empty decisions; fully-empty batch returns `stoppedAt = N-1, decisions: []`; state
+  continuity (batch of k then lockstep bar k+1 ≡ lockstep all the way — assert identical module
+  outputs); error in entry j carries `barOffset: j`.
+- Engine unit: gate never batches in-position / with pending decisions / for executors without
+  the batch method (trusted/overlay); **dedicated cursor/off-by-one unit** — scripted fake channel
+  returning `stoppedAt` at 0, mid, and N-1: assert the loop cursor, host `barIndex`, and per-bar
+  bookkeeping counts advance by exactly `stoppedAt + 1` each time (the empty prefix writes the
+  same decision-record/equity entries as lockstep); `SessionError.barIndex` = batchFirstBar +
+  barOffset on a mid-batch error; N clamping (≤1 ⇒ lockstep).
 - Default-off: flag unset ⇒ zero `hookBatch` messages (channel spy) and existing suites
   byte-identical (full gate).
 - Determinism: batched run replayed twice ⇒ identical `result_hash` (existing replay pattern).
