@@ -252,9 +252,22 @@ export function createPool(
 `loadConfig` (next to `defaultQueueTimeoutMs`, same `Number(env.X ?? default)` style):
 
 ```typescript
-    pgPoolMax: Number(env.BACKTESTER_PG_POOL_MAX ?? 10),
-    pgStatementTimeoutMs: Number(env.BACKTESTER_PG_STATEMENT_TIMEOUT_MS ?? 0),
+    pgPoolMax: Math.max(1, Number(env.BACKTESTER_PG_POOL_MAX ?? 10) || 10),
+    pgStatementTimeoutMs: Math.max(0, Number(env.BACKTESTER_PG_STATEMENT_TIMEOUT_MS ?? 0) || 0),
 ```
+
+(Clamped, not bare `Number`: pool max is never < 1; timeout never negative; NaN from garbage env falls back to the default via `|| default` / `|| 0`.) Add two assertions to the pool-options test file's unit section:
+
+```typescript
+  it('clamps garbage env-derived values (pool max >= 1, timeout >= 0)', () => {
+    const pool = createPool('postgres://u:p@localhost:5/db', undefined, { max: 0, statementTimeoutMs: -5 });
+    expect(pool.options.max).toBe(1);            // createPool itself clamps too
+    expect(pool.options.options).toBeUndefined(); // negative timeout = off
+    void pool.end();
+  });
+```
+
+and mirror the clamp inside `createPool` (`config.max = Math.max(1, opts.max)`; timeout only applied when `> 0` — already the case).
 
 `app.ts:69` — the ONLY production caller (migrate keeps the same `ownedPool`? NO — verify: `migrate(ownedPool)` runs on the app pool at app.ts:70. The timeout would apply to migrations!). **Resolution (required):** construct the app pool WITHOUT the timeout first for `migrate`, or run migrate on a separate short-lived no-opts pool. Implement the latter — explicit and safe:
 
@@ -304,7 +317,7 @@ git commit -m "feat(db): BACKTESTER_PG_POOL_MAX + statement timeout knobs (app p
 Extend `test/idempotency.test.ts` (inside the existing `for (const factory of STORE_FACTORIES)` loop, mirroring its `makeApp`/`runBody`/`AUTH` fixtures):
 
 ```typescript
-    it('replay with matching resumeToken does not re-write the bundle (pre-lookup path)', async () => {
+    it('ESTABLISHED replay with matching resumeToken does not re-write the bundle (pre-lookup path; a concurrent first-submit race may still pay one put before the insertOrGet backstop — out of scope here)', async () => {
       const { app, cleanup } = await makeApp(factory);
       try {
         const payload = runBody({ resumeToken: 'tok-pre' });
@@ -365,8 +378,11 @@ function assertReplayFingerprint(job: JobRow, fingerprint: string): void {
 In `submitRun`, insert the pre-lookup right after `const now = deps.clock();` and BEFORE the bundle-store block (anchored flow):
 
 ```typescript
-  // Anchored flow: cheap replay pre-lookup BEFORE any bundle write — a replay re-attaches without
-  // paying bundleStore.put and (Task 4) without seeing the queue cap.
+  // Anchored flow: cheap replay pre-lookup BEFORE any bundle write. Guarantee is for ESTABLISHED
+  // replays (the token's job already exists): they re-attach without paying bundleStore.put and
+  // (Task 4) without seeing the queue cap. A CONCURRENT first-submit race (two initial submits with
+  // one token, neither committed yet) may still pay one extra bundle put before the insertOrGet
+  // backstop below deduplicates the job — accepted; content-addressed puts are idempotent.
   if (body.resumeToken !== undefined) {
     const existing = await deps.store.findByResumeToken(body.resumeToken);
     if (existing) {
@@ -508,9 +524,11 @@ Config fields + loadConfig (next to Task 2's):
 ```
 
 ```typescript
-    queueMaxDepth: Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0),
-    queueRetryAfterS: Number(env.BACKTESTER_QUEUE_RETRY_AFTER_S ?? 30),
+    queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),
+    queueRetryAfterS: Math.max(1, Number(env.BACKTESTER_QUEUE_RETRY_AFTER_S ?? 30) || 30),
 ```
+
+(Clamped: depth never negative — 0 stays the unlimited sentinel; Retry-After never < 1s; NaN falls back to defaults.)
 
 `SubmitDeps` gains `queueMaxDepth?: number; queueRetryAfterS?: number;` — threaded in app.ts's `buildServer({...})` (`queueMaxDepth: config.queueMaxDepth, queueRetryAfterS: config.queueRetryAfterS`) and through server.ts's deps into submitRun (follow how `defaultQueueTimeoutMs` flows — same object).
 
@@ -523,18 +541,16 @@ In `submitRun`, AFTER the Task-3 pre-lookup and BEFORE the bundle-store block:
   if (cap > 0) {
     const { depth } = await deps.store.countQueueStats(now);
     if (depth >= cap) {
-      const e = new SubmitError(429, 'queue_full', `queue depth ${depth} >= cap ${cap}`, {
+      throw new SubmitError(429, 'queue_full', `queue depth ${depth} >= cap ${cap}`, {
         category: 'rate_limit',
         retryAfterS: deps.queueRetryAfterS ?? 30,
+        extras: { queueDepth: depth, maxDepth: cap },
       });
-      (e as SubmitError & { queueDepth?: number; maxDepth?: number }).queueDepth = depth;
-      (e as SubmitError & { queueDepth?: number; maxDepth?: number }).maxDepth = cap;
-      throw e;
     }
   }
 ```
 
-Cleaner than the cast: add `readonly extras?: Record<string, number>` to SubmitError's opts and spread it into the route body. Implement that instead if the cast reads poorly — the ROUTE must produce `{ category, code, message, queueDepth, maxDepth }`:
+`SubmitError` opts (extend Task 3's version — TYPED, no casts): `opts?: { category?: string; retryAfterS?: number; extras?: Record<string, number> }` with `readonly extras?: Record<string, number>` assigned in the constructor. The ROUTE produces `{ category, code, message, queueDepth, maxDepth }` by spreading:
 
 server.ts catch (extend Task 3's version):
 
@@ -545,7 +561,7 @@ server.ts catch (extend Task 3's version):
       }
 ```
 
-with `SubmitError` opts gaining `extras?: Record<string, number>` (stored as `readonly extras?`).
+(The `err.extras ?? {}` spread is type-safe — no casts anywhere in this path.)
 
 - [ ] **Step 4: Run tests**
 
@@ -740,7 +756,7 @@ export interface BacktesterClientOptions {
       method === 'GET' ||
       (typeof body === 'object' && body !== null && typeof (body as { resumeToken?: unknown }).resumeToken === 'string');
 
-    const maxAttempts = Math.max(1, this.retry.maxAttempts ?? 3);
+    const maxAttempts = Math.max(1, Math.floor(this.retry.maxAttempts ?? 3) || 1);
     let lastErr: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let res: FetchLikeResponse;
@@ -764,8 +780,8 @@ export interface BacktesterClientOptions {
   }
 
   private backoffMs(attempt: number): number {
-    const base = this.retry.baseDelayMs ?? 500;
-    const cap = this.retry.maxDelayMs ?? 10_000;
+    const base = Math.max(1, this.retry.baseDelayMs ?? 500);
+    const cap = Math.max(1, this.retry.maxDelayMs ?? 10_000);
     const exp = Math.min(cap, base * 2 ** (attempt - 1));
     return Math.max(1, Math.floor(Math.random() * exp)); // full jitter
   }
