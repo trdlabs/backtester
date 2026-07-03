@@ -130,6 +130,8 @@ export interface JobEventRow {
 export interface JobStore {
   insertOrGet(job: NewJob): Promise<{ job: JobRow; created: boolean }>;
   get(runId: string): Promise<JobRow | undefined>;
+  /** Live queue gauge for /statsz (KEDA metric): queued count + age of the oldest queued job. */
+  countQueueStats(nowMs: number): Promise<{ depth: number; oldestQueuedAgeMs: number | null }>;
   transition(runId: string, from: InternalJobStatus, to: InternalJobStatus, patch: JobRowPatch, expectLeasedBy?: string): Promise<boolean>;
   claimNextQueued(
     nowMs: number,
@@ -196,6 +198,18 @@ export class InMemoryJobStore implements JobStore {
 
   async get(runId: string): Promise<JobRow | undefined> {
     return this.jobs.get(runId);
+  }
+
+  async countQueueStats(nowMs: number): Promise<{ depth: number; oldestQueuedAgeMs: number | null }> {
+    let depth = 0;
+    let oldest: number | undefined;
+    for (const j of this.jobs.values()) {
+      if (j.status !== 'queued') continue;
+      depth += 1;
+      const ts = j.queuedAtMs ?? j.acceptedAtMs;
+      if (oldest === undefined || ts < oldest) oldest = ts;
+    }
+    return { depth, oldestQueuedAgeMs: oldest === undefined ? null : nowMs - oldest };
   }
 
   async transition(
