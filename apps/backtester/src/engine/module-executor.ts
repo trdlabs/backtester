@@ -35,6 +35,11 @@ export interface ModuleExecutor {
   /**
    * 17b (опционально; только sandbox): пакет flat-баров onBarClose одним IPC-сообщением с ранней
    * остановкой на первом сигнале. Отсутствие метода ⇒ движок остаётся в lockstep.
+   *
+   * КОНТРАКТ: precondition — `ctxs` непустой (движковый гейт гарантирует ≥2, реализация вправе
+   * читать `ctxs[0]`); postcondition — `stoppedAt ∈ [0, ctxs.length - 1]` ВСЕГДА (в т.ч. на
+   * fail-closed путях: нарушение уронит хост в `builder.build` за пределами ленты). Бары
+   * `0..stoppedAt-1` исполнены с пустыми решениями; `decisions` — ответ бара `stoppedAt`.
    */
   executeStrategyHookBatch?(
     module: StrategyModule,

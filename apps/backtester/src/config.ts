@@ -252,7 +252,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     jobObs: env.BACKTESTER_JOB_OBS === 'true',
     coalesceEnabled: env.BACKTESTER_COALESCE_ENABLED === 'true',
     barBatching: env.BACKTESTER_BAR_BATCHING === 'true',
-    batchBars: Math.max(2, Math.floor(Number(env.BACKTESTER_BATCH_BARS ?? 64)) || 64),
+    // `|| 64` OUTSIDE the max: garbage → NaN → 64, while '0'/'1' clamp to the floor 2 (a falsy-zero
+    // inside would silently resolve '0' to 64 — the master flag, not batchBars, is the off switch).
+    batchBars: Math.max(2, Math.floor(Number(env.BACKTESTER_BATCH_BARS ?? 64))) || 64,
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),
