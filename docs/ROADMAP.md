@@ -211,7 +211,15 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
 ~1.8× at 4 workers/host). No architectural redesign required. Lab-side items live in
 `trading-lab` but are tracked here to keep one scaling picture.
 
-14. **Tier 0 — turn on what's built + obs hygiene (env + stale surfaces). ← NEXT UP (2026-07-04 priority).**
+14. ✅ **SHIPPED (PR #79, squash `d62ac85`, 2026-07-04) — Tier 0 obs hygiene.** All code parts landed:
+    `/statsz` queue block (depth + oldest-queued age — the KEDA metric), unconditional bounded
+    `job_error` + `errorDetail` in `job_terminal`, honest per-process `capabilities.maxConcurrency`
+    + OPERATIONS note, async chained container teardown (`dispose`), IPC-profile flag merged
+    (default OFF proven by full-suite output). Env enablement of dedup/coalesce/obs remains an
+    operational step. **NEXT UP: Tier 2 lite** (subset of item 16): `BACKTESTER_PG_POOL_MAX` +
+    statement timeout + queue-depth cap → 429/Retry-After + SDK retry/backoff — the guard before
+    any load growth; specs 17b/17c in parallel or after, no perf refactor before backpressure.
+    Original item text (env + stale surfaces):
     - Enable `BACKTESTER_DEDUP_ENABLED` + `BACKTESTER_COALESCE_ENABLED` + `BACKTESTER_JOB_OBS` in the working env (validated PASS, item 11a; code defaults stay OFF).
     - `/statsz`: add queue depth + oldest-queued age (`countByStatus()` follow-up) — today a backlog is invisible; this is also the KEDA scaling metric.
     - Fix `/v1/capabilities` advertising a stale hardcoded `maxConcurrency: 1`.
