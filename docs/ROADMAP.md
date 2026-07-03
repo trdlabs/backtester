@@ -266,7 +266,9 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     `rate_limited`; resumeToken replay 202-bypasses a constrained queue; 6/6 drained, no backlog.
     Known semantics (documented): a SIMULTANEOUS submit wave passes the racy cap check — the cap
     guards standing backlog, not one wave. REMAINING in item 16 (later slices): bundle-by-ref,
-    LISTEN/NOTIFY. Original item text:
+    LISTEN/NOTIFY — **2026-07-03 review: these two are the recommended cheap pre-load tails**
+    (bundle-by-ref kills the ~1 MiB × grid-points re-upload; LISTEN/NOTIFY kills worker/lab poll
+    latency + Pg load at hundreds of runs); do them before Tier 3 scale-out. Original item text:
     - `POST /v1/runs` has NO backpressure: no rate limit, no queue-depth cap, no 429 — a 500-submit burst is silently accepted and expires after 6 h. Add queue-depth cap → `429` + `Retry-After`; add SDK retry/backoff and a `rate_limited` mapping in lab's `toGatewayError` (currently absent).
     - `db/pool.ts` passes only `connectionString` — pg default `max=10` connections, no knob, no statement timeout; submit ≈ 4–5 sequential Pg round trips, so bursts + worker claim/heartbeat traffic contend invisibly. Add `BACKTESTER_PG_POOL_MAX` + timeouts.
     - Bundle-by-ref: `BundleStore` is already content-addressed — expose `PUT /v1/bundles` + submit by hash. Lifts the ~1 MiB inline-bundle body pressure and stops lab re-uploading identical bytes per grid point.
@@ -276,6 +278,9 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     - Tape cache: `TAPE_CACHE_MAX_ENTRIES` default 16/process collapses under many distinct symbol/period keys across M workers — raise it, verify single-flight in `getOrBuild`, consider worker-start warm-up.
     - Streamed (not buffered) S3 artifact writes; move bundle `put` off the submit hot path.
     - Scale-out: more worker nodes + KEDA on the (new) queue-depth metric.
+    - **Cluster proving run (2026-07-03 review):** the K8s/KEDA reference manifests (items 6–9)
+      have never executed on a real multi-node cluster — a 2-node proving run is part of Tier 3,
+      before "hundreds in flight" can be promised.
 17a. **IPC profile — MEASURED (2026-07-04, WSL2, long_oi, instrumentation on branch `perf/ipc-profile`).**
     Sandboxed strategy-run engine time splits ≈ **45–50% IPC-wait** (~3 ms/hook, pipe RTT + in-sandbox
     compute) / **~20% container open** (~1.5–2 s warm, 4 s cold, PER SYMBOL) / **~30% host CPU**
@@ -315,6 +320,8 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     payload/memory/host-CPU, zero architectural change. EXPLICITLY OUT OF SCOPE: portfolio
     semantics for concurrent signals (sequential shared-portfolio pass per bar stays as-is — a
     product decision, not a transport one). Composes with 17b (multipliers stack).
+    Adjacent candidate (2026-07-03 review, Nautilus-inspired): **binary IPC framing** (msgpack
+    instead of NDJSON) if IPC-wait still dominates after 17b — measure first, don't pre-build.
 
     **Recommended order (2026-07-04):** Tier 0 hygiene slice (item 14) → Tier 2 lite (Pg pool knob +
     429 backpressure + SDK retry from item 16) → specs for 17b + 17c (writable now, perf-validated on
@@ -327,6 +334,36 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     - Sandbox isolation upgrade (gVisor/Kata/Firecracker, item 12) becomes **mandatory**, not optional, once arbitrary third-party strategies run at scale.
     - Artifact GC/TTL + dedup-cache TTL/LRU pruning (existing item-11 follow-up); cost metering per tenant (attempt-charging seam exists).
     - Obs: p50/p95 percentiles, cross-replica `/statsz` aggregation, queue-wait by tenant.
+    - Sandbox isolation note (2026-07-03 review): **gVisor runs WITHOUT KVM** (systrap platform) —
+      unlike Firecracker it is viable on cheap KVM-less VPSes, making it the realistic item-12
+      upgrade path when this gate opens.
+
+19. **Streamed progress / partial results (LEAN-inspired; product-facing, low priority).**
+    Today a run exposes only terminal `status`/`result`; long universe runs (17c) and B2C UX want
+    incremental progress (bars processed, partial equity curve, per-symbol completion). Candidate
+    transport: server-sent events or periodic progress rows next to `job_terminal`. Do NOT start
+    before 17c lands — the useful granularity depends on the universe-session shape.
+
+### Phase D addendum — 2026-07-03 architecture review (competitive scan)
+
+Whole-system review (readiness under load + lab/platform integration + competitor comparison:
+QuantConnect LEAN, Nautilus Trader, VectorBT, Freqtrade, cloud multi-tenant platforms). Verdict:
+**no architectural redesign required** — capacity is linear in worker slots; the one real
+architectural evolution ahead is 17c (per-bundle universe session), which mirrors LEAN's
+node-per-algorithm model and is already designed.
+
+- **Competitive strength to preserve as an invariant:** deterministic `result_hash` + byte-identity
+  golden gates on every perf mechanism + Ed25519-signed evidence + content-addressed artifacts.
+  No open-source competitor (LEAN/Nautilus/VectorBT/Freqtrade) offers provable run reproducibility;
+  every future slice keeps the golden-gate merge bar.
+- **Gap ranking (2026-07-03):** (1) enable validated dark-launched flags in the working env
+  (dedup+coalesce+obs; batching after VPS re-profile); (2) cheap item-16 tails (LISTEN/NOTIFY,
+  bundle-by-ref) before load grows; (3) 17c per residual profile split; (4) Tier 3 cluster proving
+  run; (5) item-18 B2C gate as one package (auth is the #1 B2C blocker: static bearer `===`,
+  no per-token limits; plus artifact/dedup-cache GC/TTL and Prometheus-style metrics export).
+- Borrow list: LEAN → 17c shape + streamed progress (item 19) + per-plan node pools (item 18);
+  Nautilus → binary IPC framing (17c note); VectorBT → trusted-side vectorized precompute (tape
+  cache already covers most); gVisor → item-18 note above.
 
 ## Definition of Done
 
