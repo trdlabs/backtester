@@ -98,12 +98,14 @@ for (const factory of STORE_FACTORIES) {
     });
 
     it('reports capabilities', async () => {
-      const { app, cleanup } = await makeApp(factory);
+      const { app, cleanup } = await makeApp(factory, {}, { workerConcurrency: 3 });
       try {
         const caps = (await app.server.inject({ url: '/v1/capabilities', headers: AUTH })).json() as {
           contractVersion: string;
+          maxConcurrency: number;
         };
         expect(caps.contractVersion).toBe('017.2');
+        expect(caps.maxConcurrency).toBe(3); // concrete injected value — not just "a number"
       } finally {
         await cleanup();
       }
