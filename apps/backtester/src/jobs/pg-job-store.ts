@@ -184,6 +184,13 @@ export class PgJobStore implements JobStore {
     return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
   }
 
+  async findByResumeToken(resumeToken: string): Promise<JobRow | undefined> {
+    const r = await this.pool.query<JobDbRow>('SELECT * FROM backtest_job WHERE resume_token = $1', [
+      resumeToken,
+    ]);
+    return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
+  }
+
   async countQueueStats(nowMs: number): Promise<{ depth: number; oldestQueuedAgeMs: number | null }> {
     const r = await this.pool.query<{ depth: string; oldest: string | null }>(
       "SELECT count(*)::text AS depth, min(COALESCE(queued_at_ms, accepted_at_ms))::text AS oldest FROM backtest_job WHERE status = 'queued'",
