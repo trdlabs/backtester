@@ -445,8 +445,9 @@ Current catch (worker.ts:637):
 // 2. Spy: const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
 // 3. Run processNextQueued WITHOUT obs (deps.obs undefined).
 // 4. Assert one call whose JSON-parsed arg matches:
-//    { evt: 'job_error', runId: <the run>, code: 'runner_failure', detail: expect.stringMatching(/^X{298} s/) }
-//    and detail.length <= 300 and detail contains NO '\n'.
+//    { evt: 'job_error', runId: <the run>, code: 'runner_failure', detail: 'X'.repeat(300) }
+//    (normalization maps '\n' → ' ', then slice(0, 300) cuts BEFORE ' second line' — the detail is
+//    exactly 300 X's). Also assert detail.length === 300 and /[\n\r -]/.test(detail) === false.
 // 5. Re-run WITH obs (ObsRegistry) and a console.log spy: the job_terminal line JSON-parses to an
 //    object with errorDetail === the same bounded string.
 ```
@@ -553,13 +554,22 @@ describe('DockerDriver.dispose', () => {
     expect(spawnCalls[1]).toEqual(['docker', 'rm', '-f', 'bt-x']);
   });
 
-  it('still spawns rm when kill errors (best-effort)', async () => {
+  it('spawns rm when kill errors WITHOUT a close event (spawn failure path)', async () => {
     const driver = new DockerDriver();
     driver.dispose('bt-y');
-    children[0]!.emit('error', new Error('spawn ENOENT'));
-    children[0]!.emit('close', 1);
+    children[0]!.emit('error', new Error('spawn ENOENT')); // no 'close' follows
     await new Promise((r) => setImmediate(r));
     expect(spawnCalls[1]).toEqual(['docker', 'rm', '-f', 'bt-y']);
+  });
+
+  it('runs rm exactly once when kill emits both error and close (double-run guard)', async () => {
+    const driver = new DockerDriver();
+    driver.dispose('bt-z');
+    children[0]!.emit('error', new Error('boom'));
+    children[0]!.emit('close', 1);
+    await new Promise((r) => setImmediate(r));
+    const rmCalls = spawnCalls.filter((c) => c[1] === 'rm');
+    expect(rmCalls).toHaveLength(1);
   });
 });
 ```
@@ -581,12 +591,18 @@ docker-driver.ts, after `remove`:
   dispose(name: string): void {
     const kill = spawn('docker', ['kill', '-s', 'KILL', name], { stdio: 'ignore' });
     kill.unref?.();
-    kill.on('error', () => {});
-    kill.on('close', () => {
+    // rm runs ONE-SHOT after kill settles — 'close' OR 'error' (spawn-failure may never emit
+    // 'close'), guarded against double-run when both fire.
+    let removed = false;
+    const removeOnce = (): void => {
+      if (removed) return;
+      removed = true;
       const rm = spawn('docker', ['rm', '-f', name], { stdio: 'ignore' });
       rm.unref?.();
       rm.on('error', () => {});
-    });
+    };
+    kill.on('error', removeOnce);
+    kill.on('close', removeOnce);
   }
 ```
 
