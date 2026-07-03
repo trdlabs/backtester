@@ -26,3 +26,6 @@ export class BacktesterNotFoundError extends BacktesterError {}
 
 /** 401 — missing or invalid bearer token. */
 export class BacktesterAuthError extends BacktesterError {}
+
+/** 429 — queue_full / rate limited; safe to retry after Retry-After. */
+export class BacktesterRateLimitError extends BacktesterError {}

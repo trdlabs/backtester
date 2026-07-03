@@ -25,6 +25,7 @@ import {
   BacktesterConflictError,
   BacktesterError,
   BacktesterNotFoundError,
+  BacktesterRateLimitError,
   BacktesterValidationError,
 } from './errors';
 
@@ -38,14 +39,29 @@ export interface FetchLikeResponse {
   status: number;
   json(): Promise<unknown>;
   text(): Promise<string>;
+  /** Optional (additive): lets the client read Retry-After. Fakes without it keep working. */
+  headers?: { get(name: string): string | null };
 }
 export type FetchLike = (url: string, init?: FetchLikeInit) => Promise<FetchLikeResponse>;
+
+export interface RetryOptions {
+  /** Total attempts including the first (1 = no retries). Default 3. */
+  readonly maxAttempts?: number;
+  /** Backoff base delay (ms), full jitter, doubled per attempt. Default 500. */
+  readonly baseDelayMs?: number;
+  /** Backoff ceiling (ms). Default 10000. */
+  readonly maxDelayMs?: number;
+  /** @internal test seam — replaces real sleeping. */
+  readonly sleepImpl?: (ms: number) => Promise<void>;
+}
 
 export interface BacktesterClientOptions {
   readonly baseUrl: string;
   readonly token: string;
   /** Defaults to the global `fetch`. */
   readonly fetchImpl?: FetchLike;
+  /** Safe-retry policy (429 always; network/5xx only when idempotent). Default ON (3 attempts). */
+  readonly retry?: RetryOptions;
 }
 
 export interface ReadArtifactOptions {
@@ -74,11 +90,13 @@ export class BacktesterClient {
   private readonly base: string;
   private readonly token: string;
   private readonly fetchImpl: FetchLike;
+  private readonly retry: RetryOptions;
 
   constructor(opts: BacktesterClientOptions) {
     this.base = opts.baseUrl.replace(/\/+$/, '');
     this.token = opts.token;
     this.fetchImpl = opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+    this.retry = opts.retry ?? {};
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -91,9 +109,43 @@ export class BacktesterClient {
     };
     if (body !== undefined) init.body = JSON.stringify(body);
 
-    const res = await this.fetchImpl(`${this.base}${path}`, init);
-    if (res.ok) return (await res.json()) as T;
-    return this.raise(res, path);
+    // Idempotency: GETs always; mutations only when the body carries a resumeToken (replay contract).
+    const idempotent =
+      method === 'GET' ||
+      (typeof body === 'object' && body !== null && typeof (body as { resumeToken?: unknown }).resumeToken === 'string');
+
+    const maxAttempts = Math.max(1, Math.floor(this.retry.maxAttempts ?? 3) || 1);
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      let res: FetchLikeResponse;
+      try {
+        res = await this.fetchImpl(`${this.base}${path}`, init);
+      } catch (err) {
+        lastErr = err;
+        if (!idempotent || attempt === maxAttempts) throw err;
+        await this.sleep(this.backoffMs(attempt));
+        continue;
+      }
+      if (res.ok) return (await res.json()) as T;
+      const retryable = res.status === 429 || (idempotent && (res.status === 502 || res.status === 503 || res.status === 504));
+      if (!retryable || attempt === maxAttempts) return this.raise(res, path);
+      // Numeric-seconds Retry-After only (scope anchor); anything else → backoff.
+      const ra = res.headers?.get('retry-after');
+      const raSeconds = ra !== undefined && ra !== null && /^\d+$/.test(ra.trim()) ? Number(ra.trim()) : undefined;
+      await this.sleep(raSeconds !== undefined ? raSeconds * 1000 : this.backoffMs(attempt));
+    }
+    throw lastErr instanceof Error ? lastErr : new Error('retry loop exhausted');
+  }
+
+  private backoffMs(attempt: number): number {
+    const base = Math.max(1, this.retry.baseDelayMs ?? 500);
+    const cap = Math.max(1, this.retry.maxDelayMs ?? 10_000);
+    const exp = Math.min(cap, base * 2 ** (attempt - 1));
+    return Math.max(1, Math.floor(Math.random() * exp)); // full jitter
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return (this.retry.sleepImpl ?? ((m: number) => new Promise<void>((r) => setTimeout(r, m))))(ms);
   }
 
   private async raise(res: FetchLikeResponse, path: string): Promise<never> {
@@ -115,6 +167,8 @@ export class BacktesterClient {
         throw new BacktesterNotFoundError(res.status, code, message, category, payload);
       case 409:
         throw new BacktesterConflictError(res.status, code, message, category, payload);
+      case 429:
+        throw new BacktesterRateLimitError(res.status, code, message, category, payload);
       default:
         throw new BacktesterError(res.status, code, message, category, payload);
     }

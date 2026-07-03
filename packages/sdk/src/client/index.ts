@@ -13,4 +13,5 @@ export {
   BacktesterConflictError,
   BacktesterNotFoundError,
   BacktesterAuthError,
+  BacktesterRateLimitError,
 } from './errors';
