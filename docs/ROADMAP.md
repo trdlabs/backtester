@@ -298,8 +298,26 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     (flag+method+flat+no-overlays); batch prefix reuses lockstep per-bar helpers. **Golden gate:
     lockstep vs N=2/3/64 `result_hash` byte-identical FIRST RUN + determinism replay.** Flags:
     `BACKTESTER_BAR_BATCHING` (default false) / `BACKTESTER_BATCH_BARS` (64, clamp ≥2).
-    NEXT: measure on the VPS (17a re-profile lockstep vs batched at N=64/32/16) BEFORE enabling in
-    the working env; 17c decision rides those numbers. Original design text:
+    **⛔ VPS-MEASURED 2026-07-04 — KEEP OFF for long_oi (and any signal-dense strategy).** Clean
+    A/B on the VPS (89.124.86.84, 2c/4GB, real Docker sandbox, mock 1m, long_oi BEATUSDT half-day,
+    warm container), lockstep control run BOTH before and after the batched series to rule out load
+    drift:
+    - lockstep: **867 hookCalls, ipcWait 561–624 ms, engineMs 1287–1818**
+    - batched N=64: **867 hookCalls (UNCHANGED), ipcWait 1251–1302 ms, engineMs 3609–3956**
+    Batching made the run **~2.2× SLOWER on engine, ~2.1× more IPC-wait, with ZERO hookCall
+    collapse.** Root cause: long_oi returns a non-empty decision (or is in-position) on essentially
+    every bar, so the speculative batch **always early-stops at offset 0** — each flat bar pays the
+    full eager-build of up to 64 contexts + serialize + ship, the harness runs bar 0, and the host
+    rewinds/discards the other 63 and rebuilds. The designed graceful-degradation (`trades every
+    bar ⇒ batch size 1`) is **not free** — it is a ~2× speculative-build tax whenever the batch
+    never lands a multi-bar hit. **17b only pays off for strategies that emit EMPTY decisions across
+    long genuinely-flat stretches** (the batch collapses N→1 message only then). long_oi is a
+    worst-case, not a beneficiary. **Decision: flag stays default-OFF AND stays OFF in the working
+    env for the current strategy set. Do NOT enable per-strategy without a per-strategy A/B showing
+    a hookCall collapse first.** The correctness work is not wasted (golden gate proves byte-identity
+    and the mechanism is sound) but the perf lever is workload-gated. Reframes 17c: the universe
+    session (one container, one message/bar for ALL symbols) is the transport win that does NOT
+    depend on strategy signal density — prioritize 17c over any 17b tuning. Original design text:
     Protocol before this change was strict lockstep
     NDJSON, 1 message per hook per bar. Batch FLAT stretches (no position, no pending decisions —
     snapshots are then a pure function of the tape): send N bars in one message, harness replays them
