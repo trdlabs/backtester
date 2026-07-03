@@ -307,6 +307,192 @@ interface SimEngine {
   readonly composer: OverlayComposer;
 }
 
+/** Loop-invariant per-symbol environment shared by every per-bar stage (17b refactor). */
+interface BarEnv {
+  readonly symbol: string;
+  readonly candles: readonly Readonly<Bar>[];
+  readonly builder: PointInTimeContextBuilder;
+  readonly strategy: ResolvedStrategy;
+  readonly overlays: OverlaySplit;
+  readonly portfolio: Portfolio;
+  readonly engine: SimEngine;
+  readonly acc: RunAccumulators;
+  readonly module: ResolvedStrategy['module'];
+  readonly strategyExec: ModuleExecutor;
+  readonly gridMinutes: number;
+  readonly fundingCol: ReturnType<NonNullable<MarketTapeDataset['funding']>> | undefined;
+  readonly gridTs: readonly number[];
+}
+
+/** Stages (1)+(2): settle pending from t-1 at open(t), then intrabar protection check. */
+function preBarStages(env: BarEnv, t: number): void {
+  const { candles, portfolio, engine, acc, symbol } = env;
+  const bar = candles[t];
+  if (portfolio.pending !== null && portfolio.pending.decisionBarIndex === t - 1) {
+    settlePending(bar, t, portfolio, engine.exec, acc, bar.open);
+  }
+  runProtectionCheck(bar, t, symbol, portfolio, engine.exec, acc);
+}
+
+async function processBar(env: BarEnv, t: number, base: StrategyDecision | null): Promise<void> {
+  const { symbol, candles, builder, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs } = env;
+  const { router, risk, exec, composer } = engine;
+  const bar = candles[t];
+
+  // NOTE (17b): stages (1)+(2) intentionally do NOT live here — they run BEFORE the executor call
+  // in lockstep, so they live in preBarStages() and the caller invokes preBarStages(t) → obtain
+  // base → processBar(t, base). processBar covers stages (3)..(5) only. This split keeps the
+  // lockstep order byte-identical and lets the batch path interleave the same pre-stages per bar.
+
+  // (3) apply base → entry/signal overlay'и → risk → pending(open).
+  // 17b: base приходит от вызывающего (runSymbol сегодня; batch-путь — Task 4) и может быть `null`
+  // (пропуск executor-хука); совпадает с fallback'ом самого firstDecision (`{kind:'idle'}`).
+  const ctx = builder.build(t, stateAt(portfolio, bar.close));
+  const comp = await composer.compose(base ?? { kind: 'idle' }, overlays.entry, async (o) => {
+    const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctx);
+    return ds.length > 0 ? ds[0] : null;
+  });
+  if (comp.error !== undefined) {
+    acc.validationIssues.push({ severity: 'error', code: comp.error.code, message: comp.error.message, path: `/overlayComposition/${symbol}/${t}/onBarClose` });
+  }
+  let riskDecision: RiskDecision | null = null;
+  const final = comp.finalDecision;
+  if (final !== null && portfolio.isFlat && portfolio.pending === null) {
+    if (final.kind === 'enter') {
+      const outcome = risk.evaluate(final, t, portfolio.openPositions);
+      acc.riskDecisions.push(outcome.record);
+      riskDecision = outcome.record;
+      if (outcome.action !== 'reject') {
+        const id = orderId(symbol, t, 'open');
+        // 024 (US3): нормализованные protection-дистанции переносятся на pending → активны на входе
+        // (после settleOpen). Отсутствие → ключи опущены → байт-идентичность 018.
+        const prot = {
+          ...(outcome.stop !== undefined ? { stop: outcome.stop } : {}),
+          ...(outcome.take !== undefined ? { take: outcome.take } : {}),
+        };
+        acc.orders.push({ id, decisionBarIndex: t, side: final.side, intent: 'open', status: 'pending' });
+        portfolio.placePending({ id, symbol, side: final.side, intent: 'open', decisionBarIndex: t, sizingPct: outcome.sizingPct, ...prot });
+      }
+    } else if (final.kind === 'add_to_position') {
+      // 024 (US1): `add_to_position` при flat → детерминированный reject `add_without_position`;
+      // новая позиция НЕ открывается (ни ордера, ни pending).
+      const outcome = risk.evaluate(final, t, portfolio.openPositions);
+      acc.riskDecisions.push(outcome.record);
+      riskDecision = outcome.record;
+    } else if (final.kind === 'update_protection') {
+      // 024 (US3): `update_protection` при flat → reject `update_without_position` (запись, без мутации).
+      const outcome = risk.evaluate(final, t, portfolio.openPositions);
+      acc.riskDecisions.push(outcome.record);
+      riskDecision = outcome.record;
+    }
+  }
+  acc.decisionRecords.push({
+    barIndex: t,
+    barTs: bar.ts,
+    symbol,
+    hook: 'onBarClose',
+    baseDecision: base ?? { kind: 'idle' },
+    overlayEffects: comp.effects,
+    finalDecision: final,
+    riskDecision,
+  });
+
+  // (3) post_entry_management: запускается, если позиция открыта И есть хук ИЛИ post-overlay'и.
+  //     Отсутствующий базовый хук ⇒ синтетический `{kind:'idle'}` (overlay применяется к своей точке).
+  if (portfolio.position !== null && (module.onPositionBar !== undefined || overlays.post.length > 0)) {
+    const ctxPos = builder.build(t, stateAt(portfolio, bar.close));
+    const posBase: StrategyDecision =
+      module.onPositionBar !== undefined
+        ? firstDecision(await strategyExec.executeStrategyHook(module, 'onPositionBar', ctxPos))
+        : { kind: 'idle' };
+    const compPos = await composer.compose(posBase, overlays.post, async (o) => {
+      const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctxPos);
+      return ds.length > 0 ? ds[0] : null;
+    });
+    if (compPos.error !== undefined) {
+      acc.validationIssues.push({ severity: 'error', code: compPos.error.code, message: compPos.error.message, path: `/overlayComposition/${symbol}/${t}/onPositionBar` });
+    }
+    let posRisk: RiskDecision | null = null;
+    const posFinal = compPos.finalDecision;
+    if (posFinal !== null && portfolio.position !== null && portfolio.pending === null) {
+      if (posFinal.kind === 'exit') {
+        // 024 (US2): risk нормализует `exit.percent` (R3). reject (`invalid_exit_percent`) → нет ордера;
+        // accept partial → `closeFraction` несётся в ордер/pending; accept/clamp full → ключ опущен.
+        const outcome = risk.evaluate(posFinal, t, portfolio.openPositions);
+        acc.riskDecisions.push(outcome.record);
+        posRisk = outcome.record;
+        if (outcome.action !== 'reject') {
+          const pos = portfolio.position;
+          const id = orderId(symbol, t, 'close');
+          const frac = outcome.closeFraction !== undefined ? { closeFraction: outcome.closeFraction } : {};
+          acc.orders.push({ id, decisionBarIndex: t, side: pos.side, intent: 'close', status: 'pending', ...frac });
+          portfolio.placePending({ id, symbol, side: pos.side, intent: 'close', decisionBarIndex: t, closeReason: posFinal.target, ...frac });
+        }
+      } else if (posFinal.kind === 'add_to_position') {
+        // 024 (US1): доливка существующей позиции — risk(add) → placePending(add) → settleAdd по open(t+1).
+        const pos = portfolio.position;
+        const posCtx = { size: pos.size, entryPrice: pos.entryPrice, addCount: pos.addCount ?? 0, cash: portfolio.cash };
+        const outcome = risk.evaluate(posFinal, t, portfolio.openPositions, posCtx);
+        acc.riskDecisions.push(outcome.record);
+        posRisk = outcome.record;
+        if (outcome.action !== 'reject') {
+          const id = orderId(symbol, t, 'add');
+          acc.orders.push({ id, decisionBarIndex: t, side: pos.side, intent: 'add', status: 'pending', mode: outcome.mode });
+          portfolio.placePending({ id, symbol, side: pos.side, intent: 'add', decisionBarIndex: t, sizingPct: outcome.sizingPct, mode: outcome.mode });
+        }
+      } else if (posFinal.kind === 'update_protection') {
+        // 024 (US3): применяется к `_position` немедленно; по порядку прохода (protection-check бара t
+        // уже прошёл) активно со СЛЕДУЮЩЕГО бара (структурный no-lookahead, R7). Без pending/ордера.
+        const outcome = risk.evaluate(posFinal, t, portfolio.openPositions);
+        acc.riskDecisions.push(outcome.record);
+        posRisk = outcome.record;
+        if (outcome.action !== 'reject') {
+          portfolio.updateProtection(outcome.stop, outcome.take);
+        }
+      }
+    }
+    acc.decisionRecords.push({
+      barIndex: t,
+      barTs: bar.ts,
+      symbol,
+      hook: 'onPositionBar',
+      baseDecision: posBase,
+      overlayEffects: compPos.effects,
+      finalDecision: posFinal,
+      riskDecision: posRisk,
+    });
+  }
+
+  // same_bar_close: settle a pending placed THIS bar at close(t) — no cross-bar deferral, no look-ahead.
+  if (exec.settlesSameBar() && portfolio.pending !== null && portfolio.pending.decisionBarIndex === t) {
+    settlePending(bar, t, portfolio, exec, acc, bar.close);
+  }
+
+  // (4.5) 035 (realism) — end-of-bar funding accrual. Opt-in: only when the profile carries a
+  // fundingModel. End-of-bar placement ⇒ equityAt(close) already includes this bar's funding (no lag).
+  // Correct boundary semantics under next_bar_open: entry bar held full → charged; exit bar held 0 → skipped.
+  if (exec.fundingEnabled() && portfolio.position !== null) {
+    const pos = portfolio.position;
+    const reading = fundingReadingAt(fundingCol, gridTs, bar.ts, t);
+    const covered = reading.state !== 'missing';
+    const rate = covered && reading.point !== undefined ? reading.point.fundingRate : 0;
+    const cost = computeBarFunding({
+      side: pos.side,
+      size: pos.size,
+      mark: bar.close,
+      rate8h: rate,
+      covered,
+      barMinutes: gridMinutes,
+      intervalHours: exec.fundingIntervalHours(),
+    }).toNumber();
+    portfolio.chargeFunding(cost);
+    acc.fundingLedger.push({ barIndex: t, ts: bar.ts, rate, covered, cost });
+  }
+
+  // (5) EquityPoint — mark-to-market по close бара.
+  acc.equityCurve.push({ barIndex: t, barTs: bar.ts, equity: portfolio.equityAt(bar.close) });
+}
+
 /** Детерминированный проход одного символа (внутри-барный порядок R8) с overlay-композицией. */
 async function runSymbol(
   symbol: string,
@@ -332,163 +518,13 @@ async function runSymbol(
   // sandbox → открыть контейнер + init-хук. Вызывается всегда (sandbox-сессия открывается и без 'init').
   await strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
 
+  const env: BarEnv = { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs };
+
   for (let t = 0; t < n; t += 1) {
-    const bar = candles[t];
-
-    // (1) Settle pending от t−1 по open(t).
-    if (portfolio.pending !== null && portfolio.pending.decisionBarIndex === t - 1) {
-      settlePending(bar, t, portfolio, exec, acc, bar.open);
-    }
-
-    // (2) Protection-check intrabar t (R7): при хите закрывает остаток и пре-эмптит хуки того же бара.
-    runProtectionCheck(bar, t, symbol, portfolio, exec, acc);
-
-    // (3) onBarClose → entry/signal overlay'и → risk → pending(open).
-    const ctx = builder.build(t, stateAt(portfolio, bar.close));
+    preBarStages(env, t);
+    const ctx = builder.build(t, stateAt(portfolio, candles[t].close));
     const base = firstDecision(await strategyExec.executeStrategyHook(module, 'onBarClose', ctx));
-    const comp = await composer.compose(base, overlays.entry, async (o) => {
-      const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctx);
-      return ds.length > 0 ? ds[0] : null;
-    });
-    if (comp.error !== undefined) {
-      acc.validationIssues.push({ severity: 'error', code: comp.error.code, message: comp.error.message, path: `/overlayComposition/${symbol}/${t}/onBarClose` });
-    }
-    let riskDecision: RiskDecision | null = null;
-    const final = comp.finalDecision;
-    if (final !== null && portfolio.isFlat && portfolio.pending === null) {
-      if (final.kind === 'enter') {
-        const outcome = risk.evaluate(final, t, portfolio.openPositions);
-        acc.riskDecisions.push(outcome.record);
-        riskDecision = outcome.record;
-        if (outcome.action !== 'reject') {
-          const id = orderId(symbol, t, 'open');
-          // 024 (US3): нормализованные protection-дистанции переносятся на pending → активны на входе
-          // (после settleOpen). Отсутствие → ключи опущены → байт-идентичность 018.
-          const prot = {
-            ...(outcome.stop !== undefined ? { stop: outcome.stop } : {}),
-            ...(outcome.take !== undefined ? { take: outcome.take } : {}),
-          };
-          acc.orders.push({ id, decisionBarIndex: t, side: final.side, intent: 'open', status: 'pending' });
-          portfolio.placePending({ id, symbol, side: final.side, intent: 'open', decisionBarIndex: t, sizingPct: outcome.sizingPct, ...prot });
-        }
-      } else if (final.kind === 'add_to_position') {
-        // 024 (US1): `add_to_position` при flat → детерминированный reject `add_without_position`;
-        // новая позиция НЕ открывается (ни ордера, ни pending).
-        const outcome = risk.evaluate(final, t, portfolio.openPositions);
-        acc.riskDecisions.push(outcome.record);
-        riskDecision = outcome.record;
-      } else if (final.kind === 'update_protection') {
-        // 024 (US3): `update_protection` при flat → reject `update_without_position` (запись, без мутации).
-        const outcome = risk.evaluate(final, t, portfolio.openPositions);
-        acc.riskDecisions.push(outcome.record);
-        riskDecision = outcome.record;
-      }
-    }
-    acc.decisionRecords.push({
-      barIndex: t,
-      barTs: bar.ts,
-      symbol,
-      hook: 'onBarClose',
-      baseDecision: base,
-      overlayEffects: comp.effects,
-      finalDecision: final,
-      riskDecision,
-    });
-
-    // (3) post_entry_management: запускается, если позиция открыта И есть хук ИЛИ post-overlay'и.
-    //     Отсутствующий базовый хук ⇒ синтетический `{kind:'idle'}` (overlay применяется к своей точке).
-    if (portfolio.position !== null && (module.onPositionBar !== undefined || overlays.post.length > 0)) {
-      const ctxPos = builder.build(t, stateAt(portfolio, bar.close));
-      const posBase: StrategyDecision =
-        module.onPositionBar !== undefined
-          ? firstDecision(await strategyExec.executeStrategyHook(module, 'onPositionBar', ctxPos))
-          : { kind: 'idle' };
-      const compPos = await composer.compose(posBase, overlays.post, async (o) => {
-        const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctxPos);
-        return ds.length > 0 ? ds[0] : null;
-      });
-      if (compPos.error !== undefined) {
-        acc.validationIssues.push({ severity: 'error', code: compPos.error.code, message: compPos.error.message, path: `/overlayComposition/${symbol}/${t}/onPositionBar` });
-      }
-      let posRisk: RiskDecision | null = null;
-      const posFinal = compPos.finalDecision;
-      if (posFinal !== null && portfolio.position !== null && portfolio.pending === null) {
-        if (posFinal.kind === 'exit') {
-          // 024 (US2): risk нормализует `exit.percent` (R3). reject (`invalid_exit_percent`) → нет ордера;
-          // accept partial → `closeFraction` несётся в ордер/pending; accept/clamp full → ключ опущен.
-          const outcome = risk.evaluate(posFinal, t, portfolio.openPositions);
-          acc.riskDecisions.push(outcome.record);
-          posRisk = outcome.record;
-          if (outcome.action !== 'reject') {
-            const pos = portfolio.position;
-            const id = orderId(symbol, t, 'close');
-            const frac = outcome.closeFraction !== undefined ? { closeFraction: outcome.closeFraction } : {};
-            acc.orders.push({ id, decisionBarIndex: t, side: pos.side, intent: 'close', status: 'pending', ...frac });
-            portfolio.placePending({ id, symbol, side: pos.side, intent: 'close', decisionBarIndex: t, closeReason: posFinal.target, ...frac });
-          }
-        } else if (posFinal.kind === 'add_to_position') {
-          // 024 (US1): доливка существующей позиции — risk(add) → placePending(add) → settleAdd по open(t+1).
-          const pos = portfolio.position;
-          const posCtx = { size: pos.size, entryPrice: pos.entryPrice, addCount: pos.addCount ?? 0, cash: portfolio.cash };
-          const outcome = risk.evaluate(posFinal, t, portfolio.openPositions, posCtx);
-          acc.riskDecisions.push(outcome.record);
-          posRisk = outcome.record;
-          if (outcome.action !== 'reject') {
-            const id = orderId(symbol, t, 'add');
-            acc.orders.push({ id, decisionBarIndex: t, side: pos.side, intent: 'add', status: 'pending', mode: outcome.mode });
-            portfolio.placePending({ id, symbol, side: pos.side, intent: 'add', decisionBarIndex: t, sizingPct: outcome.sizingPct, mode: outcome.mode });
-          }
-        } else if (posFinal.kind === 'update_protection') {
-          // 024 (US3): применяется к `_position` немедленно; по порядку прохода (protection-check бара t
-          // уже прошёл) активно со СЛЕДУЮЩЕГО бара (структурный no-lookahead, R7). Без pending/ордера.
-          const outcome = risk.evaluate(posFinal, t, portfolio.openPositions);
-          acc.riskDecisions.push(outcome.record);
-          posRisk = outcome.record;
-          if (outcome.action !== 'reject') {
-            portfolio.updateProtection(outcome.stop, outcome.take);
-          }
-        }
-      }
-      acc.decisionRecords.push({
-        barIndex: t,
-        barTs: bar.ts,
-        symbol,
-        hook: 'onPositionBar',
-        baseDecision: posBase,
-        overlayEffects: compPos.effects,
-        finalDecision: posFinal,
-        riskDecision: posRisk,
-      });
-    }
-
-    // same_bar_close: settle a pending placed THIS bar at close(t) — no cross-bar deferral, no look-ahead.
-    if (exec.settlesSameBar() && portfolio.pending !== null && portfolio.pending.decisionBarIndex === t) {
-      settlePending(bar, t, portfolio, exec, acc, bar.close);
-    }
-
-    // (4.5) 035 (realism) — end-of-bar funding accrual. Opt-in: only when the profile carries a
-    // fundingModel. End-of-bar placement ⇒ equityAt(close) already includes this bar's funding (no lag).
-    // Correct boundary semantics under next_bar_open: entry bar held full → charged; exit bar held 0 → skipped.
-    if (exec.fundingEnabled() && portfolio.position !== null) {
-      const pos = portfolio.position;
-      const reading = fundingReadingAt(fundingCol, gridTs, bar.ts, t);
-      const covered = reading.state !== 'missing';
-      const rate = covered && reading.point !== undefined ? reading.point.fundingRate : 0;
-      const cost = computeBarFunding({
-        side: pos.side,
-        size: pos.size,
-        mark: bar.close,
-        rate8h: rate,
-        covered,
-        barMinutes: gridMinutes,
-        intervalHours: exec.fundingIntervalHours(),
-      }).toNumber();
-      portfolio.chargeFunding(cost);
-      acc.fundingLedger.push({ barIndex: t, ts: bar.ts, rate, covered, cost });
-    }
-
-    // (5) EquityPoint — mark-to-market по close бара.
-    acc.equityCurve.push({ barIndex: t, barTs: bar.ts, equity: portfolio.equityAt(bar.close) });
+    await processBar(env, t, base);
   }
 
   // End-of-data: leftover pending (решение на ПОСЛЕДНЕМ баре, нет next-bar для settle) → expired
