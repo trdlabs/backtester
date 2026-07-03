@@ -28,4 +28,16 @@ export class BacktesterNotFoundError extends BacktesterError {}
 export class BacktesterAuthError extends BacktesterError {}
 
 /** 429 — queue_full / rate limited; safe to retry after Retry-After. */
-export class BacktesterRateLimitError extends BacktesterError {}
+export class BacktesterRateLimitError extends BacktesterError {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    category?: string,
+    payload?: unknown,
+    /** Server's numeric Retry-After (seconds), when it sent one — a hint for the caller's own scheduling. */
+    readonly retryAfterS?: number,
+  ) {
+    super(status, code, message, category, payload);
+  }
+}

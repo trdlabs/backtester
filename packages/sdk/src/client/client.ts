@@ -86,6 +86,15 @@ const TERMINAL: ReadonlySet<string> = new Set<TerminalRunStatus>([
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Ceiling for an honored Retry-After wait — see the clamp comment in the retry loop. */
+const MAX_RETRY_AFTER_MS = 60_000;
+
+/** Numeric-seconds-only Retry-After (scope anchor): HTTP-date or garbage → undefined. */
+function numericRetryAfterS(res: FetchLikeResponse): number | undefined {
+  const ra = res.headers?.get('retry-after');
+  return ra !== undefined && ra !== null && /^\d+$/.test(ra.trim()) ? Number(ra.trim()) : undefined;
+}
+
 export class BacktesterClient {
   private readonly base: string;
   private readonly token: string;
@@ -129,10 +138,11 @@ export class BacktesterClient {
       if (res.ok) return (await res.json()) as T;
       const retryable = res.status === 429 || (idempotent && (res.status === 502 || res.status === 503 || res.status === 504));
       if (!retryable || attempt === maxAttempts) return this.raise(res, path);
-      // Numeric-seconds Retry-After only (scope anchor); anything else → backoff.
-      const ra = res.headers?.get('retry-after');
-      const raSeconds = ra !== undefined && ra !== null && /^\d+$/.test(ra.trim()) ? Number(ra.trim()) : undefined;
-      await this.sleep(raSeconds !== undefined ? raSeconds * 1000 : this.backoffMs(attempt));
+      const raSeconds = numericRetryAfterS(res);
+      // Retry-After is honored but CLAMPED to MAX_RETRY_AFTER_MS: a server/proxy advertising an
+      // hour must not block the client's retry loop for an hour — worst case we retry early and
+      // collect another 429.
+      await this.sleep(raSeconds !== undefined ? Math.min(raSeconds * 1000, MAX_RETRY_AFTER_MS) : this.backoffMs(attempt));
     }
     throw lastErr instanceof Error ? lastErr : new Error('retry loop exhausted');
   }
@@ -168,7 +178,7 @@ export class BacktesterClient {
       case 409:
         throw new BacktesterConflictError(res.status, code, message, category, payload);
       case 429:
-        throw new BacktesterRateLimitError(res.status, code, message, category, payload);
+        throw new BacktesterRateLimitError(res.status, code, message, category, payload, numericRetryAfterS(res));
       default:
         throw new BacktesterError(res.status, code, message, category, payload);
     }
