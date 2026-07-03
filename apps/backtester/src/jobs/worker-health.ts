@@ -3,6 +3,7 @@
 
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { boundedErrorDetail } from './bounded-error-detail.js';
 
 export interface WorkerHealthState {
   /** true while the process is alive and the drain loop has not fully resolved. */
@@ -15,10 +16,13 @@ export interface StatsProvider {
   snapshot(): unknown;
 }
 
+export type QueueStatsProvider = (nowMs: number) => Promise<{ depth: number; oldestQueuedAgeMs: number | null }>;
+
 export async function startWorkerHealthServer(
   port: number,
   state: WorkerHealthState,
   stats?: StatsProvider,
+  queueStats?: QueueStatsProvider,
 ): Promise<{ port: number; close(): Promise<void> }> {
   const server: Server = createServer((req, res) => {
     if (req.url === '/healthz') {
@@ -27,7 +31,19 @@ export async function startWorkerHealthServer(
       res.writeHead(state.ready() ? 200 : 503).end();
     } else if (req.url === '/statsz') {
       if (stats) {
-        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(stats.snapshot()));
+        const base = stats.snapshot() as Record<string, unknown>;
+        void (async () => {
+          let queue: unknown;
+          if (queueStats) {
+            try {
+              queue = await queueStats(Date.now());
+            } catch (err) {
+              queue = { error: boundedErrorDetail(err) };
+            }
+          }
+          res.writeHead(200, { 'content-type': 'application/json' })
+            .end(JSON.stringify(queue === undefined ? base : { ...base, queue }));
+        })();
       } else {
         res.writeHead(404).end();
       }
