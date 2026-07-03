@@ -191,6 +191,21 @@ you do not exhaust a node's Docker daemon.
 topology the API cannot see how many worker replicas exist. Fleet capacity = `worker_pods ×
 WORKER_CONCURRENCY` — see the capacity-budget formula above.
 
+## Bar batching (Phase D 17b — dark launch)
+
+- `BACKTESTER_BAR_BATCHING` (default **false**) + `BACKTESTER_BATCH_BARS` (default 64, clamped ≥2):
+  batches flat-stretch `onBarClose` calls into ONE sandbox IPC message with in-harness early-stop
+  at the first signal. Attacks the measured ~45–50% IPC-wait share of a sandboxed strategy run.
+- **Results are provably unchanged**: batching never alters `result_hash` — enforced by the
+  Docker-gated golden suite (`bar-batching-equivalence.test.ts`: lockstep vs N=2/3/64 byte-identity
+  + determinism replay). Because of this invariant, batching does NOT (and must never) enter
+  `computeIdentity` — dedup/coalescing keys are unaffected by the flag.
+- Rollout playbook (same as dedup/coalescing): merge default OFF → enable in the working env →
+  quantify on the VPS re-profile (17a). Expected win scales with how rarely the strategy trades;
+  every-bar traders degrade gracefully to lockstep cost.
+- Scope: sandboxed strategy runs only (`onBarClose`, flat bars). `onPositionBar`, overlays, and
+  trusted/momentum executors always run lockstep.
+
 ## Backpressure & connection hardening (Phase D Tier 2 lite)
 
 - `BACKTESTER_PG_POOL_MAX` (default 10): per-process pool cap. Fleet math: `worker_pods ×

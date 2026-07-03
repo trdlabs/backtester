@@ -111,6 +111,21 @@ export class AsyncIpcChannel {
       const decisions = Array.isArray(rec.decisions) ? (rec.decisions as unknown[]) : [];
       return { kind: 'ok', seq: typeof rec.seq === 'number' ? rec.seq : undefined, decisions };
     }
+    if (rec.t === 'okBatch') {
+      // 17b — stoppedAt MUST be numeric (it drives host-side bar-bookkeeping rewind); anything else
+      // is malformed rather than silently coerced (a garbage stoppedAt would desync the resend
+      // boundary between host and harness).
+      if (typeof rec.stoppedAt !== 'number') {
+        return { kind: 'malformed', detail: 'okBatch response missing numeric stoppedAt' };
+      }
+      const decisions = Array.isArray(rec.decisions) ? (rec.decisions as unknown[]) : [];
+      return {
+        kind: 'okBatch',
+        seq: typeof rec.seq === 'number' ? rec.seq : undefined,
+        stoppedAt: rec.stoppedAt,
+        decisions,
+      };
+    }
     if (rec.t === 'err') {
       return {
         kind: 'err',
@@ -118,6 +133,7 @@ export class AsyncIpcChannel {
         hook: typeof rec.hook === 'string' ? rec.hook : undefined,
         code: typeof rec.code === 'string' ? rec.code : 'sandbox_crashed',
         detail: typeof rec.detail === 'string' ? rec.detail : '',
+        barOffset: typeof rec.barOffset === 'number' ? rec.barOffset : undefined,
       };
     }
     return { kind: 'malformed', detail: `unknown response envelope t=${String(rec.t)}` };

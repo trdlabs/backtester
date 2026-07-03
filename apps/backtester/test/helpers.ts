@@ -43,6 +43,8 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     dedupEnabled: false,
     jobObs: false,
     coalesceEnabled: false,
+    barBatching: false,
+    batchBars: 64,
     computeLockTtlMs: 30_000,
     computeWaitMaxAttempts: 3,
     queueMaxDepth: 0,
