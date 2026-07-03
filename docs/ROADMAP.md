@@ -211,10 +211,18 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
 ~1.8× at 4 workers/host). No architectural redesign required. Lab-side items live in
 `trading-lab` but are tracked here to keep one scaling picture.
 
-14. **Tier 0 — turn on what's built (env + stale surfaces).**
+14. **Tier 0 — turn on what's built + obs hygiene (env + stale surfaces). ← NEXT UP (2026-07-04 priority).**
     - Enable `BACKTESTER_DEDUP_ENABLED` + `BACKTESTER_COALESCE_ENABLED` + `BACKTESTER_JOB_OBS` in the working env (validated PASS, item 11a; code defaults stay OFF).
     - `/statsz`: add queue depth + oldest-queued age (`countByStatus()` follow-up) — today a backlog is invisible; this is also the KEDA scaling metric.
     - Fix `/v1/capabilities` advertising a stale hardcoded `maxConcurrency: 1`.
+    - **Worker error visibility:** `processNextQueued`'s catch maps `err` to a terminal code and DROPS the
+      error itself — nothing is logged (2026-07-03 measurement session had to patch a debug line in to see
+      `buildOverlayDataset: unknown dataset`). Log a bounded error line (and consider a bounded
+      `failureDetail` on the job) at terminal time.
+    - **Async docker teardown:** `DockerDriver.kill/remove/inspectState` use `spawnSync` — every session
+      teardown blocks the worker event loop for a docker CLI round trip; convert to async spawn.
+    - **Merge the IPC-profile instrumentation** (branch `perf/ipc-profile`, flag-gated
+      `BACKTESTER_IPC_PROFILE`, zero default cost) — needed to re-profile on the VPS.
 15. ✅ **SHIPPED + MEASURED — Tier 1 — lab-side parallelism (`trading-lab`; biggest ROI, no engine changes).**
     Merged as trading-lab PR #126 (squash `b82d0ea`, 2026-07-03): bounded-parallel `ParamGridRunner`
     (`RESEARCH_GRID_CONCURRENCY`, default 4), BullMQ `LAB_QUEUE_CONCURRENCY` knob (default 1),
@@ -248,6 +256,42 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     - Tape cache: `TAPE_CACHE_MAX_ENTRIES` default 16/process collapses under many distinct symbol/period keys across M workers — raise it, verify single-flight in `getOrBuild`, consider worker-start warm-up.
     - Streamed (not buffered) S3 artifact writes; move bundle `put` off the submit hot path.
     - Scale-out: more worker nodes + KEDA on the (new) queue-depth metric.
+17a. **IPC profile — MEASURED (2026-07-04, WSL2, long_oi, instrumentation on branch `perf/ipc-profile`).**
+    Sandboxed strategy-run engine time splits ≈ **45–50% IPC-wait** (~3 ms/hook, pipe RTT + in-sandbox
+    compute) / **~20% container open** (~1.5–2 s warm, 4 s cold, PER SYMBOL) / **~30% host CPU**
+    (context serialize + sim + risk/exec). Corrects an earlier wrong assumption: there is NO
+    strategy-vs-overlay async split — one engine (`runner.ts::runBacktest`), one
+    `SandboxSession`/`AsyncIpcChannel` (`SyncIpcChannel` deleted in PR #45). The in-process
+    serialization at `WORKER_CONCURRENCY=4` is explained by host CPU sharing one JS thread +
+    `spawnSync` teardown — process-per-slot stays the right worker shape until 17b/17c land.
+    First action after the VPS move: re-profile there (WSL2 inflates pipe RTT and docker spawn).
+
+17b. **Speculative bar batching (attacks the ~45–50% IPC-wait).** Protocol today is strict lockstep
+    NDJSON, 1 message per hook per bar. Batch FLAT stretches (no position, no pending decisions —
+    snapshots are then a pure function of the tape): send N bars in one message, harness replays them
+    in order against the live instance, host rolls back to the FIRST bar with a non-empty decision and
+    resumes lockstep while in-position. Degrades gracefully: a strategy that trades every bar ⇒ batch
+    size 1 ⇒ today's behavior. Flag-gated default OFF; merge gate = golden byte-identical
+    `result_hash` lockstep-vs-batched on real bundles (INV-6 / twin-equivalence pattern).
+
+17c. **Universe session (enables top-300/400 universe backtests on small hardware).** Today: one
+    container per (module, symbol) — a 300-symbol run means 300 spawns (~8–10 min), ~38 GB of
+    container memory caps, and ~300 messages per bar (~864k round trips per 2-day run). Redesign:
+    ONE container per bundle hosting N per-symbol strategy instances (same isolation semantics —
+    the security boundary is bundle↔host, not symbol↔symbol), ONE message per bar carrying all
+    symbols' increments, decisions returned as a batch and applied through the portfolio in the
+    SAME fixed order as today (determinism / `result_hash` preserved). Container memory cap becomes
+    a function of N (`base + k×N`). Per-symbol failures fail-closed inside the harness (one symbol
+    dies, the rest live); only a real process crash kills the run. Scaling top-300 → top-400 = +33%
+    payload/memory/host-CPU, zero architectural change. EXPLICITLY OUT OF SCOPE: portfolio
+    semantics for concurrent signals (sequential shared-portfolio pass per bar stays as-is — a
+    product decision, not a transport one). Composes with 17b (multipliers stack).
+
+    **Recommended order (2026-07-04):** Tier 0 hygiene slice (item 14) → Tier 2 lite (Pg pool knob +
+    429 backpressure + SDK retry from item 16) → specs for 17b + 17c (writable now, perf-validated on
+    the VPS after re-profiling per 17a). Warm-pool (item 12 tie-in) is largely subsumed by 17c for
+    the universe case; keep it gated as before for single-symbol misses.
+
 18. **Tier 4 — B2C / multi-user gate (extends item 10; open BEFORE public multi-user).**
     - Per-tenant queued/running quotas + admission control + priority tiers (`tenantId` WHERE-predicate hook already in place).
     - Real per-client authn (today: one static bearer token compared with `===`) + per-token rate limits.
