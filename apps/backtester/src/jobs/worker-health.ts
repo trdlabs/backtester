@@ -43,7 +43,11 @@ export async function startWorkerHealthServer(
           }
           res.writeHead(200, { 'content-type': 'application/json' })
             .end(JSON.stringify(queue === undefined ? base : { ...base, queue }));
-        })();
+        })().catch(() => {
+          // Terminal guard: an unhandled rejection here (e.g. a pathological snapshot value breaking
+          // JSON.stringify, or a torn-down socket) must never crash the worker over a probe request.
+          try { res.destroy(); } catch { /* already gone */ }
+        });
       } else {
         res.writeHead(404).end();
       }
