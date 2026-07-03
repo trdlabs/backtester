@@ -35,6 +35,7 @@ async function main(): Promise<void> {
             ready: () => !draining,
           },
           deps.obs,
+          (nowMs) => deps.store.countQueueStats(nowMs),
         )
       : undefined;
 

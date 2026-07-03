@@ -36,6 +36,7 @@ import { createSandboxPolicyRegistry } from '../engine/sandbox-policy';
 import type { SandboxExecutorDeps } from '../engine/sandbox/sandbox-executor';
 import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
+import { boundedErrorDetail } from './bounded-error-detail.js';
 import { TrustedMomentumExecutor, type ModuleExecutor } from '../runner/module-executor';
 import { runBacktest, type BacktestResult } from '../runner/run-backtest';
 import type { RunOutcome } from '../engine/artifacts';
@@ -339,6 +340,9 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
   let coalesceOn = false;
   let engineCharged = false;
   let leaderIdentity: string | undefined;
+  // Bounded, log-safe detail from the caught error (Task 5) — set in the catch, read by the obs
+  // sample below so a failed job's job_terminal line carries the same detail as its job_error line.
+  let caughtErrorDetail: string | undefined;
   try {
     // NOTE: the bundle is loaded here (pre-flight) rather than lazily in the miss-path so the strategy
     // validation guards fire before tape materialization — preserving the sandbox error taxonomy
@@ -636,6 +640,14 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     }, deps.lease?.workerId);
   } catch (err) {
     const code = err instanceof RunnerError ? err.code : 'runner_failure';
+    caughtErrorDetail = boundedErrorDetail(err);
+    // eslint-disable-next-line no-console
+    console.error(JSON.stringify({
+      evt: 'job_error',
+      runId,
+      code,
+      detail: caughtErrorDetail,
+    }));
     const terminalStatus = err instanceof RunnerError ? err.terminalStatus : 'failed';
     const now = deps.clock();
     await deps.store.transition(runId, 'running', terminalStatus, {
@@ -673,6 +685,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         materializeMs: tMaterialized !== undefined ? tMaterialized - tClaim : null,
         engineMs: tEngineDone !== undefined && tMaterialized !== undefined ? tEngineDone - tMaterialized : null,
         totalMs: tTerminal - tClaim,
+        ...(caughtErrorDetail !== undefined ? { errorDetail: caughtErrorDetail } : {}),
       };
       deps.obs.recordJob(sample);
       // eslint-disable-next-line no-console

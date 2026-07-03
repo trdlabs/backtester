@@ -196,7 +196,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     defaultQueueTimeoutMs: config.defaultQueueTimeoutMs,
     defaultRunTimeoutMs: config.defaultRunTimeoutMs,
     enableOverlayEngine: config.enableOverlayEngine,
-    maxConcurrency: 1,
+    maxConcurrency: config.workerConcurrency,
     kick,
     coalesceEnabled: config.coalesceEnabled,
     computeWaitMaxAttempts: config.computeWaitMaxAttempts,

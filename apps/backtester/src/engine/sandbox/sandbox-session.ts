@@ -57,6 +57,12 @@ export class SandboxSession {
   private sessionDeadlineEpoch = Number.POSITIVE_INFINITY;
   private failed = false;
   private lastError?: SessionError;
+  // BACKTESTER_IPC_PROFILE=true: accumulate per-session IPC-wait/open timings, dumped on close().
+  private static readonly profileEnabled = process.env.BACKTESTER_IPC_PROFILE === 'true';
+  private profOpenMs = 0;
+  private profIpcWaitMs = 0;
+  private profHookCalls = 0;
+  private profClosed = false;
 
   constructor(
     private readonly bundle: ModuleBundle,
@@ -81,6 +87,13 @@ export class SandboxSession {
 
   /** Открыть контейнер и проинициализировать harness (загрузка bundle + инстанцирование). */
   async open(): Promise<HookResult> {
+    const profT0 = SandboxSession.profileEnabled ? performance.now() : 0;
+    const res = await this.openInner();
+    if (SandboxSession.profileEnabled) this.profOpenMs += performance.now() - profT0;
+    return res;
+  }
+
+  private async openInner(): Promise<HookResult> {
     const { manifest, descriptor, bundleDir } = this.bundle;
     const name = sessionContainerName(
       this.cfg.runId,
@@ -167,13 +180,30 @@ export class SandboxSession {
       ...(newLiq !== undefined ? { newLiq } : {}),
     });
 
+    const profT0 = SandboxSession.profileEnabled ? performance.now() : 0;
     const outcome = await channel.receive(this.callDeadline());
+    if (SandboxSession.profileEnabled) {
+      this.profIpcWaitMs += performance.now() - profT0;
+      this.profHookCalls += 1;
+    }
     if (outcome.kind === 'ok') return { ok: true, decisions: outcome.decisions };
     return this.fail(this.mapFailure(outcome, hook, 'sandbox_crashed'));
   }
 
   /** Закрыть контейнер: EOF на stdin + принудительная детерминированная очистка (idempotent). */
   close(): void {
+    if (SandboxSession.profileEnabled && !this.profClosed && this.profHookCalls > 0) {
+      this.profClosed = true;
+      console.error(JSON.stringify({
+        evt: 'ipc_profile',
+        kind: this.cfg.kind,
+        symbol: this.cfg.symbol,
+        hookCalls: this.profHookCalls,
+        ipcWaitMs: Math.round(this.profIpcWaitMs),
+        openMs: Math.round(this.profOpenMs),
+        avgIpcWaitMsPerHook: Number((this.profIpcWaitMs / this.profHookCalls).toFixed(3)),
+      }));
+    }
     const c = this.container;
     if (c === undefined) return;
     this.container = undefined;
@@ -186,8 +216,7 @@ export class SandboxSession {
     } catch {
       /* already torn down */
     }
-    this.driver.kill(c.name);
-    this.driver.remove(c.name);
+    this.driver.dispose(c.name);
   }
 
   private callDeadline(): number {

@@ -1,0 +1,7 @@
+/** Bounded, log-safe error detail: message extracted, control chars/newlines → single spaces,
+ *  whitespace collapsed, truncated to max. Shared by the job_error log line and /statsz. */
+export function boundedErrorDetail(err: unknown, max = 300): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  // eslint-disable-next-line no-control-regex
+  return raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+}

@@ -110,4 +110,23 @@ export class DockerDriver {
   remove(name: string): void {
     spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
   }
+
+  /** Асинхронный best-effort teardown: kill → (по завершении) rm, ошибки проглатываются.
+   *  Не блокирует event loop (в отличие от sync kill/remove) — используется на пути close(). */
+  dispose(name: string): void {
+    const kill = spawn('docker', ['kill', '-s', 'KILL', name], { stdio: 'ignore' });
+    kill.unref?.();
+    // rm runs ONE-SHOT after kill settles — 'close' OR 'error' (spawn-failure may never emit
+    // 'close'), guarded against double-run when both fire.
+    let removed = false;
+    const removeOnce = (): void => {
+      if (removed) return;
+      removed = true;
+      const rm = spawn('docker', ['rm', '-f', name], { stdio: 'ignore' });
+      rm.unref?.();
+      rm.on('error', () => {});
+    };
+    kill.on('error', removeOnce);
+    kill.on('close', removeOnce);
+  }
 }

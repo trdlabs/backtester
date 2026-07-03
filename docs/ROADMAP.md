@@ -199,6 +199,106 @@ Temporal) remain follow-up specs.
 12. **Stronger sandbox isolation later:** evaluate gVisor/Kata/Firecracker only after the horizontal Docker worker path is proven. Preserve the current sandbox contract: no network/secrets, read-only mounts, resource-limit error taxonomy, deterministic cleanup, and stable IPC behavior.
 13. **Temporal later, for workflows not raw speed:** introduce Temporal only when the product becomes multi-step durable orchestration (generate strategy -> backtest -> evaluate -> re-prompt -> evidence), not as a replacement for the current Pg job queue.
 
+### Phase D — concurrent-burst readiness (analysis 2026-07-02)
+
+Context: with the Phase C foundation shipped (items 6–9) and dedup+coalescing validated (11a),
+the dominant cost is the **fresh-miss engine/sandbox run (~23 s, 85–95 % of wall time)**, which
+scales only with `worker_pods × WORKER_CONCURRENCY`. A whole-system review (backtester runtime +
+docs + trading-lab interaction) found that for "hundreds of concurrent backtests" the cheapest,
+highest-leverage work is **lab-side parallelism** and **ingress protection** — not new engine
+work. Capacity math: unique-run throughput ≈ `pods × WORKER_CONCURRENCY / 23 s`; "hundreds
+in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a per-node choke,
+~1.8× at 4 workers/host). No architectural redesign required. Lab-side items live in
+`trading-lab` but are tracked here to keep one scaling picture.
+
+14. **Tier 0 — turn on what's built + obs hygiene (env + stale surfaces). ← NEXT UP (2026-07-04 priority).**
+    - Enable `BACKTESTER_DEDUP_ENABLED` + `BACKTESTER_COALESCE_ENABLED` + `BACKTESTER_JOB_OBS` in the working env (validated PASS, item 11a; code defaults stay OFF).
+    - `/statsz`: add queue depth + oldest-queued age (`countByStatus()` follow-up) — today a backlog is invisible; this is also the KEDA scaling metric.
+    - Fix `/v1/capabilities` advertising a stale hardcoded `maxConcurrency: 1`.
+    - **Worker error visibility:** `processNextQueued`'s catch maps `err` to a terminal code and DROPS the
+      error itself — nothing is logged (2026-07-03 measurement session had to patch a debug line in to see
+      `buildOverlayDataset: unknown dataset`). Log a bounded error line (and consider a bounded
+      `failureDetail` on the job) at terminal time.
+    - **Async docker teardown:** `DockerDriver.kill/remove/inspectState` use `spawnSync` — every session
+      teardown blocks the worker event loop for a docker CLI round trip; convert to async spawn.
+    - **Merge the IPC-profile instrumentation** (branch `perf/ipc-profile`, flag-gated
+      `BACKTESTER_IPC_PROFILE`, zero default cost) — needed to re-profile on the VPS.
+15. ✅ **SHIPPED + MEASURED — Tier 1 — lab-side parallelism (`trading-lab`; biggest ROI, no engine changes).**
+    Merged as trading-lab PR #126 (squash `b82d0ea`, 2026-07-03): bounded-parallel `ParamGridRunner`
+    (`RESEARCH_GRID_CONCURRENCY`, default 4), BullMQ `LAB_QUEUE_CONCURRENCY` knob (default 1),
+    train ∥ holdout overlap, `run_pending` resume deferred to the webhook/resume spec.
+    **Measured** (2026-07-03, real long_oi bundle × 8-point grid via the shipped
+    executor path, local split stack: fresh mock-platform w/ discover-1m #21 + Pg + Docker sandbox,
+    dedup/coalesce/obs ON, disjoint params so 16/16 fresh engine runs):
+    - 1 worker process (`WORKER_CONCURRENCY=4`): 1.51× — in-process slots do NOT overlap the
+      strategy engine (sync-IPC serialization, the known #2-pool result); `queueWait` ramps while
+      jobs chain one-by-one.
+    - 4 worker processes × concurrency 1 (the OPERATIONS-recommended shape): **82.8 s → 46.5 s
+      = 1.78×**, engine-time in flight ≈ 3.4×, per-run engine inflates 9.3 s → 19.8 s from
+      single-host Docker/CPU contention — matches the known ~1.8×/host ceiling (item 9).
+    **Conclusion:** lab-side serialization is gone (submission saturates all worker slots);
+    the next wall-clock win is Tier 3 scale-out (more worker nodes), not more lab concurrency.
+    Operational note: for strategy workloads prefer process-per-slot workers; in-process
+    `WORKER_CONCURRENCY>1` only helps the async overlay engine.
+
+15b. **(was 15) Original Tier 1 item text for reference:**
+    - `ParamGridRunner.runGrid` submits strictly sequentially (`for … await`, up to 8 points/round) — parallel submit-all-then-poll (bounded) turns "8 × ~30 s serial" into "~30 s parallel"; grid points differ by params so server-side coalescing can NOT collapse them.
+    - BullMQ worker created without `concurrency` option (default 1) — one experiment in flight per lab process; add a knob.
+    - Executors poll (`PLATFORM_RUN_MAX_POLLS`=30 × `PLATFORM_RUN_POLL_DELAY_MS`=2000 ≈ 60 s hard budget) and fail the experiment `INCONCLUSIVE 'run_pending'` on expiry, even though `callbackUrl` + outbox webhooks are plumbed end-to-end — switch to webhook-driven completion with poll fallback; `run_pending` should resume, not fail.
+    - Baseline lane is serial (sanity → train → holdout); train ∥ holdout is free parallelism once the sanity boundary resolves.
+16. **Tier 2 — ingress backpressure + connection hardening (prerequisite for any load growth).**
+    - `POST /v1/runs` has NO backpressure: no rate limit, no queue-depth cap, no 429 — a 500-submit burst is silently accepted and expires after 6 h. Add queue-depth cap → `429` + `Retry-After`; add SDK retry/backoff and a `rate_limited` mapping in lab's `toGatewayError` (currently absent).
+    - `db/pool.ts` passes only `connectionString` — pg default `max=10` connections, no knob, no statement timeout; submit ≈ 4–5 sequential Pg round trips, so bursts + worker claim/heartbeat traffic contend invisibly. Add `BACKTESTER_PG_POOL_MAX` + timeouts.
+    - Bundle-by-ref: `BundleStore` is already content-addressed — expose `PUT /v1/bundles` + submit by hash. Lifts the ~1 MiB inline-bundle body pressure and stops lab re-uploading identical bytes per grid point.
+    - LISTEN/NOTIFY queue wake instead of polling (existing coalescing-design follow-up).
+17. **Tier 3 — fresh-miss cost (GATED: only after Tiers 0–2 are live and misses still hurt — the item-11b/12 warm-pool gate).**
+    - Warm container pool (security-sensitive, deliberately deferred).
+    - Tape cache: `TAPE_CACHE_MAX_ENTRIES` default 16/process collapses under many distinct symbol/period keys across M workers — raise it, verify single-flight in `getOrBuild`, consider worker-start warm-up.
+    - Streamed (not buffered) S3 artifact writes; move bundle `put` off the submit hot path.
+    - Scale-out: more worker nodes + KEDA on the (new) queue-depth metric.
+17a. **IPC profile — MEASURED (2026-07-04, WSL2, long_oi, instrumentation on branch `perf/ipc-profile`).**
+    Sandboxed strategy-run engine time splits ≈ **45–50% IPC-wait** (~3 ms/hook, pipe RTT + in-sandbox
+    compute) / **~20% container open** (~1.5–2 s warm, 4 s cold, PER SYMBOL) / **~30% host CPU**
+    (context serialize + sim + risk/exec). Corrects an earlier wrong assumption: there is NO
+    strategy-vs-overlay async split — one engine (`runner.ts::runBacktest`), one
+    `SandboxSession`/`AsyncIpcChannel` (`SyncIpcChannel` deleted in PR #45). The in-process
+    serialization at `WORKER_CONCURRENCY=4` is explained by host CPU sharing one JS thread +
+    `spawnSync` teardown — process-per-slot stays the right worker shape until 17b/17c land.
+    First action after the VPS move: re-profile there (WSL2 inflates pipe RTT and docker spawn).
+
+17b. **Speculative bar batching (attacks the ~45–50% IPC-wait).** Protocol today is strict lockstep
+    NDJSON, 1 message per hook per bar. Batch FLAT stretches (no position, no pending decisions —
+    snapshots are then a pure function of the tape): send N bars in one message, harness replays them
+    in order against the live instance, host rolls back to the FIRST bar with a non-empty decision and
+    resumes lockstep while in-position. Degrades gracefully: a strategy that trades every bar ⇒ batch
+    size 1 ⇒ today's behavior. Flag-gated default OFF; merge gate = golden byte-identical
+    `result_hash` lockstep-vs-batched on real bundles (INV-6 / twin-equivalence pattern).
+
+17c. **Universe session (enables top-300/400 universe backtests on small hardware).** Today: one
+    container per (module, symbol) — a 300-symbol run means 300 spawns (~8–10 min), ~38 GB of
+    container memory caps, and ~300 messages per bar (~864k round trips per 2-day run). Redesign:
+    ONE container per bundle hosting N per-symbol strategy instances (same isolation semantics —
+    the security boundary is bundle↔host, not symbol↔symbol), ONE message per bar carrying all
+    symbols' increments, decisions returned as a batch and applied through the portfolio in the
+    SAME fixed order as today (determinism / `result_hash` preserved). Container memory cap becomes
+    a function of N (`base + k×N`). Per-symbol failures fail-closed inside the harness (one symbol
+    dies, the rest live); only a real process crash kills the run. Scaling top-300 → top-400 = +33%
+    payload/memory/host-CPU, zero architectural change. EXPLICITLY OUT OF SCOPE: portfolio
+    semantics for concurrent signals (sequential shared-portfolio pass per bar stays as-is — a
+    product decision, not a transport one). Composes with 17b (multipliers stack).
+
+    **Recommended order (2026-07-04):** Tier 0 hygiene slice (item 14) → Tier 2 lite (Pg pool knob +
+    429 backpressure + SDK retry from item 16) → specs for 17b + 17c (writable now, perf-validated on
+    the VPS after re-profiling per 17a). Warm-pool (item 12 tie-in) is largely subsumed by 17c for
+    the universe case; keep it gated as before for single-symbol misses.
+
+18. **Tier 4 — B2C / multi-user gate (extends item 10; open BEFORE public multi-user).**
+    - Per-tenant queued/running quotas + admission control + priority tiers (`tenantId` WHERE-predicate hook already in place).
+    - Real per-client authn (today: one static bearer token compared with `===`) + per-token rate limits.
+    - Sandbox isolation upgrade (gVisor/Kata/Firecracker, item 12) becomes **mandatory**, not optional, once arbitrary third-party strategies run at scale.
+    - Artifact GC/TTL + dedup-cache TTL/LRU pruning (existing item-11 follow-up); cost metering per tenant (attempt-charging seam exists).
+    - Obs: p50/p95 percentiles, cross-replica `/statsz` aggregation, queue-wait by tenant.
+
 ## Definition of Done
 
 The system is “working” when (✅ except the real-platform data path):

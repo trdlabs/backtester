@@ -186,6 +186,11 @@ peak sandbox CPU    ≈ max_pods × WORKER_CONCURRENCY × avg_symbols_per_run ×
 Prefer many modest workers over few large ones, and set KEDA `maxReplicaCount` from these formulas so
 you do not exhaust a node's Docker daemon.
 
+`GET /v1/capabilities` reports `maxConcurrency` as the **per-worker-process** concurrency
+(`WORKER_CONCURRENCY` of the API process's config). It is NOT fleet-wide capacity: in split
+topology the API cannot see how many worker replicas exist. Fleet capacity = `worker_pods ×
+WORKER_CONCURRENCY` — see the capacity-budget formula above.
+
 ## Result dedup (Phase C item 11)
 
 Skips redundant compute (engine + sandbox execution) for a run whose identity was already computed
