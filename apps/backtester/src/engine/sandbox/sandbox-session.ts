@@ -257,8 +257,6 @@ export class SandboxSession {
     const channel = this.channel;
     if (channel === undefined) return { ok: false, stoppedAt: -1, error: this.lastError };
 
-    const firstBarIndexBefore = this.barIndex;
-    const preBatchLastBarTs = this.lastBarTs;
     const bars: HookBatchEntry[] = [];
     const bookkeepingAfter: Array<{ barIndex: number; lastBarTs: number | undefined }> = [];
     for (const ctx of ctxs) {
@@ -271,24 +269,44 @@ export class SandboxSession {
     const outcome = await channel.receive(this.callDeadline());
 
     if (outcome.kind === 'okBatch') {
+      // 17b — stoppedAt MUST address a real per-entry snapshot. parseLine only checks
+      // `typeof === 'number'`, so a hostile/broken harness line can still smuggle through an
+      // out-of-range integer, a fraction, or Infinity (`JSON.parse("1e999")` passes the number
+      // check). The harness can never legitimately return anything else — fully-empty is N-1,
+      // earliest stop is 0 — so anything outside [0, bars.length) fails closed like a malformed line
+      // instead of indexing bookkeepingAfter with a bogus value and throwing.
+      if (!Number.isInteger(outcome.stoppedAt) || outcome.stoppedAt < 0 || outcome.stoppedAt >= bars.length) {
+        const error: SessionError = this.mapFailure(
+          {
+            kind: 'malformed',
+            detail: `okBatch stoppedAt out of range: ${outcome.stoppedAt} (batch size ${bars.length})`,
+          },
+          'onBarClose',
+          'sandbox_crashed',
+        );
+        this.fail(error);
+        return { ok: false, stoppedAt: -1, error };
+      }
       // Harness executed 0..stoppedAt; roll host-side bar bookkeeping back for the discarded tail
       // so the next lockstep/batch call re-sends those bars' newBar increments (see doc above).
-      const restore =
-        outcome.stoppedAt >= 0
-          ? bookkeepingAfter[outcome.stoppedAt]
-          : { barIndex: firstBarIndexBefore, lastBarTs: preBatchLastBarTs };
-      this.barIndex = restore!.barIndex;
-      this.lastBarTs = restore!.lastBarTs;
+      const restore = bookkeepingAfter[outcome.stoppedAt];
+      this.barIndex = restore.barIndex;
+      this.lastBarTs = restore.lastBarTs;
       return { ok: true, stoppedAt: outcome.stoppedAt, decisions: outcome.decisions };
     }
     if (outcome.kind === 'err' && outcome.barOffset !== undefined) {
-      // mapFailure returns a SessionError directly; re-point barIndex at the failing bar. (mapFailure
-      // reads `this.barIndex`, which after the eager build above sits at the LAST entry — wrong for
-      // a partial batch — so we override it explicitly from firstBarIndexBefore + barOffset.)
-      const mapped: SessionError = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
-      const error: SessionError = { ...mapped, barIndex: firstBarIndexBefore + 1 + outcome.barOffset };
-      this.fail(error); // fail-closed side effects (close + latch); its HookResult return is unused here
-      return { ok: false, stoppedAt: outcome.barOffset - 1, error };
+      const { barOffset } = outcome;
+      if (Number.isInteger(barOffset) && barOffset >= 0 && barOffset < bars.length) {
+        // mapFailure returns a SessionError directly; re-point barIndex at the failing bar using the
+        // per-entry snapshot captured while building the batch — bookkeepingAfter[i] holds the exact
+        // absolute barIndex after processing entry i, so this doesn't assume every entry advanced it.
+        const mapped: SessionError = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
+        const error: SessionError = { ...mapped, barIndex: bookkeepingAfter[barOffset].barIndex };
+        this.fail(error); // fail-closed side effects (close + latch); its HookResult return is unused here
+        return { ok: false, stoppedAt: barOffset - 1, error };
+      }
+      // barOffset out of range for this batch — cannot trust it to index bookkeepingAfter; fall
+      // through to the generic (non-barOffset) error mapping below instead of indexing blindly.
     }
     const error: SessionError = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
     this.fail(error);

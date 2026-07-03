@@ -172,6 +172,79 @@ describe('SandboxSession.callHookBatch (17b — inert protocol, scripted fake ch
     expect(driver.sent.length).toBe(sentBefore);
   });
 
+  it('okBatch with an out-of-range integer stoppedAt fails closed without throwing (hostile/broken harness line)', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+
+    const ctxs = [0, 1, 2, 3, 4].map((i) => makeCtx(i * BAR_MS));
+    const batchPromise = session.callHookBatch(ctxs);
+    driver.stdout.write(`${JSON.stringify({ t: 'okBatch', seq: 1, stoppedAt: 7, decisions: [] })}\n`); // N=5
+
+    // Must resolve — NOT throw — with a failed-closed result.
+    const result = await batchPromise;
+    expectFailed(result);
+    expect(result.stoppedAt).toBe(-1);
+    expect(result.error?.code).toBe('sandbox_output_malformed');
+
+    // Fail-closed: the session is now dead — a subsequent call short-circuits WITHOUT sending anything.
+    const sentBefore = driver.sent.length;
+    const again = await session.callHookBatch(ctxs);
+    expect(again).toEqual({ ok: false, stoppedAt: -1, error: result.error });
+    expect(driver.sent.length).toBe(sentBefore);
+  });
+
+  it('okBatch with a fractional stoppedAt fails closed without throwing', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+
+    const ctxs = [0, 1, 2, 3, 4].map((i) => makeCtx(i * BAR_MS));
+    const batchPromise = session.callHookBatch(ctxs);
+    driver.stdout.write(`${JSON.stringify({ t: 'okBatch', seq: 1, stoppedAt: 1.5, decisions: [] })}\n`);
+
+    const result = await batchPromise;
+    expectFailed(result);
+    expect(result.stoppedAt).toBe(-1);
+    expect(result.error?.code).toBe('sandbox_output_malformed');
+  });
+
+  it('okBatch with an Infinity stoppedAt fails closed without throwing (JSON.parse("1e999") still passes typeof === "number")', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+
+    const ctxs = [0, 1, 2, 3, 4].map((i) => makeCtx(i * BAR_MS));
+    const batchPromise = session.callHookBatch(ctxs);
+    // Written raw (not via JSON.stringify, which would serialize Infinity as `null`) to reproduce
+    // exactly the wire bytes a hostile/broken harness line would send.
+    driver.stdout.write('{"t":"okBatch","seq":1,"stoppedAt":1e999,"decisions":[]}\n');
+
+    const result = await batchPromise;
+    expectFailed(result);
+    expect(result.stoppedAt).toBe(-1);
+    expect(result.error?.code).toBe('sandbox_output_malformed');
+  });
+
+  it('err with an out-of-range barOffset falls through to the generic error mapping (no snapshot indexing crash)', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+
+    const ctxs = [0, 1, 2, 3].map((i) => makeCtx(i * BAR_MS));
+    const batchPromise = session.callHookBatch(ctxs);
+    driver.stdout.write(
+      `${JSON.stringify({ t: 'err', seq: 1, hook: 'onBarClose', code: 'sandbox_crashed', detail: 'boom', barOffset: 99 })}\n`,
+    );
+
+    const result = await batchPromise;
+    expectFailed(result);
+    expect(result.stoppedAt).toBe(-1);
+    expect(result.error?.code).toBe('sandbox_crashed');
+
+    // Fail-closed: the session is now dead — a subsequent call short-circuits WITHOUT sending anything.
+    const sentBefore = driver.sent.length;
+    const again = await session.callHookBatch(ctxs);
+    expect(again).toEqual({ ok: false, stoppedAt: -1, error: result.error });
+    expect(driver.sent.length).toBe(sentBefore);
+  });
+
   it('fully-empty batch (no decisions anywhere): stoppedAt = N-1', async () => {
     const { session, driver } = newSession();
     await scriptOpen(driver, session);
