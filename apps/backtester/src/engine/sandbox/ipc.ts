@@ -33,12 +33,43 @@ export interface HookRequest {
   readonly newLiq?: LiquidationSnapshot | null;
 }
 
-export type Request = InitRequest | HookRequest;
+/** Один элемент батча (17b) — то же тело, что и per-entry поля HookRequest, БЕЗ t/seq/hook. */
+export interface HookBatchEntry {
+  readonly snapshot: ContextSnapshot;
+  readonly newBar: Bar | null;
+  readonly newOi?: OpenInterestSnapshot | null;
+  readonly newLiq?: LiquidationSnapshot | null;
+}
+
+/** hookBatch-конверт (host → harness; 17b, INERT — движок пока не отправляет). */
+export interface HookBatchRequest {
+  readonly t: 'hookBatch';
+  readonly seq: number;
+  readonly hook: 'onBarClose';
+  readonly bars: readonly HookBatchEntry[];
+}
+
+export type Request = InitRequest | HookRequest | HookBatchRequest;
 
 /** Исход одного round-trip'а (harness → host) либо нарушение, детектированное host-стороной. */
 export type ReceiveOutcome =
   | { readonly kind: 'ok'; readonly seq?: number; readonly decisions: readonly unknown[] }
-  | { readonly kind: 'err'; readonly seq?: number; readonly hook?: string; readonly code: string; readonly detail: string }
+  | {
+      readonly kind: 'okBatch';
+      readonly seq?: number;
+      readonly stoppedAt: number;
+      readonly decisions: readonly unknown[];
+    }
+  | {
+      readonly kind: 'err';
+      readonly seq?: number;
+      readonly hook?: string;
+      readonly code: string;
+      readonly detail: string;
+      // 17b — присутствует только на err-строках, возникших в ответ на hookBatch (индекс упавшего
+      // бара внутри батча; host-сторона переводит его в абсолютный barIndex).
+      readonly barOffset?: number;
+    }
   | { readonly kind: 'timeout' }
   | { readonly kind: 'eof' }
   | { readonly kind: 'malformed'; readonly detail: string }

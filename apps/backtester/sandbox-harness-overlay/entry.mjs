@@ -11,6 +11,7 @@ import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
 import { installDenyShims, classifyError } from './deny-shims.mjs';
+import { runHookBatch } from './hook-batch.mjs';
 
 // Defense-in-depth: запрет спавна/shell + секрет-env (FR-006/019). Ставится ДО загрузки bundle —
 // patched singleton'ы видны коду модуля (общие node-core). Основная гарантия — флаги контейнера.
@@ -32,6 +33,11 @@ function ok(seq, decisions) {
 function err(seq, hook, code, detail) {
   writeLine({ t: 'err', seq, hook, code, detail: String(detail ?? '').slice(0, 4096) });
 }
+// 17b — batch protocol line builders (see runHookBatch / handleHookBatch below).
+const okBatch = (seq, stoppedAt, decisions) =>
+  process.stdout.write(`${JSON.stringify({ t: 'okBatch', seq, stoppedAt, decisions })}\n`);
+const errBatch = (seq, hook, code, detail, barOffset) =>
+  process.stdout.write(`${JSON.stringify({ t: 'err', seq, hook, code, detail: String(detail ?? '').slice(0, 4096), barOffset })}\n`);
 
 /** Нормализовать вывод хука `decision | decision[] | null` → массив. */
 function normalize(out) {
@@ -106,6 +112,28 @@ async function handleHook(msg) {
   }
 }
 
+// 17b — thin wrapper: delegates the actual per-bar iteration to the sibling pure helper
+// (hook-batch.mjs) so the logic is importable/testable from the host (this file cannot run there —
+// it imports the untrusted bundle from a container-absolute path). Still INERT: nothing on the host
+// sends {t:'hookBatch'} yet.
+async function handleHookBatch(msg) {
+  const r = await runHookBatch(msg.bars, msg.hook, {
+    buffer,
+    oiBuffer,
+    liqBuffer,
+    rng,
+    instance,
+    rehydrateContext,
+    pickHook,
+    normalize,
+  });
+  if (r.kind === 'ok') {
+    okBatch(msg.seq, r.stoppedAt, r.decisions);
+  } else {
+    errBatch(msg.seq, msg.hook, classifyError(r.cause), r.cause && r.cause.message ? r.cause.message : r.cause, r.barOffset);
+  }
+}
+
 async function main() {
   const rl = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
   for await (const line of rl) {
@@ -122,6 +150,8 @@ async function main() {
       await handleInit(msg);
     } else if (msg.t === 'hook') {
       await handleHook(msg);
+    } else if (msg.t === 'hookBatch') {
+      await handleHookBatch(msg);
     } else {
       err(msg.seq, undefined, 'sandbox_output_malformed', `unknown request t=${String(msg.t)}`);
     }
