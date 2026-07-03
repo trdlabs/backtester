@@ -61,6 +61,21 @@ describe('SDK retry policy', () => {
     await expect(client.getCapabilities()).resolves.toBeTruthy();
   });
 
+  it('retries GET on 503 (idempotent 5xx branch) but not POST without resumeToken', async () => {
+    const err503: FetchLikeResponse = {
+      ok: false, status: 503, json: async () => ({ code: 'unavailable', message: 'down' }), text: async () => '',
+    };
+    const sleepsGet: number[] = [];
+    const getClient = clientWith([{ ...err503 }, ok({ contractVersion: 'x' })], sleepsGet);
+    await expect(getClient.getCapabilities()).resolves.toBeTruthy();
+    expect(sleepsGet).toHaveLength(1);
+
+    const sleepsPost: number[] = [];
+    const postClient = clientWith([{ ...err503 }, ok({ runId: 'r' })], sleepsPost);
+    await expect(postClient.submitRun({} as never)).rejects.toMatchObject({ status: 503 });
+    expect(sleepsPost).toHaveLength(0);
+  });
+
   it('does NOT retry POST network error without resumeToken (fails fast)', async () => {
     const sleeps: number[] = [];
     const client = clientWith([new Error('ECONNRESET'), ok({ runId: 'r' })], sleeps);
