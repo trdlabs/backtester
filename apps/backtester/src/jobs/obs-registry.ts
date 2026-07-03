@@ -13,6 +13,8 @@ export interface JobObsSample {
   materializeMs: number | null;
   engineMs: number | null;
   totalMs: number;
+  /** Bounded error detail (boundedErrorDetail) when the job failed with a thrown error. */
+  readonly errorDetail?: string;
 }
 
 export interface PhaseStat {
