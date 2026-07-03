@@ -216,8 +216,7 @@ export class SandboxSession {
     } catch {
       /* already torn down */
     }
-    this.driver.kill(c.name);
-    this.driver.remove(c.name);
+    this.driver.dispose(c.name);
   }
 
   private callDeadline(): number {
