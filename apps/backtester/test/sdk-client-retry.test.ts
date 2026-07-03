@@ -48,6 +48,19 @@ describe('SDK retry policy', () => {
     expect(sleeps[0]).toBeLessThanOrEqual(50); // capped by maxDelayMs
   });
 
+  it('clamps an oversized numeric Retry-After to the 60s ceiling', async () => {
+    const sleeps: number[] = [];
+    const client = clientWith([err429('120'), ok({ runId: 'r' })], sleeps);
+    await client.submitRun({} as never);
+    expect(sleeps).toEqual([60_000]); // 120s advertised → clamped, not honored verbatim
+  });
+
+  it('exposes retryAfterS on the exhausted BacktesterRateLimitError', async () => {
+    const sleeps: number[] = [];
+    const client = clientWith([err429('5'), err429('5'), err429('7')], sleeps);
+    await expect(client.submitRun({} as never)).rejects.toMatchObject({ retryAfterS: 7 });
+  });
+
   it('exhausts maxAttempts on persistent 429 and throws BacktesterRateLimitError', async () => {
     const sleeps: number[] = [];
     const client = clientWith([err429(), err429(), err429()], sleeps);
