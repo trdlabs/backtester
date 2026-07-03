@@ -111,22 +111,21 @@ export class DockerDriver {
     spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
   }
 
-  /** Асинхронный best-effort teardown: kill → (по завершении) rm, ошибки проглатываются.
-   *  Не блокирует event loop (в отличие от sync kill/remove) — используется на пути close(). */
+  /** Асинхронный best-effort teardown: kill → rm ОДНИМ detached-шеллом (порядок гарантирует `;`).
+   *  Не блокирует event loop, и — критично — переживает выход родительского процесса: прежняя
+   *  JS-колбэчная цепочка (kill.on('close') → spawn rm) ТЕРЯЛА rm, когда процесс выходил сразу
+   *  после close() (например, тестовый воркер vitest) — контейнер с детерминированным именем
+   *  (FR-024) оставался жить, и следующий спавн того же имени падал с
+   *  "Conflict: the container name is already in use". Имена приходят из sessionContainerName
+   *  (безопасный чарсет), но квотируем всё равно. */
   dispose(name: string): void {
-    const kill = spawn('docker', ['kill', '-s', 'KILL', name], { stdio: 'ignore' });
-    kill.unref?.();
-    // rm runs ONE-SHOT after kill settles — 'close' OR 'error' (spawn-failure may never emit
-    // 'close'), guarded against double-run when both fire.
-    let removed = false;
-    const removeOnce = (): void => {
-      if (removed) return;
-      removed = true;
-      const rm = spawn('docker', ['rm', '-f', name], { stdio: 'ignore' });
-      rm.unref?.();
-      rm.on('error', () => {});
-    };
-    kill.on('error', removeOnce);
-    kill.on('close', removeOnce);
+    const quoted = `'${name.replace(/'/g, `'\\''`)}'`;
+    const child = spawn(
+      'sh',
+      ['-c', `docker kill -s KILL ${quoted} >/dev/null 2>&1; docker rm -f ${quoted} >/dev/null 2>&1`],
+      { detached: true, stdio: 'ignore' },
+    );
+    child.on('error', () => {});
+    child.unref();
   }
 }
