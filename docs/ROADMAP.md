@@ -286,7 +286,16 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     `spawnSync` teardown — process-per-slot stays the right worker shape until 17b/17c land.
     First action after the VPS move: re-profile there (WSL2 inflates pipe RTT and docker spawn).
 
-17b. **Speculative bar batching (attacks the ~45–50% IPC-wait).** Protocol today is strict lockstep
+17b. ✅ **IMPLEMENTED, default OFF (PR #83, squash `a08c4d5`, 2026-07-05) — Speculative bar batching.**
+    Refactor-first (`runSymbol` → `preBarStages`/`processBar`, golden-proven before feature code);
+    `hookBatch` protocol with in-harness early-stop (no rollback exists), eager-build +
+    snapshot-rewind tail boundary, hostile-line fail-closed; engine gate
+    (flag+method+flat+no-overlays); batch prefix reuses lockstep per-bar helpers. **Golden gate:
+    lockstep vs N=2/3/64 `result_hash` byte-identical FIRST RUN + determinism replay.** Flags:
+    `BACKTESTER_BAR_BATCHING` (default false) / `BACKTESTER_BATCH_BARS` (64, clamp ≥2).
+    NEXT: measure on the VPS (17a re-profile lockstep vs batched at N=64/32/16) BEFORE enabling in
+    the working env; 17c decision rides those numbers. Original design text:
+    Protocol before this change was strict lockstep
     NDJSON, 1 message per hook per bar. Batch FLAT stretches (no position, no pending decisions —
     snapshots are then a pure function of the tape): send N bars in one message, harness replays them
     in order against the live instance, host rolls back to the FIRST bar with a non-empty decision and
