@@ -1,7 +1,7 @@
 # Tier 2 lite — ingress backpressure + connection hardening (Phase D item 16 subset) — design
 
-Date: 2026-07-04
-Status: draft, awaiting user review
+Date: 2026-07-04 (rev 2 — technical anchor applied after user review)
+Status: approved for planning
 Context: ROADMAP Phase D item 16, scoped to the four guards agreed as the pre-load-growth slice:
 Pg pool knob, statement timeout, queue-depth cap → 429/Retry-After, SDK retry/backoff. Bundle-by-ref
 and LISTEN/NOTIFY stay in item 16 for later slices. No perf refactor (17b/17c) rides in here.
@@ -42,14 +42,19 @@ number; statementTimeoutMs?: number })`.
 
 - `BACKTESTER_QUEUE_MAX_DEPTH` (default **0** = unlimited — today's behavior).
 - `BACKTESTER_QUEUE_RETRY_AFTER_S` (default **30**) — the `Retry-After` header value.
-- In `submitRun`, when the cap is set: read `store.countQueueStats(now)` (shipped in #79) and, if
-  `depth >= cap` AND the submit would CREATE a new job, reply
-  `429 { error: 'queue_full', queueDepth, maxDepth }` with `Retry-After: <s>`; nothing is persisted,
-  no bundle is written (the check runs BEFORE the bundle-store `put`).
-- **Idempotent replays always pass:** a submit carrying a `resumeToken` that matches an existing job
-  re-attaches (insertOrGet get-path) regardless of depth — a 429 on a replay would break the
-  crash-recovery contract. Mechanics (lookup-before-cap vs cap-after-insertOrGet-get) chosen in the
-  plan from `insertOrGet`'s actual shape; the behavioral contract is fixed here.
+- **Anchored submit flow (fixed, not plan-chosen):**
+  `validate → requestFingerprint → [resumeToken? findByResumeToken → existing ⇒ replay (fingerprint
+  match) / 409 (mismatch)] → [new job AND cap set AND depth >= cap ⇒ 429, NO bundle write] →
+  bundleStore.put → insertOrGet/create`.
+- **New `JobStore.findByResumeToken(resumeToken: string): Promise<JobRow | undefined>`** in the
+  interface + BOTH implementations (Pg: served by the existing partial unique index
+  `ux_backtest_job_resume_token`) + conformance tests — the cheap replay lookup that runs BEFORE
+  `bundleStore.put`, so replays never pay a bundle write and never see the cap.
+- When the cap trips: reply `429 { error: 'queue_full', queueDepth, maxDepth }` with
+  `Retry-After: <s>`; nothing persisted, no bundle written.
+- **429 is NOT a validation error:** the submit error surface gains a distinct category
+  `rate_limit` (SubmitError category or a special-cased route mapping — plan picks from the actual
+  SubmitError shape); consumers must be able to discriminate it from `validation_error`.
 - The check is best-effort (racy by design): N concurrent submits near the cap may all pass — the
   cap is a backstop against runaway bursts, not an exact semaphore.
 
@@ -61,7 +66,8 @@ number; statementTimeoutMs?: number })`.
   (defaults **3 / 500 / 10000**, full jitter).
 - Retry policy (default ON — safe by construction):
   - **429**: always retryable (nothing was created); wait = `Retry-After` header if present, else
-    backoff.
+    backoff. **Scope anchor: only NUMERIC-SECONDS `Retry-After` is honored in this PR** (the
+    HTTP-date form is ignored → falls back to backoff); explicit and documented, not an oversight.
   - **GET requests**: also retry on network errors and 502/503/504.
   - **POST/mutations**: retry on 429 always; on network errors / 502-504 ONLY when the request
     carries a `resumeToken` (idempotent replay by contract). A non-idempotent POST network failure
