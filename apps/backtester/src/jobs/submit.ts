@@ -7,16 +7,23 @@ import { METRIC_CATALOG as OVERLAY_METRIC_CATALOG } from '@trading/research-cont
 import { validateBundle } from '../sandbox/bundle';
 import type { BundleStore } from '../sandbox/bundle-store';
 import { requestFingerprint, storedRequestFingerprint } from './fingerprint';
-import { toHandle, type JobEventRow, type JobStore, type NewJob } from './job-store';
+import { toHandle, type JobEventRow, type JobRow, type JobStore, type NewJob } from './job-store';
 
 export class SubmitError extends Error {
+  readonly category: string;
+  readonly retryAfterS?: number;
+  readonly extras?: Record<string, number>;
   constructor(
     readonly statusCode: number,
     readonly code: string,
     message: string,
+    opts?: { category?: string; retryAfterS?: number; extras?: Record<string, number> },
   ) {
     super(message);
     this.name = 'SubmitError';
+    this.category = opts?.category ?? 'validation_error';
+    if (opts?.retryAfterS !== undefined) this.retryAfterS = opts.retryAfterS;
+    if (opts?.extras !== undefined) this.extras = opts.extras;
   }
 }
 
@@ -90,6 +97,13 @@ function validate(req: RunSubmitRequest): void {
   }
 }
 
+/** Replay contract: same resumeToken must carry the same run-affecting request. */
+function assertReplayFingerprint(job: JobRow, fingerprint: string): void {
+  if (storedRequestFingerprint(job.request, job.bundleHash ?? null) !== fingerprint) {
+    throw new SubmitError(409, 'resume_token_conflict', 'resume token reused with a different request');
+  }
+}
+
 function eventRow(
   store: JobStore,
   uid: string,
@@ -122,6 +136,19 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promi
   const fingerprint = requestFingerprint(body);
   const now = deps.clock();
 
+  // Anchored flow: cheap replay pre-lookup BEFORE any bundle write. Guarantee is for ESTABLISHED
+  // replays (the token's job already exists): they re-attach without paying bundleStore.put and
+  // (Task 4) without seeing the queue cap. A CONCURRENT first-submit race (two initial submits with
+  // one token, neither committed yet) may still pay one extra bundle put before the insertOrGet
+  // backstop below deduplicates the job — accepted; content-addressed puts are idempotent.
+  if (body.resumeToken !== undefined) {
+    const existing = await deps.store.findByResumeToken(body.resumeToken);
+    if (existing) {
+      assertReplayFingerprint(existing, fingerprint);
+      return { handle: toHandle(existing, true), created: false };
+    }
+  }
+
   // Store a submitted bundle in the own content-addressed registry; the job keeps only the hash.
   let storedBundleHash: ContentHash | undefined;
   if (body.moduleBundle) {
@@ -151,9 +178,7 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promi
 
   const { job, created } = await deps.store.insertOrGet(newJob);
   if (!created) {
-    if (storedRequestFingerprint(job.request, job.bundleHash ?? null) !== fingerprint) {
-      throw new SubmitError(409, 'resume_token_conflict', 'resume token reused with a different request');
-    }
+    assertReplayFingerprint(job, fingerprint);
     return { handle: toHandle(job, true), created: false };
   }
 
