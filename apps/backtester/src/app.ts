@@ -141,6 +141,8 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     dedupEnabled: config.dedupEnabled,
     ...(computeLock ? { computeLock } : {}),
     coalesceEnabled: config.coalesceEnabled,
+    barBatching: config.barBatching,
+    batchBars: config.batchBars,
     computeLockTtlMs: config.computeLockTtlMs,
     computeWaitMaxAttempts: config.computeWaitMaxAttempts,
     ...(obs ? { obs } : {}),

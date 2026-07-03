@@ -57,6 +57,8 @@ export interface RunDeps {
   readonly router?: ExecutorRouter; // 019 — sandbox-aware router; дефолт = trusted-only
   readonly sandboxPolicyRef?: Ref; // 019 — дефолт default_sandbox@1.0.0 (используется при сборке router'а)
   readonly sandboxPolicies?: SandboxPolicyRegistry; // 019
+  /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Absent ⇒ lockstep (default). */
+  readonly barBatching?: { readonly maxBars: number };
 }
 
 /** Поддерживаемые точки перехвата overlay (MVP). */
@@ -322,6 +324,8 @@ interface BarEnv {
   readonly gridMinutes: number;
   readonly fundingCol: ReturnType<NonNullable<MarketTapeDataset['funding']>> | undefined;
   readonly gridTs: readonly number[];
+  /** 17b: inert plumbing — nothing reads this yet (Task 4 wires the batch path). */
+  readonly batch?: { readonly maxBars: number };
 }
 
 /** Stages (1)+(2): settle pending from t-1 at open(t), then intrabar protection check. */
@@ -504,6 +508,7 @@ async function runSymbol(
   engine: SimEngine,
   acc: RunAccumulators,
   marketTape: MarketTapeDataset | undefined,
+  barBatching: { readonly maxBars: number } | undefined,
 ): Promise<void> {
   const n = candles.length;
   if (n === 0) return;
@@ -518,7 +523,7 @@ async function runSymbol(
   // sandbox → открыть контейнер + init-хук. Вызывается всегда (sandbox-сессия открывается и без 'init').
   await strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
 
-  const env: BarEnv = { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs };
+  const env: BarEnv = { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs, ...(barBatching ? { batch: barBatching } : {}) };
 
   for (let t = 0; t < n; t += 1) {
     preBarStages(env, t);
@@ -553,6 +558,7 @@ async function simulateTarget(
   riskProfileRef: Ref,
   executionProfileRef: Ref,
   marketTape: MarketTapeDataset | undefined,
+  barBatching: { readonly maxBars: number } | undefined,
 ): Promise<BacktestRunResult> {
   const acc: RunAccumulators = {
     decisionRecords: [],
@@ -592,7 +598,7 @@ async function simulateTarget(
       target.strategy.moduleFactory !== undefined
         ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
         : target.strategy;
-    await runSymbol(symbol, candles, builder, symbolStrategy, overlays, portfolio, engine, acc, marketTape);
+    await runSymbol(symbol, candles, builder, symbolStrategy, overlays, portfolio, engine, acc, marketTape, barBatching);
     barsProcessed += candles.length;
   }
 
@@ -773,6 +779,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
       request.riskProfileRef,
       request.executionProfileRef,
       marketTape,
+      deps.barBatching,
     );
 
     let variant: BacktestRunResult | null = null;
@@ -786,6 +793,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
         request.riskProfileRef,
         request.executionProfileRef,
         marketTape,
+        deps.barBatching,
       );
       comparison = computeComparison(baseline, variant);
     }

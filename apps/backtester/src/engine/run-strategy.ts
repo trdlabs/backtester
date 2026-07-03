@@ -9,6 +9,8 @@ export interface StrategyRunDeps {
   readonly registry: TrustedModuleRegistry;
   readonly marketTape?: MarketTapeDataset;
   readonly router?: ExecutorRouter;
+  /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Absent ⇒ lockstep. */
+  readonly barBatching?: { readonly maxBars: number };
 }
 
 /**
@@ -26,5 +28,6 @@ export async function runStrategyBacktest(
     registry: deps.registry,
     marketTape: deps.marketTape,
     ...(deps.router ? { router: deps.router } : {}),
+    ...(deps.barBatching ? { barBatching: deps.barBatching } : {}),
   });
 }

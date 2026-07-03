@@ -92,6 +92,10 @@ export interface WorkerDeps extends CompletionDeps {
   unregisterLeader?: (computeIdentity: string) => void;
   /** Per-job observability registry. Absent ⇒ observability is OFF (no timing, no log line). */
   obs?: ObsRegistry;
+  /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Default off (dark launch). */
+  barBatching?: boolean;
+  /** 17b: max bars per hookBatch (clamped >= 2 by config). */
+  batchBars?: number;
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -542,6 +546,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         registry,
         marketTape,
         ...(sandboxRouter ? { router: sandboxRouter } : {}),
+        ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
       });
       if (outcome.status !== 'completed') {
         throw new RunnerError(
