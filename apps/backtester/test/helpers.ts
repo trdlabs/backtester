@@ -45,6 +45,7 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     coalesceEnabled: false,
     barBatching: false,
     batchBars: 64,
+    queueNotify: false,
     computeLockTtlMs: 30_000,
     computeWaitMaxAttempts: 3,
     queueMaxDepth: 0,

@@ -110,6 +110,8 @@ export interface AppConfig {
   readonly barBatching: boolean;
   /** 17b: max bars per hookBatch (clamped >= 2). */
   readonly batchBars: number;
+  /** Queue-wake LISTEN/NOTIFY enabled (Phase D item 16). Default off. */
+  readonly queueNotify: boolean;
   /** Compute-lock TTL (ms). Default = workerLeaseTtlMs. */
   readonly computeLockTtlMs: number;
   /** compute_wait_attempts poison cap. Default 3. */
@@ -255,6 +257,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // `|| 64` OUTSIDE the max: garbage → NaN → 64, while '0'/'1' clamp to the floor 2 (a falsy-zero
     // inside would silently resolve '0' to 64 — the master flag, not batchBars, is the off switch).
     batchBars: Math.max(2, Math.floor(Number(env.BACKTESTER_BATCH_BARS ?? 64))) || 64,
+    queueNotify: env.BACKTESTER_QUEUE_NOTIFY === 'true',
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),
