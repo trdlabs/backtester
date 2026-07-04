@@ -39,6 +39,8 @@ export interface SubmitDeps {
   queueRetryAfterS?: number;
 }
 
+const CONTENT_HASH_RE = /^sha256:[0-9a-f]{64}$/;
+
 const VALID_MODES = new Set(['research', 'review', 'promotion']);
 const VALID_METRICS = new Set<string>(METRIC_CATALOG);
 // Overlay runs execute the lifted engine, whose metric vocabulary is the platform/research catalog
@@ -166,15 +168,31 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promi
   }
 
   // Store a submitted bundle in the own content-addressed registry; the job keeps only the hash.
+  // A caller may reference an already-uploaded bundle by hash (bundleRef) instead of resending its
+  // bytes (moduleBundle) — the two are mutually exclusive.
+  if (body.moduleBundle && body.bundleRef) {
+    throw new SubmitError(400, 'validation_error', 'provide either moduleBundle or bundleRef, not both');
+  }
   let storedBundleHash: ContentHash | undefined;
-  if (body.moduleBundle) {
+  if (body.bundleRef) {
+    if (!CONTENT_HASH_RE.test(body.bundleRef)) {
+      throw new SubmitError(400, 'validation_error', `malformed bundleRef: ${body.bundleRef}`);
+    }
+    if (!deps.bundleStore) {
+      throw new SubmitError(400, 'validation_error', 'module bundle submission is not enabled');
+    }
+    if (!(await deps.bundleStore.has(body.bundleRef))) {
+      throw new SubmitError(409, 'unknown_bundle', `unknown bundle: ${body.bundleRef}`);
+    }
+    storedBundleHash = body.bundleRef;
+  } else if (body.moduleBundle) {
     if (!deps.bundleStore) {
       throw new SubmitError(400, 'validation_error', 'module bundle submission is not enabled');
     }
     storedBundleHash = await deps.bundleStore.put(body.moduleBundle);
   }
 
-  const { moduleBundle: _omitBundle, ...rest } = body;
+  const { moduleBundle: _omitBundle, bundleRef: _omitRef, ...rest } = body;
   const newJob: NewJob = {
     jobId: runId,
     runId,
