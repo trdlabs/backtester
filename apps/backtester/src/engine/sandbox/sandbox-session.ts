@@ -76,6 +76,12 @@ export class SandboxSession {
   private lastBarTs: number | undefined; // non-universe — unchanged
   private readonly perSymbol = new Map<string, { barIndex: number; lastBarTs?: number }>(); // universe
   private readonly initializedSymbols = new Set<string>(); // universe: symbols whose init was sent
+  // Universe mode (Task 6): per-symbol fail-closed latch. A HARNESS-level `err` (strategy exception
+  // caught by the harness, container alive) degrades only the offending symbol — this map records
+  // it so every subsequent callHook/callHookBatch for that symbol returns fail-closed immediately,
+  // without reaching the harness, while other symbols keep running on the shared container. A
+  // channel-level death (eof/timeout/overflow/malformed) is session-fatal (`this.fail()`, unchanged).
+  private readonly failedSymbols = new Map<string, SessionError>();
   private sessionDeadlineEpoch = Number.POSITIVE_INFINITY;
   private failed = false;
   private lastError?: SessionError;
@@ -242,6 +248,10 @@ export class SandboxSession {
     if (this.failed) {
       return { ok: false, decisions: [], error: this.lastError };
     }
+    if (this.cfg.universe === true) {
+      const prior = this.failedSymbols.get(ctx.symbol);
+      if (prior !== undefined) return { ok: false, decisions: [], error: prior }; // symbol latched → fail-closed
+    }
     if (this.channel === undefined) {
       const opened = await this.open();
       if (!opened.ok) return opened;
@@ -272,7 +282,14 @@ export class SandboxSession {
       this.profHookCalls += 1;
     }
     if (outcome.kind === 'ok') return { ok: true, decisions: outcome.decisions };
-    return this.fail(this.mapFailure(outcome, hook, 'sandbox_crashed'));
+    const error = this.mapFailure(outcome, hook, 'sandbox_crashed');
+    if (this.cfg.universe === true && outcome.kind === 'err') {
+      // per-symbol soft failure: the harness caught a strategy exception; the container is alive.
+      // Latch THIS symbol (remaining bars fail-closed) but keep the session — other symbols run on.
+      this.failedSymbols.set(ctx.symbol, error);
+      return { ok: false, decisions: [], error };
+    }
+    return this.fail(error); // container death (eof/timeout/overflow/malformed) or non-universe: session-fatal
   }
 
   /**
@@ -337,6 +354,14 @@ export class SandboxSession {
    */
   async callHookBatch(ctxs: readonly StrategyContext[]): Promise<BatchHookResult> {
     if (this.failed) return { ok: false, stoppedAt: -1, error: this.lastError };
+    if (this.cfg.universe === true && ctxs.length > 0) {
+      const prior = this.failedSymbols.get(ctxs[0]!.symbol);
+      // symbol latched → fail-closed immediately, without sending. stoppedAt: -1 (not 0) matches this
+      // file's own convention for "failure before/at the first bar of the batch" (see the `this.failed`
+      // early-return above and both generic-error returns below) — sandbox-executor.ts's error
+      // attribution reads `ctxs[stoppedAt + 1]`, so -1 correctly points back at ctxs[0].
+      if (prior !== undefined) return { ok: false, stoppedAt: -1, error: prior };
+    }
     if (this.channel === undefined) {
       const opened = await this.open();
       if (!opened.ok) return { ok: false, stoppedAt: -1, error: this.lastError };
@@ -407,14 +432,26 @@ export class SandboxSession {
         // absolute barIndex after processing entry i, so this doesn't assume every entry advanced it.
         const mapped: SessionError = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
         const error: SessionError = { ...mapped, barIndex: bookkeepingAfter[barOffset].barIndex };
-        this.fail(error); // fail-closed side effects (close + latch); its HookResult return is unused here
+        if (this.cfg.universe === true) {
+          // per-symbol soft failure: the harness caught a strategy exception mid-batch; container
+          // alive. Latch batchSymbol (its remaining bars fail-closed) but keep the session running.
+          this.failedSymbols.set(batchSymbol, error);
+        } else {
+          this.fail(error); // non-universe: session-fatal (unchanged)
+        }
         return finish({ ok: false, stoppedAt: barOffset - 1, error });
       }
       // barOffset out of range for this batch — cannot trust it to index bookkeepingAfter; fall
       // through to the generic (non-barOffset) error mapping below instead of indexing blindly.
     }
     const error: SessionError = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
-    this.fail(error);
+    if (this.cfg.universe === true && outcome.kind === 'err') {
+      // harness-level err without a usable barOffset — container still alive; soft-latch the symbol
+      // rather than tearing down the shared session (mirrors the barOffset branch above).
+      this.failedSymbols.set(batchSymbol, error);
+      return finish({ ok: false, stoppedAt: -1, error });
+    }
+    this.fail(error); // channel death (eof/timeout/overflow/malformed) or non-universe: session-fatal
     return finish({ ok: false, stoppedAt: -1, error });
   }
 

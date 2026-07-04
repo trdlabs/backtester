@@ -45,6 +45,7 @@ class ScriptedDriver extends DockerDriver {
   readonly stderr = new PassThrough();
   spawnCount = 0;
   lastName: string | undefined;
+  disposeCount = 0;
 
   get sent(): unknown[] {
     return this.stdin.sent;
@@ -64,7 +65,7 @@ class ScriptedDriver extends DockerDriver {
   }
 
   override dispose(): void {
-    /* no-op — nothing real to tear down */
+    this.disposeCount += 1;
   }
 }
 
@@ -117,6 +118,15 @@ function makeCtx(symbol: string, ts: number): StrategyContext {
 /** Write a scripted `{t:'ok', decisions:[]}` response line to the fake container's stdout. */
 function writeOk(driver: ScriptedDriver): void {
   driver.stdout.write(`${JSON.stringify({ t: 'ok', decisions: [] })}\n`);
+}
+
+/**
+ * Write a scripted `{t:'err', ...}` response line — the harness caught a strategy exception, the
+ * CONTAINER stays alive (this is the "soft" per-symbol failure this task fail-closes on, as
+ * distinct from an `eof`/`timeout`/`overflow`/`malformed` channel/container death).
+ */
+function writeErr(driver: ScriptedDriver, detail = 'strategy threw'): void {
+  driver.stdout.write(`${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail, hook: 'onBarClose' })}\n`);
 }
 
 describe('SandboxSession universe mode', () => {
@@ -220,5 +230,78 @@ describe('SandboxSession universe mode', () => {
     const lastHook = hookEntries[hookEntries.length - 1]!;
     expect(lastHook.newBar).toEqual({ ts: 2 * 60_000, open: 1, high: 1, low: 1, close: 1, volume: 1 });
     expect(lastHook.snapshot.barIndex).toBe(2);
+  });
+
+  // Task 6 — per-symbol fail-closed. A harness `err` (the sandboxed strategy threw; the harness
+  // caught it and the container is still alive) must degrade ONLY the offending symbol, not the
+  // whole (shared) universe session — other symbols keep running on the same container.
+  it('a harness err for symbol AAA fails-closed AAA only — the container stays up and BBB still runs', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
+    writeOk(driver); // reply to init(AAA)
+    writeErr(driver); // reply to hook(AAA, bar0) — harness-caught exception, container alive
+    const r1 = await p1;
+    expect(r1.ok).toBe(false);
+    expect(r1.decisions).toEqual([]);
+    expect(r1.error?.code).toBe('sandbox_crashed');
+    expect(driver.disposeCount).toBe(0); // container NOT torn down
+
+    const p2 = session.callHook('onBarClose', makeCtx('BBB', 0));
+    writeOk(driver); // reply to init(BBB)
+    writeOk(driver); // reply to hook(BBB, bar0)
+    const r2 = await p2;
+    expect(r2.ok).toBe(true); // BBB unaffected by AAA's failure
+
+    expect(driver.spawnCount).toBe(1); // still ONE container for both symbols
+    expect(driver.disposeCount).toBe(0);
+  });
+
+  it('a failed symbol stays fail-closed for its REMAINING bars without further harness calls', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
+    writeOk(driver); // reply to init(AAA)
+    writeErr(driver); // reply to hook(AAA, bar0) → soft err, latches AAA only
+    const r1 = await p1;
+    expect(r1.ok).toBe(false);
+
+    const hooksAfterFirstErr = driver.sent.filter((m) => (m as { t?: string }).t === 'hook').length;
+    expect(hooksAfterFirstErr).toBe(1);
+
+    // AAA's remaining bars must fail-closed IMMEDIATELY, without any new envelope sent to the harness.
+    const r2 = await session.callHook('onBarClose', makeCtx('AAA', 60_000));
+    expect(r2.ok).toBe(false);
+    expect(r2.error?.code).toBe('sandbox_crashed');
+    const r3 = await session.callHook('onBarClose', makeCtx('AAA', 120_000));
+    expect(r3.ok).toBe(false);
+
+    const hooksAfterLatch = driver.sent.filter((m) => (m as { t?: string }).t === 'hook').length;
+    expect(hooksAfterLatch).toBe(1); // no growth — AAA's later bars never reached the harness
+
+    // BBB is a different symbol — unaffected, still runs on the same (alive) container.
+    const p4 = session.callHook('onBarClose', makeCtx('BBB', 0));
+    writeOk(driver); // reply to init(BBB)
+    writeOk(driver); // reply to hook(BBB, bar0)
+    const r4 = await p4;
+    expect(r4.ok).toBe(true);
+    expect(driver.spawnCount).toBe(1);
+  });
+
+  it('an eof (container death) is session-fatal — subsequent symbols also fail-closed', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
+    writeOk(driver); // reply to init(AAA)
+    driver.stdout.end(); // container "exited" before replying to the hook — channel death
+    const r1 = await p1;
+    expect(r1.ok).toBe(false);
+    expect(driver.disposeCount).toBe(1); // session-fatal: container torn down
+
+    // Any subsequent symbol on the same (now-dead) session also fails closed, with no new spawn.
+    const r2 = await session.callHook('onBarClose', makeCtx('BBB', 0));
+    expect(r2.ok).toBe(false);
+    expect(driver.spawnCount).toBe(1);
+    expect(driver.disposeCount).toBe(1);
   });
 });
