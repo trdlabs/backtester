@@ -259,6 +259,19 @@ result is cached — or take over if the leader fails/crashes. Postgres-durable 
 `BACKTESTER_COMPUTE_LOCK_TTL_MS` (default = worker lease TTL), `BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS`
 (default 3). Off = byte-identical to the shipped dedup behavior.
 
+### Recommended single-user working-env config (durable)
+
+`deploy/vps/` captures the recommended single-user posture — **dedup + coalescing + obs ON** — as a
+version-controlled launch config (`backtester.env.example` + `up.sh`/`down.sh`), so enabling them is
+durable, not a fragile one-off env var. Copy the example to `backtester.env`, fill secrets, `./up.sh`.
+Both flags default OFF in code; the config, not the default, is what enables them.
+
+**Enablement verified live (2026-07-04, VPS 89.124.86.84, real Docker sandbox + Postgres):** three
+identical long_oi runs → the engine ran **exactly once**. Leader `dedup:"miss"` (engineMs 4227);
+concurrent follower `dedup:"hit", engineMs:null, queueWaitMs 4948` (coalesced — waited out the leader,
+completed via re-stamp, no engine run); a later identical run `dedup:"hit", engineMs:null, queueWaitMs
+19` (plain cache hit). `/statsz` `{hit:2, miss:1}`. Pg-durable, so the cache survives `down.sh`/reboot.
+
 ### Job observability (Phase C — dedup enablement)
 
 Set `BACKTESTER_JOB_OBS=true` (default off) to turn on minimal per-job observability. Two channels:

@@ -220,7 +220,12 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     statement timeout + queue-depth cap → 429/Retry-After + SDK retry/backoff — the guard before
     any load growth; specs 17b/17c in parallel or after, no perf refactor before backpressure.
     Original item text (env + stale surfaces):
-    - Enable `BACKTESTER_DEDUP_ENABLED` + `BACKTESTER_COALESCE_ENABLED` + `BACKTESTER_JOB_OBS` in the working env (validated PASS, item 11a; code defaults stay OFF).
+    - ✅ **DONE (2026-07-04) — dedup + coalescing + obs enabled in the working env, durably.**
+      `deploy/vps/` (env template + `up.sh`/`down.sh`, dedup+coalesce+obs ON) is the version-controlled
+      single-user launch config; code defaults stay OFF. Verified live on the VPS: three identical
+      long_oi runs → engine ran EXACTLY ONCE (leader `miss` engineMs 4227; concurrent follower coalesced
+      `hit`/engineMs null/queueWait 4948; later `hit`/engineMs null/queueWait 19). `/statsz` `{hit:2,miss:1}`,
+      Pg-durable. See OPERATIONS.md § "Recommended single-user working-env config".
     - `/statsz`: add queue depth + oldest-queued age (`countByStatus()` follow-up) — today a backlog is invisible; this is also the KEDA scaling metric.
     - Fix `/v1/capabilities` advertising a stale hardcoded `maxConcurrency: 1`.
     - **Worker error visibility:** `processNextQueued`'s catch maps `err` to a terminal code and DROPS the

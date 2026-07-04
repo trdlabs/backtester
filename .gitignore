@@ -22,3 +22,6 @@ apps/backtester/.evidence-out/
 # evidence signing key(s) — Ed25519 private PEM for backtest-evidence/v1; NEVER committed
 .secrets/
 *.pem
+
+# VPS stand concrete env (secrets)
+deploy/vps/backtester.env
