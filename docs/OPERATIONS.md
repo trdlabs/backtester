@@ -231,6 +231,12 @@ polling remains the backstop, so a dropped/late notification just costs up to on
 never a stuck job. Cost: **+1 Postgres connection per worker process**, outside `BACKTESTER_PG_POOL_MAX`
 (fleet math: `worker_pods × (pool_max + 1)` + API pods). Kill-switch: set the flag false.
 
+Note: the `pg_notify` **emit** side runs unconditionally on Postgres (on every enqueue/requeue) — the
+flag gates only the **LISTEN/waker** side. With the flag off there is no listener, so each emit is a DB
+no-op costing one extra lightweight `SELECT pg_notify(...)` round-trip on the enqueue path; worker
+claim/drain behavior is byte-for-byte unchanged. This is negligible at single-user scale; if enqueue
+throughput ever becomes hot, gate the emit at construction too.
+
 ### Bundle-by-ref
 
 `POST /v1/bundles` (body = a ModuleBundle) validates the bundle and stores it in the content-addressed
