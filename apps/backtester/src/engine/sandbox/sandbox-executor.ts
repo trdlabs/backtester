@@ -33,6 +33,17 @@ export interface SandboxExecutorDeps {
   // runId/символом не создавали одноимённые контейнеры.
   readonly containerSuffix?: string;
   readonly mount?: MountConfig; // bind (default) | volume (DooD). Threaded into each SandboxSession.
+  // Universe mode (Task 7): when `enabled`, `sessionFor` collapses to ONE shared session (keyed by a
+  // constant, not ctx.symbol) and the config threaded into it carries `universe`/`bundleHash` so
+  // SandboxSession runs its per-symbol-init/bookkeeping path (Tasks 4-6). `n`/`memBaseMb`/
+  // `memPerSymbolMb` are consumed by the ROUTER (deriveUniversePolicy), not the executor itself —
+  // carried here only so the executor can pass `enabled` through to SessionConfig.universe.
+  readonly universe?: {
+    readonly enabled: boolean;
+    readonly n: number;
+    readonly memBaseMb: number;
+    readonly memPerSymbolMb: number;
+  };
 }
 
 /** Каталог собранного harness по умолчанию (dist/src/research/sandbox-harness). */
@@ -48,6 +59,7 @@ export class SandboxModuleExecutor implements ModuleExecutor {
   private readonly harnessDir: string;
   private readonly containerSuffix?: string;
   private readonly mount: MountConfig;
+  private readonly universe?: SandboxExecutorDeps['universe'];
   private readonly collectedErrors: SandboxErrorArtifact[] = [];
 
   constructor(
@@ -59,6 +71,7 @@ export class SandboxModuleExecutor implements ModuleExecutor {
     this.harnessDir = deps?.harnessDir ?? defaultHarnessDir();
     this.containerSuffix = deps?.containerSuffix;
     this.mount = deps?.mount ?? { mode: 'bind' };
+    this.universe = deps?.universe;
   }
 
   /** Накопленные ошибки исполнения (для verify/диагностики US6). */
@@ -67,24 +80,30 @@ export class SandboxModuleExecutor implements ModuleExecutor {
   }
 
   private sessionFor(ctx: StrategyContext): SandboxSession {
-    let s = this.sessions.get(ctx.symbol);
+    // Universe mode: ONE shared session (keyed by a constant) serves every symbol instead of one
+    // session per symbol — the collapse this task implements. Flag off (undefined/false) keys by
+    // ctx.symbol, byte-identical to pre-Task-7 behavior.
+    const key = this.universe?.enabled === true ? '__universe__' : ctx.symbol;
+    let s = this.sessions.get(key);
     if (s === undefined) {
       s = new SandboxSession(
         this.bundle,
         this.policy,
         {
           runId: ctx.run.runId,
-          symbol: ctx.symbol,
+          symbol: ctx.symbol, // seeds the first symbol; universe mode inits each symbol per-hook
           seed: ctx.run.seed,
           params: ctx.params,
           kind: this.bundle.manifest.kind === 'overlay' ? 'overlay' : 'strategy',
           containerSuffix: this.containerSuffix,
+          universe: this.universe?.enabled === true,
+          bundleHash: this.bundle.descriptor.bundleHash,
         },
         this.driver,
         this.harnessDir,
         this.mount,
       );
-      this.sessions.set(ctx.symbol, s);
+      this.sessions.set(key, s);
     }
     return s;
   }
@@ -184,7 +203,8 @@ export class SandboxModuleExecutor implements ModuleExecutor {
   }
 
   async disposeStrategy(_module: StrategyModule, ctx: StrategyContext): Promise<void> {
-    const s = this.sessions.get(ctx.symbol);
+    const key = this.universe?.enabled === true ? '__universe__' : ctx.symbol;
+    const s = this.sessions.get(key);
     if (s !== undefined && this.bundle.manifest.hooks.includes('dispose')) {
       const r = await s.callHook('dispose', ctx);
       if (!r.ok && r.error !== undefined) this.record(r.error, ctx);
