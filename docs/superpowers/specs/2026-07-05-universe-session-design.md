@@ -39,18 +39,18 @@ Enable top-300/400-symbol universe backtests on small hardware by replacing **on
 
 ### 2. Harness: N instances keyed by symbol
 
-`entry.mjs` replaces its single `instance`/`buffer` with `const instances = new Map<symbol, {instance, buffer}>`. On the first `init`/`hook` for a symbol, it constructs that symbol's strategy instance and candle buffer; subsequent hooks route by `req.symbol`. Same isolation semantics — the security boundary is **bundle ↔ host**, not symbol ↔ symbol (all instances are the same trusted-or-sandboxed bundle code, already co-resident by design). `hook-batch.mjs` (17b, inert) is updated for the keyed lookup so it stays consistent, but remains engine-unwired.
+`entry.mjs` replaces its single `instance`/`buffer` with `const instances = new Map<symbol, {instance, buffer}>`. On the first `init`/`hook` for a symbol, it constructs that symbol's strategy instance and candle buffer; subsequent hooks route by `req.symbol`. Same isolation semantics — the security boundary is **bundle ↔ host**, not symbol ↔ symbol (all instances are the same trusted-or-sandboxed bundle code, already co-resident by design). On a per-symbol instance failure the harness emits a **symbol-scoped `err` envelope** (not a fake `ok:[]`), so the failure surfaces to the host rather than being swallowed in-container (see §4). `hook-batch.mjs` (17b, inert) is updated for the keyed lookup so it stays consistent, but remains engine-unwired.
 
 ### 3. Container & policy
 
-- **One container per bundle.** `docker-driver.ts` container name drops the symbol segment → `sbx-<runId>-<moduleId>-<version>`. Both strategy and overlay executors get exactly one container each (2 total), via the generic executor-level change.
-- **Memory:** `memoryBytes = base + k × N` (N = symbol count), `base`/`k` configurable with measured defaults (measured on the VPS — see Open items). Holds the same aggregate data N separate containers held, now in one process.
-- **Wall time:** `wallTimeMsPerCall` unchanged (2s, per hook). `wallTimeMsPerSession` scales with N (the session now runs all N symbols sequentially) — `sessionBudgetPerSymbol × N`.
-- **Soft cap:** a configurable `maxUniverseN`; a run whose symbol count exceeds it is **rejected** at submit/validate time with a clear error (never silently over-committed to memory). Auto-sharding into multiple containers is a follow-up, not this slice.
+- **One container per bundle.** With the symbol segment gone, the container name must stay unique across the strategy and overlay bundles — include the **kind and bundle hash** so two bundles sharing a `moduleId`/`version` can't collide: `sbx-<runId>-<kind>-<bundleHashShort>` (kind ∈ `strategy|overlay`). Both executors get exactly one container each (2 total), via the generic executor-level change.
+- **Memory:** `memoryBytes = base + k × N` (N = symbol count). **Conservative defaults ship as-is** (VPS only tunes): `base = 128 MiB`, `k = 8 MiB/symbol`. Holds the same aggregate data N separate containers held, now in one process.
+- **Wall time:** `wallTimeMsPerCall` unchanged (2s, per hook). `wallTimeMsPerSession = perSymbolSessionMs × N` (the session runs all N symbols sequentially); `perSymbolSessionMs` default = today's `30s`.
+- **Soft cap:** configurable `maxUniverseN`, **conservative default `64`** (the VPS run tunes it upward once headroom is measured; universes beyond it wait for the auto-shard follow-up). Enforcement is **pre-execution validation, not the HTTP submit layer** — the symbol-count check lives alongside the existing request/refs/overlays validation at the top of `runBacktest` (`runner.ts`), returning a `validation_error` outcome so nothing is spawned. It is NOT added to the `POST /v1/runs` handler.
 
 ### 4. Failure semantics (per-symbol fail-closed)
 
-- **Per-symbol error (one instance throws / emits schema-invalid / times out on its call):** caught **inside the harness** for that symbol; that symbol's hook returns `[]` decisions (fail-closed → contributes zero orders for that bar), other symbols' instances keep running. This preserves today's "one symbol degrades, the run keeps going" behavior — now enforced in-harness rather than by container isolation.
+- **Per-symbol error (one instance throws / emits schema-invalid / times out on its call):** the harness catches it for that symbol and returns a **symbol-scoped `err` envelope** to the host (carrying the symbol + reason) rather than silently swallowing it. The host applies fail-closed for that bar (`[]` decisions → zero orders) AND records the symbol-tagged error via `ExecutorRouter.errors()`, so a degraded symbol is **observable**, not invisible — preserving the per-symbol diagnostic that separate containers gave for free. Other symbols' instances keep running. This keeps today's "one symbol degrades, the run keeps going" behavior; the resulting `RunOutcome` for that symbol (all-idle) is identical to the per-symbol path under the same failure.
 - **Whole-container / process crash (OOM-kill, harness process death):** the single `SandboxSession.fail()` latch now marks the universe session failed ⇒ **all N symbols** in that container degrade to fail-closed `idle` for their remaining bars, and the run still completes (no throw), matching today's per-session fail-closed but with a wider blast radius. **This is the accepted tradeoff of container-collapse.** The soft cap bounds that blast radius (and memory); auto-shard (follow-up) narrows it further.
 - Errors continue to aggregate via `ExecutorRouter.errors()` for post-run diagnostics, now tagged per symbol within the shared session.
 
@@ -70,8 +70,7 @@ Enable top-300/400-symbol universe backtests on small hardware by replacing **on
 
 ## Open items (resolved during implementation / measurement)
 
-- `base` / `k` memory constants and `maxUniverseN` default — measured on the VPS (89.124.86.84) after the harness change lands; seed with conservative estimates, tune with a real N-symbol run.
-- `sessionBudgetPerSymbol` for the scaled session wall-time — derive from the per-symbol session budget today (30s) × a safety factor.
+- `base`/`k` memory (`128 MiB` / `8 MiB`), `maxUniverseN` (`64`), `perSymbolSessionMs` (`30s`) — **conservative defaults are set in §3 and ship as-is; no blocking measurement.** The VPS (89.124.86.84) run only *tunes* them upward once real N-symbol headroom is measured.
 - Whether to eagerly free a completed symbol's instance mid-run (would cap live memory nearer `base + k×1 + Σ buffers`); deferred — keep all N for simplicity this slice, the soft cap protects memory.
 
 ## Follow-ups (separate slices)
