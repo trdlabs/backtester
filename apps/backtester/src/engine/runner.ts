@@ -59,6 +59,8 @@ export interface RunDeps {
   readonly sandboxPolicies?: SandboxPolicyRegistry; // 019
   /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Absent ⇒ lockstep (default). */
   readonly barBatching?: { readonly maxBars: number };
+  /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap, no scaled policy (byte-identical). */
+  readonly universe?: { readonly enabled: boolean; readonly maxN: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
 }
 
 /** Поддерживаемые точки перехвата overlay (MVP). */
@@ -789,6 +791,16 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
         }
       }
     }
+  }
+
+  // 17c (universe-session cap): reject BEFORE router/engine construction — no sandbox container is
+  // ever spawned for an over-cap request (pre-exec validation, not the HTTP submit handler; SC-003).
+  if (deps.universe?.enabled === true && request.symbols.length > deps.universe.maxN) {
+    return rejected(
+      'incomplete_run_request',
+      `universe run has ${request.symbols.length} symbols, exceeding the configured limit of ${deps.universe.maxN}`,
+      '/symbols',
+    );
   }
 
   const router = deps.router ?? createTrustedRouter(deps.executor);

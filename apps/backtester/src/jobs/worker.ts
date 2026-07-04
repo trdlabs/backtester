@@ -96,6 +96,8 @@ export interface WorkerDeps extends CompletionDeps {
   barBatching?: boolean;
   /** 17b: max bars per hookBatch (clamped >= 2 by config). */
   batchBars?: number;
+  /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap, no scaled policy (byte-identical). */
+  universe?: { enabled: boolean; maxN: number; memBaseMb: number; memPerSymbolMb: number };
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -130,12 +132,16 @@ async function executorFor(
   return new SandboxModuleExecutor(bundle, deps.sandbox);
 }
 
-function overlayRouterFor(deps: WorkerDeps): ExecutorRouter {
+function overlayRouterFor(deps: WorkerDeps, symbolsCount?: number): ExecutorRouter {
   const policy = deps.overlaySandbox.policy;
+  const universe = deps.universe;
   return createExecutorRouter({
     sandboxPolicies: createSandboxPolicyRegistry([policy]),
     sandboxPolicyRef: { id: policy.id, version: policy.version },
     sandboxDeps: overlaySandboxDeps(deps.overlaySandbox),
+    ...(universe?.enabled === true && symbolsCount !== undefined
+      ? { universe: { enabled: true, n: symbolsCount, memBaseMb: universe.memBaseMb, memPerSymbolMb: universe.memPerSymbolMb } }
+      : {}),
   });
 }
 
@@ -540,13 +546,14 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       const r = claimed.request;
       const marketTape = materialized.marketTape!;
       const registry = buildInlineOverlayRegistry([], [sandboxBundle!.bundle]);
-      sandboxRouter = workerInternals.overlayRouterFor(deps);
+      sandboxRouter = workerInternals.overlayRouterFor(deps, r.symbols.length);
       await chargeEngineAttempt(); // INV-5: engine-commit charge (strategy path)
       const outcome = await runStrategyBacktest(engineRequest, {
         registry,
         marketTape,
         ...(sandboxRouter ? { router: sandboxRouter } : {}),
         ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
+        ...(deps.universe ? { universe: deps.universe } : {}),
       });
       if (outcome.status !== 'completed') {
         throw new RunnerError(

@@ -143,6 +143,16 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     coalesceEnabled: config.coalesceEnabled,
     barBatching: config.barBatching,
     batchBars: config.batchBars,
+    ...(config.universeSession
+      ? {
+          universe: {
+            enabled: true,
+            maxN: config.universeMaxN,
+            memBaseMb: config.universeMemBaseMb,
+            memPerSymbolMb: config.universeMemPerSymbolMb,
+          },
+        }
+      : {}),
     computeLockTtlMs: config.computeLockTtlMs,
     computeWaitMaxAttempts: config.computeWaitMaxAttempts,
     ...(obs ? { obs } : {}),
