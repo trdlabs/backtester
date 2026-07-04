@@ -12,7 +12,11 @@ import { PassThrough, Writable } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import type { ModuleManifest, StrategyContext } from '@trading/research-contracts/research';
-import { SandboxSession, type SessionConfig } from '../src/engine/sandbox/sandbox-session.js';
+import {
+  SandboxSession,
+  type SessionConfig,
+  type BatchHookResult,
+} from '../src/engine/sandbox/sandbox-session.js';
 import { DockerDriver, type SpawnedContainer, type DockerRunOptions } from '../src/engine/sandbox/docker-driver.js';
 import { DEFAULT_SANDBOX } from '../src/engine/sandbox-policy.js';
 import type { ModuleBundle } from '../src/engine/sandbox/bundle.js';
@@ -118,6 +122,12 @@ function makeCtx(symbol: string, ts: number): StrategyContext {
 /** Write a scripted `{t:'ok', decisions:[]}` response line to the fake container's stdout. */
 function writeOk(driver: ScriptedDriver): void {
   driver.stdout.write(`${JSON.stringify({ t: 'ok', decisions: [] })}\n`);
+}
+
+/** Narrow a BatchHookResult to its `ok: false` branch (asserts + type-guards in one call) — same
+ * helper as sandbox-session-batch.test.ts uses. */
+function expectFailed(result: BatchHookResult): asserts result is Extract<BatchHookResult, { ok: false }> {
+  expect(result.ok).toBe(false);
 }
 
 /**
@@ -303,5 +313,77 @@ describe('SandboxSession universe mode', () => {
     expect(r2.ok).toBe(false);
     expect(driver.spawnCount).toBe(1);
     expect(driver.disposeCount).toBe(1);
+  });
+
+  // Review gap: Task 6's per-symbol fail-closed was only exercised through callHook's `err` branch;
+  // callHookBatch has its OWN universe soft-err split (sandbox-session.ts ~427-443, the
+  // `outcome.kind === 'err' && outcome.barOffset !== undefined` branch) — a harness `err` WITH a
+  // valid barOffset, meaning the container caught the exception mid-batch and is still alive. This
+  // must isolate the batch's symbol (failedSymbols.set) without tearing the shared session down, the
+  // same soft-fail-closed contract callHook's `err` test already pins, just via the batch wire shape.
+  it('callHookBatch universe soft-err (err+barOffset) isolates the batch symbol — container stays alive, other symbols still run', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const ctxsAAA = [0, 1].map((i) => makeCtx('AAA', i * 60_000));
+    const batchPromise = session.callHookBatch(ctxsAAA);
+    writeOk(driver); // reply to lazy init(AAA)
+    // Harness caught the strategy exception on bar offset 1 mid-batch; container stays alive.
+    driver.stdout.write(
+      `${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail: 'strategy threw', hook: 'onBarClose', barOffset: 1 })}\n`,
+    );
+    const result = await batchPromise;
+
+    expectFailed(result);
+    expect(result.stoppedAt).toBe(0); // barOffset(1) - 1
+    expect(result.error?.code).toBe('sandbox_crashed');
+    expect(driver.disposeCount).toBe(0); // soft err: container NOT torn down
+    expect(driver.spawnCount).toBe(1);
+
+    // BBB is unaffected — same (alive) container, still runs normally.
+    const p2 = session.callHook('onBarClose', makeCtx('BBB', 0));
+    writeOk(driver); // reply to init(BBB)
+    writeOk(driver); // reply to hook(BBB, bar0)
+    const r2 = await p2;
+    expect(r2.ok).toBe(true);
+    expect(driver.spawnCount).toBe(1); // still ONE container
+    expect(driver.disposeCount).toBe(0);
+  });
+
+  // Review gap: the per-symbol LATCH guard (sandbox-session.ts ~357-364) is what makes the soft-err
+  // above actually "fail-closed for the rest of AAA's bars" rather than a one-shot fluke — a
+  // subsequent callHookBatch for the SAME (now-latched) symbol must short-circuit before sending
+  // anything to the harness. callHook's existing test pins this for the single-bar path; this pins
+  // the identical guard on the batch path.
+  it('callHookBatch per-symbol latch: a later AAA batch fails-closed immediately, with no new envelope sent', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const ctxsAAA = [0, 1].map((i) => makeCtx('AAA', i * 60_000));
+    const batchPromise = session.callHookBatch(ctxsAAA);
+    writeOk(driver); // reply to lazy init(AAA)
+    driver.stdout.write(
+      `${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail: 'strategy threw', hook: 'onBarClose', barOffset: 0 })}\n`,
+    );
+    const r1 = await batchPromise;
+    expectFailed(r1);
+
+    const sentCountAfterErr = driver.sent.length;
+    const hookLikeAfterErr = driver.sent.filter(
+      (m) => (m as { t?: string }).t === 'hook' || (m as { t?: string }).t === 'hookBatch',
+    ).length;
+
+    // A later batch for AAA (different bars) must fail-closed IMMEDIATELY via the latch — no
+    // hook/hookBatch envelope reaches the harness, and stoppedAt follows this file's "no bar
+    // processed" convention (-1), matching the this.failed / latched-symbol early returns above.
+    const ctxsAAALater = [2, 3].map((i) => makeCtx('AAA', i * 60_000));
+    const r2 = await session.callHookBatch(ctxsAAALater);
+    expectFailed(r2);
+    expect(r2.stoppedAt).toBe(-1);
+    expect(r2.error?.code).toBe('sandbox_crashed');
+
+    expect(driver.sent.length).toBe(sentCountAfterErr); // stable — nothing new was written
+    const hookLikeAfterLatch = driver.sent.filter(
+      (m) => (m as { t?: string }).t === 'hook' || (m as { t?: string }).t === 'hookBatch',
+    ).length;
+    expect(hookLikeAfterLatch).toBe(hookLikeAfterErr);
   });
 });
