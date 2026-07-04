@@ -8,7 +8,7 @@
 import type { StrategyContext } from '@trading/research-contracts/research';
 import type { ModuleBundle } from './bundle.js';
 import type { SandboxPolicy } from '../sandbox-policy.js';
-import { DockerDriver, type SpawnedContainer, sessionContainerName } from './docker-driver.js';
+import { DockerDriver, type SpawnedContainer, sessionContainerName, universeContainerName } from './docker-driver.js';
 import { AsyncIpcChannel } from './async-ipc-channel.js';
 import { serializeContext, plainBar } from './context-serializer.js';
 import type { SandboxValidationCode } from './errors.js';
@@ -56,6 +56,15 @@ export interface SessionConfig {
   // runId уникален по построению). Используется только тестами, где несколько параллельных файлов
   // переиспользуют один и тот же runId/символ и иначе создавали бы одноимённые контейнеры.
   readonly containerSuffix?: string;
+  // Universe mode (Task 5): ONE container serves N symbols instead of one-container-per-symbol.
+  // When true, the container name comes from `universeContainerName` (kind + bundleHash, no
+  // symbol segment), `init` is sent lazily per-symbol on first hook (not inside open()), and bar
+  // bookkeeping is keyed per-symbol instead of the scalar barIndex/lastBarTs. Absent/false ⇒
+  // byte-identical to the pre-Task-5 one-container-per-symbol path.
+  readonly universe?: boolean;
+  // Bundle content hash — only consumed in universe mode (disambiguates the container name when a
+  // strategy and an overlay bundle share a moduleId/version on the same runId).
+  readonly bundleHash?: string;
 }
 
 /** Сессия sandbox-исполнения одного модуля на одном символе. */
@@ -63,8 +72,10 @@ export class SandboxSession {
   private container?: SpawnedContainer;
   private channel?: AsyncIpcChannel;
   private seq = 0;
-  private barIndex = -1;
-  private lastBarTs: number | undefined;
+  private barIndex = -1;                 // non-universe (single symbol) — unchanged
+  private lastBarTs: number | undefined; // non-universe — unchanged
+  private readonly perSymbol = new Map<string, { barIndex: number; lastBarTs?: number }>(); // universe
+  private readonly initializedSymbols = new Set<string>(); // universe: symbols whose init was sent
   private sessionDeadlineEpoch = Number.POSITIVE_INFINITY;
   private failed = false;
   private lastError?: SessionError;
@@ -105,14 +116,11 @@ export class SandboxSession {
   }
 
   private async openInner(): Promise<HookResult> {
+    if (this.container !== undefined) return { ok: true, decisions: [] }; // universe: container already up
     const { manifest, descriptor, bundleDir } = this.bundle;
-    const name = sessionContainerName(
-      this.cfg.runId,
-      manifest.id,
-      manifest.version,
-      this.cfg.symbol,
-      this.cfg.containerSuffix,
-    );
+    const name = this.cfg.universe === true
+      ? universeContainerName(this.cfg.runId, this.cfg.kind, this.cfg.bundleHash ?? '', this.cfg.containerSuffix)
+      : sessionContainerName(this.cfg.runId, manifest.id, manifest.version, this.cfg.symbol, this.cfg.containerSuffix);
     try {
       const bundleMount = toMountSource(this.mount, bundleDir);
       const harnessMount = toMountSource(this.mount, this.harnessDir);
@@ -131,25 +139,58 @@ export class SandboxSession {
       this.policy.limits,
     );
 
-    this.channel.send({
+    // Universe mode: init is per-symbol (ensureSymbolInit, on each symbol's first hook), NOT sent
+    // here — the container just spawns and the session becomes ready to accept per-symbol inits.
+    if (this.cfg.universe !== true) {
+      this.channel.send({
+        t: 'init',
+        runId: this.cfg.runId,
+        moduleRef: { id: manifest.id, version: manifest.version },
+        symbol: this.cfg.symbol,
+        kind: this.cfg.kind,
+        seed: this.cfg.seed,
+        params: this.cfg.params,
+        manifestHooks: manifest.hooks,
+        entryPoint: descriptor.entryPoint,
+      });
+      // Старт контейнера + загрузка bundle: startup-grace (не compute-квота). Compute-бюджет сессии
+      // (wallTimeMsPerSession) стартует ПОСЛЕ успешного init.
+      const outcome = await this.channel.receive(Date.now() + CONTAINER_STARTUP_GRACE_MS);
+      if (outcome.kind === 'ok') {
+        this.sessionDeadlineEpoch = Date.now() + this.policy.limits.wallTimeMsPerSession;
+        return { ok: true, decisions: [] };
+      }
+      return this.fail(this.mapFailure(outcome, 'init', 'bundle_load_failed'));
+    }
+
+    this.sessionDeadlineEpoch = Date.now() + this.policy.limits.wallTimeMsPerSession;
+    return { ok: true, decisions: [] };
+  }
+
+  /**
+   * Universe mode only: send this symbol's `init` envelope over the (already-open, shared)
+   * container channel on its first hook call, and await the ok before any hook for it proceeds.
+   * No-op (returns undefined immediately) once the symbol is initialized, and always a no-op in
+   * non-universe mode (init there is sent once, inside openInner, for cfg.symbol).
+   */
+  private async ensureSymbolInit(ctx: StrategyContext): Promise<HookResult | undefined> {
+    if (this.cfg.universe !== true || this.initializedSymbols.has(ctx.symbol)) return undefined;
+    const { manifest, descriptor } = this.bundle;
+    this.channel!.send({
       t: 'init',
       runId: this.cfg.runId,
       moduleRef: { id: manifest.id, version: manifest.version },
-      symbol: this.cfg.symbol,
+      symbol: ctx.symbol,
       kind: this.cfg.kind,
       seed: this.cfg.seed,
       params: this.cfg.params,
       manifestHooks: manifest.hooks,
       entryPoint: descriptor.entryPoint,
     });
-    // Старт контейнера + загрузка bundle: startup-grace (не compute-квота). Compute-бюджет сессии
-    // (wallTimeMsPerSession) стартует ПОСЛЕ успешного init.
-    const outcome = await this.channel.receive(Date.now() + CONTAINER_STARTUP_GRACE_MS);
-    if (outcome.kind === 'ok') {
-      this.sessionDeadlineEpoch = Date.now() + this.policy.limits.wallTimeMsPerSession;
-      return { ok: true, decisions: [] };
-    }
-    return this.fail(this.mapFailure(outcome, 'init', 'bundle_load_failed'));
+    const outcome = await this.channel!.receive(Date.now() + CONTAINER_STARTUP_GRACE_MS);
+    if (outcome.kind !== 'ok') return this.fail(this.mapFailure(outcome, 'init', 'bundle_load_failed'));
+    this.initializedSymbols.add(ctx.symbol);
+    return undefined;
   }
 
   /**
@@ -159,15 +200,26 @@ export class SandboxSession {
    * doc comment for how the batch path accounts for (and rewinds) those side effects on early stop.
    */
   private buildHookPayload(ctx: StrategyContext): HookBatchEntry {
+    // Universe mode reads/writes the counter from the per-symbol map; non-universe reads/writes the
+    // scalars (byte-identical to pre-Task-5: same reads, same increments, same write-back).
+    const useMap = this.cfg.universe === true;
+    let st: { barIndex: number; lastBarTs?: number };
+    if (useMap) {
+      st = this.perSymbol.get(ctx.symbol) ?? { barIndex: -1 };
+      this.perSymbol.set(ctx.symbol, st);
+    } else {
+      st = { barIndex: this.barIndex, lastBarTs: this.lastBarTs };
+    }
+
     // newBar: при переходе на новый бар (ts) — закрытая свеча t; повторный хук того же бара → null.
     let newBar = null as ReturnType<typeof plainBar> | null;
     // 023: инкрементальная подача OI/liq минуты t (зеркало newBar), ТОЛЬКО на переходе бара и ТОЛЬКО
     // если лента несёт kind (composition-following). null = gap(t); undefined (опущено) = kind'а нет.
     let newOi: { ts: number; oiTotalUsd: number } | null | undefined;
     let newLiq: { ts: number; longUsd: number; shortUsd: number } | null | undefined;
-    if (ctx.bar.ts !== this.lastBarTs) {
-      this.barIndex += 1;
-      this.lastBarTs = ctx.bar.ts;
+    if (ctx.bar.ts !== st.lastBarTs) {
+      st.barIndex += 1;
+      st.lastBarTs = ctx.bar.ts;
       newBar = plainBar(ctx.bar);
       const m = ctx.market;
       if (m !== undefined) {
@@ -175,8 +227,10 @@ export class SandboxSession {
         if (m.liqWindow(1).length > 0) newLiq = m.liqAsOf() ?? null;
       }
     }
+    if (!useMap) { this.barIndex = st.barIndex; this.lastBarTs = st.lastBarTs; } // write scalars back (non-universe)
+
     return {
-      snapshot: serializeContext(ctx, this.barIndex),
+      snapshot: serializeContext(ctx, st.barIndex),
       newBar,
       ...(newOi !== undefined ? { newOi } : {}),
       ...(newLiq !== undefined ? { newLiq } : {}),
@@ -191,6 +245,10 @@ export class SandboxSession {
     if (this.channel === undefined) {
       const opened = await this.open();
       if (!opened.ok) return opened;
+    }
+    if (this.cfg.universe === true) {
+      const f = await this.ensureSymbolInit(ctx);
+      if (f !== undefined) return f;
     }
     const channel = this.channel;
     if (channel === undefined) return { ok: false, decisions: [], error: this.lastError };
@@ -253,6 +311,10 @@ export class SandboxSession {
     if (this.channel === undefined) {
       const opened = await this.open();
       if (!opened.ok) return { ok: false, stoppedAt: -1, error: this.lastError };
+    }
+    if (this.cfg.universe === true && ctxs.length > 0) {
+      const f = await this.ensureSymbolInit(ctxs[0]!);
+      if (f !== undefined) return { ok: false, stoppedAt: -1, error: f.error };
     }
     const channel = this.channel;
     if (channel === undefined) return { ok: false, stoppedAt: -1, error: this.lastError };
