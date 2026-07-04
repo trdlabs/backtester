@@ -222,6 +222,15 @@ WORKER_CONCURRENCY` — see the capacity-budget formula above.
   honored; the HTTP-date form is ignored → backoff), network/502-504 only for GETs or submits
   carrying a `resumeToken`. `retry: { maxAttempts: 1 }` disables.
 
+### Queue-wake (LISTEN/NOTIFY)
+
+`BACKTESTER_QUEUE_NOTIFY=true` (default false; **Postgres only** — no effect on the in-memory store)
+makes each worker hold one dedicated `LISTEN backtest_job_queued` connection and wake the instant a
+job is enqueued (submit) or requeued (reap), instead of waiting out `WORKER_POLL_MS`. Latency-only:
+polling remains the backstop, so a dropped/late notification just costs up to one poll interval —
+never a stuck job. Cost: **+1 Postgres connection per worker process**, outside `BACKTESTER_PG_POOL_MAX`
+(fleet math: `worker_pods × (pool_max + 1)` + API pods). Kill-switch: set the flag false.
+
 ## Result dedup (Phase C item 11)
 
 Skips redundant compute (engine + sandbox execution) for a run whose identity was already computed
