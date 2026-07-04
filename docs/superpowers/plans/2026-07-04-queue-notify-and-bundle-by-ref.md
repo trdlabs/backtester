@@ -16,7 +16,8 @@
 - **`result_hash` is runId-stamped.** For two distinct runIds (a duplicate run, NOT a resumeToken replay) the hashes MUST differ. A dedup HIT skips the engine (`engineMs: null`, `deduped_from` set) and re-stamps the payload for its own runId. Prove compute equivalence via the normalize/restamp golden pattern, never by comparing two runs' raw `result_hash`.
 - **SDK hygiene.** Public `.d.ts` free of Node globals (`Buffer`). SDK version bump = 4 sites (`package.json`, `src/internal/versions.ts` `SDK_VERSION`, `package-shape.test`, `registry-contract.test`); release workflow asserts `package.json` == input.
 - **Idempotency.** Any SDK retry (incl. bundle self-healing) reuses the **same `resumeToken`** — never a duplicate run.
-- **Commands.** Tests: `pnpm --filter @trading-backtester/service test <file>`; SDK: `pnpm --filter @trading-backtester/sdk test <file>`; typecheck: `pnpm -r check`. Pg-gated tests need `DATABASE_URL` set (skip themselves otherwise — mirror the existing `coalesce-pg.test.ts` guard).
+- **Commands.** Tests: `pnpm --filter @trading-backtester/service test <file>`; SDK: `pnpm --filter @trading-backtester/sdk test <file>`; typecheck: `pnpm -r check`.
+- **Real test harness (use it — do NOT invent a `helpers-pg.ts`).** Postgres tests import `PG_AVAILABLE` / `STORE_FACTORIES` / `createPgSchema` / `DOCKER_AVAILABLE` from `test/store-factories.ts`, and `makeApp` / `runBody` / `AUTH` / `testConfig` from `test/helpers.ts`. Canonical patterns to copy verbatim: `queue-cap.test.ts` (`for (const factory of STORE_FACTORIES) { describe.skipIf(!factory.available)(...) }` + `makeApp(factory)` → `{ app, store, cleanup }` + HTTP `inject`), `pg-coalesce-wake.test.ts` (raw `createPool`+`migrate` per-schema + inline `newJob`/`seedWaiter` via `store.transition`), `s3-store.test.ts::makeBundle` (a `ModuleBundle` via `createModuleManifest` + `{ manifest, entry, files }`), `dedup-worker.test.ts` (dedup worker drain). The Pg env var is `BACKTESTER_TEST_DATABASE_URL ?? DATABASE_URL` (probed once in `store-factories.ts` → `PG_AVAILABLE`); NEVER hardcode a connection string in a test or a command — export the env var and run the command plainly. A green run where every Pg test *skipped* is NOT a pass for the Pg-gated tasks (A2/A3/A4/B5).
 
 ---
 
@@ -94,11 +95,11 @@ git commit -m "feat(queue-notify): BACKTESTER_QUEUE_NOTIFY flag (default off) + 
 **Interfaces:**
 - Consumes: `QUEUE_NOTIFY_CHANNEL` (A1).
 - Produces:
-  - `interface QueueWaker { waitForWake(pollMs: number, signal: AbortSignal): Promise<void>; dispose(): Promise<void>; }`
+  - `interface QueueWaker { waitForWake(pollMs: number, signal: AbortSignal): Promise<void>; whenReady(): Promise<void>; dispose(): Promise<void>; }`
   - `function createTimeoutWaker(): QueueWaker` — degraded (timeout-only) waker.
   - `function createPgQueueWaker(connectionString: string): QueueWaker` — dedicated `LISTEN` client with reconnect + `pendingWake` guard.
 
-The `waitForWake` contract: resolves on the FIRST of — a notification received since the previous `waitForWake` returned (the `pendingWake` guard), a notification arriving during the wait, the `pollMs` timeout, or `signal` abort. Never rejects.
+The `waitForWake` contract: resolves on the FIRST of — a notification received since the previous `waitForWake` returned (the `pendingWake` guard), a notification arriving during the wait, the `pollMs` timeout, or `signal` abort. Never rejects. Every `abort` listener it registers on the (long-lived) worker signal MUST be removed when the wait resolves — a listener leaked per idle wait accumulates unboundedly over the process lifetime. `whenReady()` resolves once the LISTEN connection is established (deterministic test synchronization — no fixed sleeps).
 
 - [ ] **Step 1: Write the failing test (timeout waker + pendingWake semantics via a fake)**
 
@@ -155,15 +156,22 @@ import { QUEUE_NOTIFY_CHANNEL } from './queue-notify-channel.js';
 export interface QueueWaker {
   /** Resolve on the first of: a pending/incoming notification, the pollMs timeout, or signal abort. Never rejects. */
   waitForWake(pollMs: number, signal: AbortSignal): Promise<void>;
+  /** Resolves once the LISTEN connection is established (timeout waker: resolves immediately). */
+  whenReady(): Promise<void>;
   dispose(): Promise<void>;
 }
 
-/** Wait for `ms`, or resolve early if `signal` aborts. */
+/**
+ * Wait for `ms`, or resolve early if `signal` aborts. Removes its abort listener on BOTH exits so a
+ * long-lived signal (the worker loop's) does not accumulate a listener per idle wait.
+ */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+    const onAbort = () => { clearTimeout(t); cleanup(); resolve(); };
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const t = setTimeout(() => { cleanup(); resolve(); }, ms);
+    signal.addEventListener('abort', onAbort);
   });
 }
 
@@ -171,6 +179,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export function createTimeoutWaker(): QueueWaker {
   return {
     waitForWake: (pollMs, signal) => sleep(pollMs, signal),
+    whenReady: async () => {},
     dispose: async () => {},
   };
 }
@@ -186,23 +195,25 @@ export function createPgQueueWaker(connectionString: string): QueueWaker {
   let pendingWake = false;
   let wake: (() => void) | undefined; // resolves the in-flight waitForWake, if any
   let disposed = false;
+  let markReady!: () => void;
+  const readyOnce = new Promise<void>((res) => { markReady = res; }); // resolves on FIRST successful LISTEN
 
-  const onNotify = (): void => {
-    pendingWake = true;
-    wake?.();
-  };
+  const onNotify = (): void => { pendingWake = true; wake?.(); };
 
-  const connect = async (): Promise<void> => {
+  const connect = async (forceWake: boolean): Promise<void> => {
     if (disposed) return;
     const c = new Client({ connectionString });
     c.on('notification', onNotify);
     c.on('error', () => { void reconnect(); });
-    c.on('end', () => { void reconnect(); });
+    c.on('end', () => { if (!disposed) void reconnect(); });
     await c.connect();
     await c.query(`LISTEN ${QUEUE_NOTIFY_CHANNEL}`);
     client = c;
-    // A job may have been enqueued during the reconnect gap — force one immediate re-drain.
-    onNotify();
+    markReady(); // whenReady() resolvers fire once; subsequent reconnects are no-ops on the promise
+    // On RECONNECT only, force one re-drain: NOTIFYs emitted while the listener was down were missed.
+    // On the INITIAL connect the worker loop's first drain already covers startup, so no forced wake —
+    // keeping tests deterministic (nothing to drain before the real NOTIFY).
+    if (forceWake) onNotify();
   };
 
   let backoffMs = 100;
@@ -212,21 +223,22 @@ export function createPgQueueWaker(connectionString: string): QueueWaker {
     client = undefined;
     await new Promise((r) => setTimeout(r, backoffMs));
     backoffMs = Math.min(backoffMs * 2, 5_000);
-    try { await connect(); backoffMs = 100; } catch { void reconnect(); }
+    try { await connect(true); backoffMs = 100; } catch { void reconnect(); }
   };
 
-  const ready = connect().catch(() => { void reconnect(); });
+  const started = connect(false).catch(() => { void reconnect(); });
 
   return {
+    whenReady: () => readyOnce,
     async waitForWake(pollMs, signal) {
-      await ready;
+      await started;
       if (pendingWake) { pendingWake = false; return; }
       if (signal.aborted) return;
       await new Promise<void>((resolve) => {
-        const done = () => { wake = undefined; clearTimeout(t); resolve(); };
+        const done = () => { wake = undefined; clearTimeout(t); signal.removeEventListener('abort', done); resolve(); };
         wake = done;
         const t = setTimeout(done, pollMs);
-        signal.addEventListener('abort', done, { once: true });
+        signal.addEventListener('abort', done);
       });
       pendingWake = false;
     },
@@ -247,22 +259,21 @@ Expected: PASS (3 tests).
 
 - [ ] **Step 5: Add a Pg-gated test for the real LISTEN/NOTIFY round-trip**
 
-Append to `apps/backtester/test/queue-notify.test.ts` (guarded like other Pg tests — skips without `DATABASE_URL`):
+Append to `apps/backtester/test/queue-notify.test.ts`. Guard/connect via the real harness — `PG_AVAILABLE` + the `PG_URL` expression from `store-factories.ts` (`BACKTESTER_TEST_DATABASE_URL ?? DATABASE_URL`). `whenReady()` makes it deterministic (no fixed sleep, and — with force-wake now reconnect-only — nothing to pre-drain):
 
 ```ts
 import { Client } from 'pg';
 import { createPgQueueWaker } from '../src/jobs/queue-notify.js';
 import { QUEUE_NOTIFY_CHANNEL } from '../src/jobs/queue-notify-channel.js';
+import { PG_AVAILABLE } from './store-factories.js';
 
-const DB = process.env.DATABASE_URL;
-describe.skipIf(!DB)('createPgQueueWaker (Pg)', () => {
+const PG_URL = (process.env.BACKTESTER_TEST_DATABASE_URL ?? process.env.DATABASE_URL) as string;
+describe.skipIf(!PG_AVAILABLE)('createPgQueueWaker (Pg)', () => {
   it('wakes on NOTIFY well before the pollMs timeout', async () => {
-    const w = createPgQueueWaker(DB!);
+    const w = createPgQueueWaker(PG_URL);
     const ac = new AbortController();
-    // let the LISTEN connection settle, then drain the initial forced wake
-    await new Promise((r) => setTimeout(r, 200));
-    await w.waitForWake(0, ac.signal);
-    const notifier = new Client({ connectionString: DB! });
+    await w.whenReady(); // LISTEN established; no initial forced wake to drain
+    const notifier = new Client({ connectionString: PG_URL });
     await notifier.connect();
     const t0 = Date.now();
     const p = w.waitForWake(10_000, ac.signal);
@@ -275,10 +286,11 @@ describe.skipIf(!DB)('createPgQueueWaker (Pg)', () => {
 });
 ```
 
-- [ ] **Step 6: Run it (with a DB) and commit**
+- [ ] **Step 6: Run it (against a real Postgres) and commit**
 
-Run: `DATABASE_URL=postgres://backtester:backtester@127.0.0.1:15433/backtester pnpm --filter @trading-backtester/service test queue-notify`
-Expected: PASS (4 tests with DB; the Pg one skips without).
+Export your Postgres URL first (never hardcode it): `export DATABASE_URL=…` (or `BACKTESTER_TEST_DATABASE_URL`). Then:
+Run: `pnpm --filter @trading-backtester/service test queue-notify`
+Expected: PASS (4 tests with a DB reachable; the Pg one skips — not fails — without).
 
 ```bash
 git add apps/backtester/src/jobs/queue-notify.ts apps/backtester/test/queue-notify.test.ts
@@ -303,39 +315,46 @@ git commit -m "feat(queue-notify): QueueWaker (Pg LISTEN + reconnect + pendingWa
 
 ```ts
 // apps/backtester/test/queue-notify-emit-pg.test.ts
+// Real harness: createPgSchema() (store-factories) for a migrated Pg store; inline newJob (mirrors
+// pg-coalesce-wake.test.ts); a raw pg Client on PG_URL to LISTEN.
 import { Client } from 'pg';
-import { describe, expect, it } from 'vitest';
-import { PgJobStore } from '../src/jobs/pg-job-store.js';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PG_AVAILABLE, createPgSchema } from './store-factories.js';
 import { QUEUE_NOTIFY_CHANNEL } from '../src/jobs/queue-notify-channel.js';
-// Reuse the repo's existing Pg test harness for pool + a freshly-migrated schema + a NewJob factory.
-import { withMigratedPool, makeNewJob } from './helpers-pg.js';
+import type { JobStore, NewJob } from '../src/jobs/job-store.js';
 
-const DB = process.env.DATABASE_URL;
-describe.skipIf(!DB)('PgJobStore enqueue NOTIFY', () => {
+const PG_URL = (process.env.BACKTESTER_TEST_DATABASE_URL ?? process.env.DATABASE_URL) as string;
+const newJob = (runId: string): NewJob => ({
+  jobId: runId, runId, requestFingerprint: `fp-${runId}`, request: {} as never,
+  effectiveSeed: 1, datasetRef: 'ds', runTimeoutMs: 3_600_000, acceptedAtMs: 1000,
+});
+
+describe.skipIf(!PG_AVAILABLE)('PgJobStore enqueue NOTIFY', () => {
+  let schema: Awaited<ReturnType<typeof createPgSchema>>;
+  let store: JobStore;
+  beforeAll(async () => { schema = await createPgSchema(); store = schema.makeStore(); });
+  afterAll(async () => { await schema.teardown(); });
+
   it('fires on the accepted→queued transition', async () => {
-    await withMigratedPool(async (pool) => {
-      const store = new PgJobStore(pool);
-      const listener = new Client({ connectionString: DB! });
-      await listener.connect();
-      await listener.query(`LISTEN ${QUEUE_NOTIFY_CHANNEL}`);
-      const got = new Promise<void>((res) => listener.on('notification', () => res()));
+    const listener = new Client({ connectionString: PG_URL });
+    await listener.connect();
+    await listener.query(`LISTEN ${QUEUE_NOTIFY_CHANNEL}`);
+    const got = new Promise<void>((res) => listener.on('notification', () => res()));
 
-      const job = makeNewJob(); // status 'accepted' via insertOrGet
-      await store.insertOrGet(job);
-      await store.transition(job.runId, 'accepted', 'queued', { atMs: 1, queuedAtMs: 1 });
+    await store.insertOrGet(newJob('emit-a'));            // status 'accepted'
+    await store.transition('emit-a', 'accepted', 'queued', { atMs: 1, queuedAtMs: 1 }); // → NOTIFY
 
-      await Promise.race([got, new Promise((_r, rej) => setTimeout(() => rej(new Error('no NOTIFY')), 2_000))]);
-      await listener.end();
-    });
+    await Promise.race([got, new Promise((_r, rej) => setTimeout(() => rej(new Error('no NOTIFY')), 2_000))]);
+    await listener.end();
   });
 });
 ```
 
-> Implementer note: if `test/helpers-pg.ts` (or an equivalent `withMigratedPool`/`makeNewJob`) does not already exist, factor the pool+migrate+job-factory setup out of the existing `coalesce-pg.test.ts` / `dedup-worker.test.ts` into `test/helpers-pg.ts` first (pure refactor, no behavior change), then import it here.
+> Note: `createPgSchema()` returns `{ makeStore, teardown }` (a fresh migrated schema); `newJob` mirrors the inline factory in `pg-coalesce-wake.test.ts`. No `helpers-pg.ts` — the harness already exists.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `DATABASE_URL=… pnpm --filter @trading-backtester/service test queue-notify-emit-pg`
+With `DATABASE_URL` exported: `pnpm --filter @trading-backtester/service test queue-notify-emit-pg`
 Expected: FAIL (`no NOTIFY` — no emit yet).
 
 - [ ] **Step 3: Add the helper + hooks in `pg-job-store.ts`**
@@ -385,18 +404,18 @@ Then, after the `timedOut` query and before `return`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `DATABASE_URL=… pnpm --filter @trading-backtester/service test queue-notify-emit-pg`
+With `DATABASE_URL` exported: `pnpm --filter @trading-backtester/service test queue-notify-emit-pg`
 Expected: PASS.
 
-- [ ] **Step 5: Guard against regressions — full Pg suite still green**
+- [ ] **Step 5: Guard against regressions — Pg suites still green**
 
-Run: `DATABASE_URL=… pnpm --filter @trading-backtester/service test pg`
-Expected: existing Pg tests (coalesce, dedup, job-store) PASS (notify is additive, no behavior change to transitions/requeues).
+With `DATABASE_URL` exported: `pnpm --filter @trading-backtester/service test pg-coalesce-wake pg-compute-lock dedup-result-cache queue-cap`
+Expected: existing Pg tests PASS (notify is additive — no behavior change to transitions/requeues).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/backtester/src/jobs/pg-job-store.ts apps/backtester/test/queue-notify-emit-pg.test.ts apps/backtester/test/helpers-pg.ts
+git add apps/backtester/src/jobs/pg-job-store.ts apps/backtester/test/queue-notify-emit-pg.test.ts
 git commit -m "feat(queue-notify): pg_notify on submit-enqueue transition and reap requeue"
 ```
 
@@ -419,39 +438,51 @@ git commit -m "feat(queue-notify): pg_notify on submit-enqueue transition and re
 
 ```ts
 // apps/backtester/test/queue-notify-wake-pg.test.ts
-// A worker with a high pollMs must still claim a freshly-submitted job quickly — proving NOTIFY woke it.
+// A worker with a high pollMs must still claim a freshly-enqueued job quickly — proving NOTIFY woke it.
+// Enqueue via the STORE (insertOrGet + transition→queued) so ONLY the NOTIFY path can wake the loop
+// (an HTTP submit would also call deps.kick()). The job need not complete — leaving 'queued' proves the wake.
 import { describe, expect, it } from 'vitest';
-import { withMigratedPool, buildPgWorkerDeps, submitOneJob } from './helpers-pg.js';
+import { PG_AVAILABLE, STORE_FACTORIES } from './store-factories.js';
+import { makeApp } from './helpers.js';
 import { runWorkerLoop } from '../src/jobs/worker.js';
 import { createPgQueueWaker } from '../src/jobs/queue-notify.js';
+import type { NewJob } from '../src/jobs/job-store.js';
 
-const DB = process.env.DATABASE_URL;
-describe.skipIf(!DB)('NOTIFY wake integration', () => {
-  it('claims a fresh submit far faster than the 10s poll', async () => {
-    await withMigratedPool(async (pool) => {
-      const deps = buildPgWorkerDeps(pool); // momentum (no-bundle) trusted run — no Docker needed
-      const waker = createPgQueueWaker(DB!);
-      const ac = new AbortController();
-      const loop = runWorkerLoop(deps, { concurrency: 1, heartbeatMs: 1_000, pollMs: 10_000, signal: ac.signal, waker });
-      await new Promise((r) => setTimeout(r, 300)); // let the loop reach its first idle wait
-      const t0 = Date.now();
-      const runId = await submitOneJob(deps); // inserts + transitions to queued → emits NOTIFY
-      // poll the store until the job leaves 'queued'
-      for (let i = 0; i < 40 && (await deps.store.get(runId))?.status === 'queued'; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      expect(Date.now() - t0).toBeLessThan(3_000);
-      ac.abort(); await loop; await waker.dispose();
-    });
+const PG_URL = (process.env.BACKTESTER_TEST_DATABASE_URL ?? process.env.DATABASE_URL) as string;
+const pgFactory = STORE_FACTORIES.find((f) => f.name === 'postgres')!;
+const newJob = (runId: string): NewJob => ({
+  jobId: runId, runId, requestFingerprint: `fp-${runId}`, request: {} as never,
+  effectiveSeed: 1, datasetRef: 'ds', runTimeoutMs: 3_600_000, acceptedAtMs: 1000,
+});
+
+describe.skipIf(!PG_AVAILABLE)('NOTIFY wake integration', () => {
+  it('claims a fresh enqueue far faster than the 10s poll', async () => {
+    const { app, store, cleanup } = await makeApp(pgFactory, {}, { queueNotify: true });
+    const waker = createPgQueueWaker(PG_URL);
+    const ac = new AbortController();
+    await waker.whenReady();
+    const loop = runWorkerLoop(app.workerDeps, { concurrency: 1, heartbeatMs: 1_000, pollMs: 10_000, signal: ac.signal, waker });
+    await new Promise((r) => setTimeout(r, 300)); // let the loop reach its first idle wait
+
+    const t0 = Date.now();
+    await store.insertOrGet(newJob('wake-a'));
+    await store.transition('wake-a', 'accepted', 'queued', { atMs: 1, queuedAtMs: 1 }); // emits NOTIFY
+    for (let i = 0; i < 40 && (await store.get('wake-a'))?.status === 'queued'; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect((await store.get('wake-a'))?.status).not.toBe('queued'); // claimed
+    expect(Date.now() - t0).toBeLessThan(3_000);                    // via NOTIFY, not the 10s poll
+
+    ac.abort(); await loop; await waker.dispose(); await cleanup();
   });
 });
 ```
 
-> Implementer note: `buildPgWorkerDeps` / `submitOneJob` belong in `test/helpers-pg.ts`; build them from the existing worker test setup, using a **momentum** (trusted, no bundle) run so the engine path needs no Docker sandbox.
+> Note: `makeApp(pgFactory, {}, { queueNotify: true })` → `{ app, store, cleanup }`; `app.workerDeps` is the same handle `worker-main.ts` runs the loop on. Enqueuing via `store` (not HTTP) isolates the NOTIFY wake from the in-process `kick()`. `makeApp`'s third arg is a `Partial<AppConfig>` override (here just to keep intent explicit — the waker under test is constructed directly, not from config).
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `DATABASE_URL=… pnpm --filter @trading-backtester/service test queue-notify-wake-pg`
+With `DATABASE_URL` exported: `pnpm --filter @trading-backtester/service test queue-notify-wake-pg`
 Expected: FAIL (`runWorkerLoop` ignores `waker`; job claimed only after the 10s poll → assertion fails, or a type error on `waker`).
 
 - [ ] **Step 3: Use the waker in `runWorkerLoop`**
@@ -473,7 +504,7 @@ In `worker.ts`, add `waker?: import('./queue-notify.js').QueueWaker` to the `opt
 
 - [ ] **Step 4: Run integration test to verify it passes**
 
-Run: `DATABASE_URL=… pnpm --filter @trading-backtester/service test queue-notify-wake-pg`
+With `DATABASE_URL` exported: `pnpm --filter @trading-backtester/service test queue-notify-wake-pg`
 Expected: PASS (job claimed < 3s despite pollMs=10s).
 
 - [ ] **Step 5: Construct one waker per worker process in `worker-main.ts`**
@@ -510,7 +541,7 @@ never a stuck job. Cost: **+1 Postgres connection per worker process**, outside 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add apps/backtester/src/jobs/worker.ts apps/backtester/src/worker-main.ts apps/backtester/src/app.ts apps/backtester/test/queue-notify-wake-pg.test.ts apps/backtester/test/helpers-pg.ts docs/OPERATIONS.md
+git add apps/backtester/src/jobs/worker.ts apps/backtester/src/worker-main.ts apps/backtester/src/app.ts apps/backtester/test/queue-notify-wake-pg.test.ts docs/OPERATIONS.md
 git commit -m "feat(queue-notify): wire QueueWaker into the worker loop (Pg-gated wake) + OPERATIONS"
 ```
 
@@ -526,20 +557,41 @@ git commit -m "feat(queue-notify): wire QueueWaker into the worker loop (Pg-gate
 - Test: `apps/backtester/test/fingerprint-bundle-ref.test.ts`
 
 **Interfaces:**
-- Produces: `RunSubmitRequest.bundleRef?: ContentHash`; `requestFingerprint` resolves the bundle hash from `moduleBundle` (hash the bytes) OR `bundleRef` (use directly).
+- Produces: `RunSubmitRequest.bundleRef?: ContentHash`; `requestFingerprint` resolves the bundle hash from `moduleBundle` (hash the bytes) OR `bundleRef` (use directly); a shared `makeBundle()` in `test/helpers.ts`.
 
-- [ ] **Step 1: Write the failing golden test**
+- [ ] **Step 1: Add a shared `makeBundle()` to `test/helpers.ts`**
+
+The `ModuleBundle` factory currently lives as a local in `s3-store.test.ts:53`. Export a shared copy from `test/helpers.ts` for reuse across B1–B5:
+
+```ts
+// test/helpers.ts — add
+import { createModuleManifest } from '<same import s3-store.test.ts uses>';
+import type { ModuleBundle } from '@trading/research-contracts';
+
+export function makeBundle(): ModuleBundle {
+  const manifest = createModuleManifest({
+    id: 'b', version: '1.0.0', kind: 'strategy', name: 'fixture', summary: 's', rationale: 'r',
+    hooks: ['onBarClose'], paramsSchema: { type: 'object' }, capabilities: { platformSdk: true },
+    dataNeeds: { closedCandlesUpToCurrent: true },
+  });
+  return { manifest, entry: 'module.mjs', files: { 'module.mjs': 'export function signals(c){return c.map(()=>false);}' } };
+}
+```
+
+> Implementer note: copy the exact `createModuleManifest` import path from `s3-store.test.ts`; then refactor `s3-store.test.ts` to import `makeBundle` from `helpers.ts` (drop its local copy — DRY).
+
+- [ ] **Step 2: Write the failing golden test**
 
 ```ts
 // apps/backtester/test/fingerprint-bundle-ref.test.ts
 import { describe, expect, it } from 'vitest';
 import { requestFingerprint } from '../src/jobs/fingerprint.js';
 import { bundleHash } from '../src/sandbox/bundle.js';
-import { loadBundleFixture } from './helpers.js'; // existing fixture loader used by other tests
+import { makeBundle } from './helpers.js';
 
 describe('fingerprint is bundle-source-invariant', () => {
   it('inline moduleBundle and bundleRef(hash) produce the same fingerprint', () => {
-    const bundle = loadBundleFixture();
+    const bundle = makeBundle();
     const base = { datasetRef: 'X:1m', moduleRef: { id: 'm', version: '1' }, symbols: ['X'], timeframe: '1m',
       period: { from: '2026-01-01', to: '2026-01-02' }, seed: 1, mode: 'research', metrics: ['pnl'] } as const;
     const inline = requestFingerprint({ ...base, moduleBundle: bundle } as never);
@@ -549,14 +601,12 @@ describe('fingerprint is bundle-source-invariant', () => {
 });
 ```
 
-> Implementer note: use whatever bundle fixture the existing tests use (e.g. the loader in `test/helpers.ts`); the assertion, not the fixture, is the point.
-
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 3: Run test to verify it fails**
 
 Run: `pnpm --filter @trading-backtester/service test fingerprint-bundle-ref`
 Expected: FAIL (`byRef` computed with `null` bundle ⇒ ≠ `inline`).
 
-- [ ] **Step 3: Add `bundleRef` to the SDK contract**
+- [ ] **Step 4: Add `bundleRef` to the SDK contract**
 
 In `packages/sdk/src/contracts/run.ts`, add to `RunSubmitRequest`:
 
@@ -567,7 +617,7 @@ In `packages/sdk/src/contracts/run.ts`, add to `RunSubmitRequest`:
 
 Ensure `ContentHash` is imported in that file (it is re-exported from the SDK artifacts module).
 
-- [ ] **Step 4: Fold the bundle source in `requestFingerprint`**
+- [ ] **Step 5: Fold the bundle source in `requestFingerprint`**
 
 In `apps/backtester/src/jobs/fingerprint.ts`, change the `requestFingerprint` body:
 
@@ -578,16 +628,16 @@ export function requestFingerprint(req: RunSubmitRequest): string {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 6: Run test to verify it passes**
 
 Run: `pnpm --filter @trading-backtester/service test fingerprint-bundle-ref`
-Expected: PASS. Also run `pnpm --filter @trading-backtester/service test fingerprint` — existing fingerprint tests still PASS (inline path unchanged when `bundleRef` absent).
+Expected: PASS. Also run `pnpm --filter @trading-backtester/service test fingerprint` and `... test s3-store` — existing fingerprint tests still PASS (inline path unchanged when `bundleRef` absent) and s3-store still passes after switching to the shared `makeBundle`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add packages/sdk/src/contracts/run.ts apps/backtester/src/jobs/fingerprint.ts apps/backtester/test/fingerprint-bundle-ref.test.ts
-git commit -m "feat(bundle-ref): RunSubmitRequest.bundleRef + bundle-source-invariant fingerprint"
+git add packages/sdk/src/contracts/run.ts apps/backtester/src/jobs/fingerprint.ts apps/backtester/src/jobs apps/backtester/test/helpers.ts apps/backtester/test/fingerprint-bundle-ref.test.ts apps/backtester/test/s3-store.test.ts
+git commit -m "feat(bundle-ref): RunSubmitRequest.bundleRef + bundle-source-invariant fingerprint + shared makeBundle"
 ```
 
 ---
@@ -608,39 +658,43 @@ git commit -m "feat(bundle-ref): RunSubmitRequest.bundleRef + bundle-source-inva
 
 ```ts
 // apps/backtester/test/submit-bundle-ref.test.ts
+// SubmitDeps built like submit-validate.test.ts::minimalDeps, plus an InMemoryBundleStore.
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { submitRun, SubmitError } from '../src/jobs/submit.js';
-import { makeSubmitDeps, loadBundleFixture } from './helpers.js'; // existing test helpers
+import { submitRun, type SubmitDeps } from '../src/jobs/submit.js';
+import { InMemoryJobStore } from '../src/jobs/job-store.js';
+import { InMemoryBundleStore } from '../src/sandbox/bundle-store.js';
 import { bundleHash } from '../src/sandbox/bundle.js';
+import { makeBundle, runBody } from './helpers.js';
 
-const base = { datasetRef: 'X:1m', moduleRef: { id: 'm', version: '1' }, symbols: ['X'], timeframe: '1m',
-  period: { from: '2026-01-01', to: '2026-01-02' }, seed: 1, mode: 'research', metrics: ['pnl'] } as const;
+function deps(): SubmitDeps {
+  return {
+    store: new InMemoryJobStore(), bundleStore: new InMemoryBundleStore(),
+    clock: () => 1_000_000, uid: () => randomUUID(),
+    defaultQueueTimeoutMs: 60_000, defaultRunTimeoutMs: 300_000, enableOverlayEngine: true,
+  };
+}
 
 describe('submitRun bundleRef', () => {
   it('rejects both moduleBundle and bundleRef (400)', async () => {
-    const deps = makeSubmitDeps();
-    const b = loadBundleFixture();
-    await expect(submitRun(deps, { ...base, moduleBundle: b, bundleRef: bundleHash(b) } as never))
+    const b = makeBundle();
+    await expect(submitRun(deps(), runBody({ moduleBundle: b, bundleRef: bundleHash(b) }) as never))
       .rejects.toMatchObject({ statusCode: 400 });
   });
   it('rejects a malformed bundleRef (400)', async () => {
-    const deps = makeSubmitDeps();
-    await expect(submitRun(deps, { ...base, bundleRef: 'not-a-hash' } as never))
+    await expect(submitRun(deps(), runBody({ moduleBundle: undefined, bundleRef: 'not-a-hash' }) as never))
       .rejects.toMatchObject({ statusCode: 400 });
   });
   it('rejects an unknown bundleRef (409 unknown_bundle)', async () => {
-    const deps = makeSubmitDeps();
-    const b = loadBundleFixture();
-    await expect(submitRun(deps, { ...base, bundleRef: bundleHash(b) } as never))
+    await expect(submitRun(deps(), runBody({ moduleBundle: undefined, bundleRef: bundleHash(makeBundle()) }) as never))
       .rejects.toMatchObject({ statusCode: 409, code: 'unknown_bundle' });
   });
   it('accepts a known bundleRef without re-uploading', async () => {
-    const deps = makeSubmitDeps();
-    const b = loadBundleFixture();
-    const hash = await deps.bundleStore!.put(b);
-    const out = await submitRun(deps, { ...base, bundleRef: hash } as never);
+    const d = deps();
+    const hash = await d.bundleStore!.put(makeBundle());
+    const out = await submitRun(d, runBody({ moduleBundle: undefined, bundleRef: hash }) as never);
     expect(out.created).toBe(true);
-    const job = await deps.store.get(out.handle.runId);
+    const job = await d.store.get(out.handle.runId);
     expect(job?.bundleHash).toBe(hash);
     expect((job?.request as { bundleRef?: string }).bundleRef).toBeUndefined(); // stripped
   });
@@ -728,37 +782,40 @@ git commit -m "feat(bundle-ref): submitRun accepts bundleRef (XOR guard, has->40
 
 ```ts
 // apps/backtester/test/bundles-api.test.ts
-import { describe, expect, it } from 'vitest';
-import { buildServer } from '../src/api/server.js';
-import { makeServerDeps, loadBundleFixture } from './helpers.js'; // existing test helpers
+// Real app over the in-memory factory; drive the routes through the app's Fastify server (app.server).
+import { afterEach, describe, expect, it } from 'vitest';
+import { AUTH, makeApp, makeBundle } from './helpers.js';
+import { STORE_FACTORIES } from './store-factories.js';
 import { bundleHash } from '../src/sandbox/bundle.js';
 
-const AUTH = { authorization: 'Bearer test-token' };
+const memFactory = STORE_FACTORIES.find((f) => f.name === 'in-memory')!;
+let teardown: (() => Promise<void>) | undefined;
+afterEach(async () => { await teardown?.(); teardown = undefined; });
+
+async function server() {
+  const { app, cleanup } = await makeApp(memFactory);
+  teardown = cleanup;
+  return app.server; // FastifyInstance (AppHandles.server)
+}
 
 describe('bundles API', () => {
-  it('POST /v1/bundles stores a valid bundle and returns its hash', async () => {
-    const deps = makeServerDeps({ authToken: 'test-token' });
-    const app = buildServer(deps);
-    const b = loadBundleFixture();
-    const res = await app.inject({ method: 'POST', url: '/v1/bundles', headers: AUTH, payload: b });
+  it('POST /v1/bundles stores a valid bundle (hash matches) and HEAD confirms it', async () => {
+    const s = await server();
+    const b = makeBundle();
+    const res = await s.inject({ method: 'POST', url: '/v1/bundles', headers: AUTH, payload: b });
     expect(res.statusCode).toBe(200);
     expect(res.json().hash).toBe(bundleHash(b));
-    expect(await deps.bundleStore!.has(bundleHash(b))).toBe(true);
+    expect((await s.inject({ method: 'HEAD', url: `/v1/bundles/${bundleHash(b)}`, headers: AUTH })).statusCode).toBe(200);
   });
-  it('POST /v1/bundles rejects an invalid bundle (400) and stores nothing', async () => {
-    const deps = makeServerDeps({ authToken: 'test-token' });
-    const app = buildServer(deps);
-    const res = await app.inject({ method: 'POST', url: '/v1/bundles', headers: AUTH, payload: { not: 'a bundle' } });
+  it('POST /v1/bundles rejects an invalid bundle (400)', async () => {
+    const s = await server();
+    const res = await s.inject({ method: 'POST', url: '/v1/bundles', headers: AUTH, payload: { not: 'a bundle' } });
     expect(res.statusCode).toBe(400);
   });
-  it('HEAD /v1/bundles/:hash is 200 when present, 404 when absent, 400 when malformed', async () => {
-    const deps = makeServerDeps({ authToken: 'test-token' });
-    const app = buildServer(deps);
-    const b = loadBundleFixture();
-    const hash = await deps.bundleStore!.put(b);
-    expect((await app.inject({ method: 'HEAD', url: `/v1/bundles/${hash}`, headers: AUTH })).statusCode).toBe(200);
-    expect((await app.inject({ method: 'HEAD', url: `/v1/bundles/sha256:${'0'.repeat(64)}`, headers: AUTH })).statusCode).toBe(404);
-    expect((await app.inject({ method: 'HEAD', url: '/v1/bundles/nope', headers: AUTH })).statusCode).toBe(400);
+  it('HEAD /v1/bundles/:hash — 404 absent, 400 malformed', async () => {
+    const s = await server();
+    expect((await s.inject({ method: 'HEAD', url: `/v1/bundles/sha256:${'0'.repeat(64)}`, headers: AUTH })).statusCode).toBe(404);
+    expect((await s.inject({ method: 'HEAD', url: '/v1/bundles/nope', headers: AUTH })).statusCode).toBe(400);
   });
 });
 ```
@@ -959,46 +1016,63 @@ git commit -m "feat(sdk): putBundle/hasBundle + submit self-healing on unknown_b
 **Interfaces:**
 - Consumes: everything in Part B + the existing dedup worker path.
 
-- [ ] **Step 1: Write the failing Pg-gated e2e test**
+**Note on gating:** the FIRST (inline) submit must actually compute → a bundle strategy runs in the
+Docker sandbox, so this full e2e is **Docker + Pg gated** (`skipIf(!PG_AVAILABLE || !DOCKER_AVAILABLE)`)
+and runs in CI, not WSL2. B1's fingerprint-invariance golden is the fast, always-run load-bearing gate
+(equal fingerprint ⇒ equal `computeIdentity` ⇒ the HIT is guaranteed by construction); B5 is the
+full-path confirmation.
+
+- [ ] **Step 1: Write the Docker+Pg-gated e2e test**
 
 ```ts
 // apps/backtester/test/bundle-ref-dedup-pg.test.ts
 // Inline submit of bundle X, then a by-ref submit of hash(X): the second is a dedup HIT that skips
 // the engine and re-stamps for its own runId. Do NOT assert equal result_hash across the two runs.
 import { describe, expect, it } from 'vitest';
-import { withMigratedPool, buildDedupWorkerDeps, loadBundleFixture, drainOnce } from './helpers-pg.js';
-import { submitRun } from '../src/jobs/submit.js';
+import { PG_AVAILABLE, DOCKER_AVAILABLE, STORE_FACTORIES } from './store-factories.js';
+import { AUTH, makeApp, makeBundle } from './helpers.js';
 import { bundleHash } from '../src/sandbox/bundle.js';
 
-const DB = process.env.DATABASE_URL;
-const base = { datasetRef: 'X:1m', moduleRef: { id: 'm', version: '1' }, symbols: ['X'], timeframe: '1m',
-  period: { from: '2026-01-01', to: '2026-01-02' }, seed: 1, mode: 'research', metrics: ['pnl'] } as const;
+const pgFactory = STORE_FACTORIES.find((f) => f.name === 'postgres')!;
 
-describe.skipIf(!DB)('bundle-ref dedup HIT', () => {
+describe.skipIf(!PG_AVAILABLE || !DOCKER_AVAILABLE)('bundle-ref dedup HIT', () => {
   it('by-ref of an already-computed inline bundle is a dedup HIT (no engine, re-stamped runId)', async () => {
-    await withMigratedPool(async (pool) => {
-      const deps = buildDedupWorkerDeps(pool); // dedupEnabled: true, momentum/trusted or a fixture-backed engine
-      const b = loadBundleFixture();
-      const a1 = await submitRun(deps, { ...base, moduleBundle: b, runId: 'run-A' } as never);
-      await drainOnce(deps); // compute + populate cache
-      const a2 = await submitRun(deps, { ...base, bundleRef: bundleHash(b), runId: 'run-B' } as never);
-      await drainOnce(deps);
-      const jobB = await deps.store.get(a2.handle.runId);
-      expect(jobB?.dedupedFrom).toBe(a1.handle.runId); // HIT, sourced from run-A
-      expect(jobB?.resultSummary).toBeTruthy();         // re-stamped payload present
-      const jobA = await deps.store.get(a1.handle.runId);
-      expect(jobB?.resultHash).not.toBe(jobA?.resultHash); // runId-stamped ⇒ differ
-    });
+    const { app, store, cleanup } = await makeApp(pgFactory, {}, { dedupEnabled: true });
+    const b = makeBundle();
+    const post = (payload: unknown) => app.server.inject({ method: 'POST', url: '/v1/runs', headers: AUTH, payload });
+
+    const a = (await post({ ...bundleReq(), moduleBundle: b })).json();   // inline
+    await app.drain();                                                     // compute + populate cache
+    const ref = bundleHash(b);
+    const c = (await post({ ...bundleReq(), bundleRef: ref })).json();     // by-ref, same identity
+    await app.drain();                                                     // HIT path (no engine)
+
+    const jobC = await store.get(c.runId);
+    const jobA = await store.get(a.runId);
+    expect(jobC?.dedupedFrom).toBe(a.runId);              // HIT, sourced from the inline run
+    expect(jobC?.resultSummary).toBeTruthy();             // re-stamped payload present
+    expect(jobC?.resultHash).not.toBe(jobA?.resultHash);  // runId-stamped ⇒ MUST differ (not equal-hash)
+    await cleanup();
   });
 });
+
+// A valid strategy-bundle run request body (mirror runBody, but for the bundle/sandbox path). Reuse
+// the exact request shape a passing sandbox test uses (e.g. worker-loop.test.ts / sandbox.test.ts).
+function bundleReq() {
+  return { engine: 'strategy', datasetRef: 'BEATUSDT:1m', moduleRef: { id: 'b', version: '1.0.0' },
+    symbols: ['BEATUSDT'], timeframe: '1m', period: { from: '…', to: '…' }, seed: 1, mode: 'research',
+    metrics: ['pnl'] };
+}
 ```
 
-> Implementer note: reuse the dedup worker harness from `dedup-worker.test.ts` (`buildDedupWorkerDeps`, `drainOnce`) via `helpers-pg.ts`. If the fixture bundle can't run without Docker, use the same trusted/mock engine path the existing dedup test uses — the point is the HIT bookkeeping (`deduped_from`, engine skipped, distinct `result_hash`), not real strategy compute.
+> Implementer note: fill `bundleReq()` from the exact request + dataset a passing sandbox test already
+> uses (`worker-loop.test.ts` / `sandbox.test.ts` run real bundles) so the inline run actually completes
+> under the test data port. The point is the HIT bookkeeping on the by-ref run, not new strategy logic.
 
 - [ ] **Step 2: Run test to verify it fails or passes**
 
-Run: `DATABASE_URL=… pnpm --filter @trading-backtester/service test bundle-ref-dedup-pg`
-Expected: PASS is acceptable if B1–B2 already make it work (fingerprint invariance ⇒ same computeIdentity ⇒ HIT). If it FAILS, the failure localizes a fingerprint/identity gap — fix in `fingerprint.ts`/`submit.ts` before proceeding. Either way this test must exist and pass.
+With `DATABASE_URL` exported AND Docker available: `pnpm --filter @trading-backtester/service test bundle-ref-dedup-pg`
+Expected: PASS if B1–B2 already make it work (fingerprint invariance ⇒ same `computeIdentity` ⇒ HIT). If it FAILS, the failure localizes a fingerprint/identity gap — fix in `fingerprint.ts`/`submit.ts`. Skips cleanly (not fails) when Postgres or Docker is unreachable — so it will skip on WSL2 and must be green in CI's Docker+Pg lane.
 
 - [ ] **Step 3: Document bundle-by-ref in OPERATIONS.md**
 
@@ -1021,8 +1095,8 @@ upload, never a failure). No bundle GC/TTL yet — deferred to the multi-user ga
 
 - [ ] **Step 4: Full suite + typecheck**
 
-Run: `pnpm -r check && pnpm --filter @trading-backtester/service test && pnpm --filter @trading-backtester/sdk test`
-Expected: green (Pg-gated tests skip without `DATABASE_URL`).
+With `DATABASE_URL` exported: `pnpm -r check && pnpm --filter @trading-backtester/service test && pnpm --filter @trading-backtester/sdk test`
+Expected: green (Pg-gated tests run against the DB; Docker-gated B5 skips on WSL2).
 
 - [ ] **Step 5: Commit**
 
@@ -1035,6 +1109,6 @@ git commit -m "test(bundle-ref): e2e dedup HIT inline->by-ref (restamp, not equa
 
 ## Notes for the executor
 
-- **Pg-gated tests** are mandatory and must actually run against Postgres before the PR is called done — start the stand's `backtester-pg` (`deploy/vps` docs) or a local Postgres and export `DATABASE_URL`. A green run where every Pg test *skipped* is NOT sufficient for Tasks A2/A3/A4/B5.
+- **Pg-gated tests** are mandatory and must actually run against Postgres before the PR is called done — start the stand's `backtester-pg` (`deploy/vps` docs) or a local Postgres and export `DATABASE_URL` (or `BACKTESTER_TEST_DATABASE_URL`); the harness probes it once into `PG_AVAILABLE`. A green run where every Pg test *skipped* is NOT sufficient for A2/A3/A4. B5 additionally needs Docker (CI lane); on WSL2 it skips.
 - **Behavior-preservation:** after Part A, the flag-off / InMemory worker path must be byte-for-byte unchanged (existing worker + coalesce + dedup suites green). After Part B, the inline-`moduleBundle` submit path must be unchanged (existing submit + fingerprint suites green).
 - **One PR** covering both parts; the final whole-branch review runs on the most capable model.
