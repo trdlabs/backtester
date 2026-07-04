@@ -297,14 +297,16 @@ import { makeInstanceStore, symbolOf } from '../sandbox-harness-overlay/universe
 describe('universe-instances', () => {
   it('ensure() creates one isolated slot per symbol; get() returns it', () => {
     const store = makeInstanceStore();
-    const a = store.ensure('AAA', () => ({ tag: 'A' }));
-    const b = store.ensure('BBB', () => ({ tag: 'B' }));
+    // factory returns { instance, rng } — the exact contract entry.mjs's handleInit passes
+    const a = store.ensure('AAA', () => ({ instance: { tag: 'A' }, rng: { r: 1 } }));
+    const b = store.ensure('BBB', () => ({ instance: { tag: 'B' }, rng: { r: 2 } }));
     expect(a.instance.tag).toBe('A');
     expect(b.instance.tag).toBe('B');
+    expect(a.rng.r).toBe(1);                 // rng carried from the factory result
     a.buffer.push(1);
-    expect(b.buffer).toEqual([]);           // isolated buffers
+    expect(b.buffer).toEqual([]);            // isolated buffers
     expect(store.get('AAA')).toBe(a);        // stable identity
-    expect(store.ensure('AAA', () => ({ tag: 'X' })).instance.tag).toBe('A'); // ensure is idempotent
+    expect(store.ensure('AAA', () => ({ instance: { tag: 'X' }, rng: { r: 9 } })).instance.tag).toBe('A'); // idempotent
   });
   it('symbolOf reads symbol from init/hook/hookBatch shapes', () => {
     expect(symbolOf({ t: 'init', symbol: 'S1' })).toBe('S1');
@@ -610,9 +612,13 @@ git commit -m "feat(universe): SandboxSession one-container + per-symbol init + 
 
 **Interfaces:**
 - Consumes: `HookResult`, `SessionError` (existing).
-- Produces: in universe mode, a HARNESS-level `err` outcome (container alive) returns `{ ok:false, decisions:[], error }` for THAT symbol WITHOUT latching `failed`/closing the container; a channel-level death (`eof`/`timeout`/`overflow`/`malformed`) still calls `this.fail()` (session-fatal → every subsequent symbol degrades). Non-universe behavior is unchanged (any failure latches, as today).
+- Produces:
+  - A per-symbol latch `private readonly failedSymbols = new Map<string, SessionError>()`.
+  - In universe mode, a HARNESS-level `err` outcome (container alive) records the symbol in `failedSymbols` and returns `{ ok:false, decisions:[], error }` for THAT symbol WITHOUT latching the session-wide `failed`/closing the container.
+  - **Per-symbol latch (byte-identity under failure):** once a symbol is in `failedSymbols`, EVERY subsequent `callHook`/`callHookBatch` for that symbol returns fail-closed IMMEDIATELY — with the stored error, WITHOUT sending a hook to the harness. This mirrors today's per-symbol path exactly: once a symbol's dedicated session latched `failed`, all its remaining bars returned fail-closed (idle) and re-recorded the error. Not doing this would let a broken symbol's later bars hit a possibly-corrupt instance and diverge from the per-symbol baseline.
+  - A channel-level death (`eof`/`timeout`/`overflow`/`malformed`) still calls `this.fail()` (session-fatal → every subsequent symbol degrades). Non-universe behavior is unchanged (any failure latches session-wide, as today).
 
-**Context:** Today `callHook`'s non-ok outcome always calls `this.fail(...)` (`sandbox-session.ts:216`), which closes the container. In a universe session that would kill all N symbols on the first symbol's strategy exception. The spec requires per-symbol fail-closed: one instance throwing degrades only that symbol; only a real container death degrades all.
+**Context:** Today `callHook`'s non-ok outcome always calls `this.fail(...)` (`sandbox-session.ts:216`), which closes the container and latches `failed` so ALL of that (single) symbol's remaining bars return fail-closed. In a universe session `this.fail()` would kill all N symbols on the first symbol's strategy exception. The spec requires per-symbol fail-closed: one instance throwing degrades only that symbol (for the rest of ITS bars), while other symbols keep running; only a real container death degrades all.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -623,6 +629,11 @@ Extend `sandbox-session-universe.test.ts`:
     // script the fake channel: reply {t:'err',...} to AAA's onBarClose, {t:'ok',decisions:[...]} to BBB's.
     // assert: callHook(AAA) → ok:false (fail-closed), driver NOT disposed (container alive),
     //         callHook(BBB) → ok:true with decisions (session survived).
+  });
+  it('a failed symbol stays fail-closed for its REMAINING bars without further harness calls', async () => {
+    // script: reply {t:'err'} to AAA bar0. Then drive AAA bar1 and bar2.
+    // assert: bar1/bar2 return ok:false (latched), AND no new hook envelope was sent to the harness for
+    // AAA after the first err (count sent 'hook' lines with AAA's snapshot — must not grow). BBB still runs.
   });
   it('an eof (container death) is session-fatal — subsequent symbols also fail-closed', async () => {
     // script: reply eof to AAA. assert callHook(AAA) fails AND the session is closed (driver disposed),
@@ -635,22 +646,36 @@ Extend `sandbox-session-universe.test.ts`:
 Run: `pnpm test sandbox-session-universe`
 Expected: FAIL (today's `err` path calls `this.fail()` → container disposed → BBB can't run).
 
-- [ ] **Step 3: Split soft vs fatal in `callHook` (universe only)**
+- [ ] **Step 3: Add the per-symbol latch + split soft vs fatal in `callHook` (universe only)**
 
-In `callHook`, replace the tail `return this.fail(this.mapFailure(outcome, hook, 'sandbox_crashed'));` with:
+First add the field near the other session fields: `private readonly failedSymbols = new Map<string, SessionError>();`
+
+Then, at the TOP of `callHook(hook, ctx)` — before ensuring the container is open / sending anything — add the per-symbol latch guard so a broken symbol's remaining bars never reach the harness (mirrors today's latched-session behavior for that symbol):
+
+```ts
+    if (this.cfg.universe === true) {
+      const prior = this.failedSymbols.get(ctx.symbol);
+      if (prior !== undefined) return { ok: false, decisions: [], error: prior }; // symbol latched → fail-closed
+    }
+```
+
+Then replace the tail `return this.fail(this.mapFailure(outcome, hook, 'sandbox_crashed'));` with:
 
 ```ts
     if (outcome.kind === 'ok') return { ok: true, decisions: outcome.decisions };
     const error = this.mapFailure(outcome, hook, 'sandbox_crashed');
     if (this.cfg.universe === true && outcome.kind === 'err') {
       // per-symbol soft failure: the harness caught a strategy exception; the container is alive.
-      // Fail-closed for THIS symbol only — do not latch/close the session.
+      // Latch THIS symbol (remaining bars fail-closed) but keep the session — other symbols run on.
+      this.failedSymbols.set(ctx.symbol, error);
       return { ok: false, decisions: [], error };
     }
     return this.fail(error); // container death (eof/timeout/overflow/malformed) or non-universe: session-fatal
 ```
 
-Apply the same soft-vs-fatal split in `callHookBatch`'s non-ok path (an `err` outcome with the container alive → return `{ ok:false, stoppedAt, error }` without `this.fail()` in universe mode; a channel death → `this.fail()`).
+Apply the SAME per-symbol latch guard at the top of `callHookBatch` (universe: if `ctxs[0].symbol` is in `failedSymbols`, return `{ ok:false, stoppedAt: 0, error: prior }` without sending), and the same soft-vs-fatal split in its non-ok path (an `err` with the container alive → `failedSymbols.set` + return `{ ok:false, stoppedAt, error }` without `this.fail()`; a channel death → `this.fail()`).
+
+> Byte-identity note: in the per-symbol baseline, once a symbol's dedicated session failed, `sessionFor(symbol)` returned that latched session and every remaining `callHook` returned fail-closed with `this.lastError` (re-recorded each bar). The `failedSymbols` map reproduces exactly that per-symbol behavior inside the shared universe session — same idle decisions for the symbol's remaining bars, so the Task-9 fail-closed golden matches the per-symbol path bar-for-bar.
 
 > Implementer note: `mapFailure` maps `outcome.kind` to a `SessionError`; keep using it for the error VALUE, only change whether `this.fail()` (which closes the container) is invoked. The executor already records the returned `error` per symbol via `record(err, ctx)` (Task 7 keeps that), so the degraded symbol stays observable.
 
@@ -827,6 +852,8 @@ Add `universe?` to `RunDeps`. Insert a validation block right AFTER the 023 mark
   }
 ```
 
+**Reachability (critical):** the golden + real runs use `runStrategyBacktest`, NOT `runBacktest` directly. Grep for `runStrategyBacktest` and `export ... runBacktest` in `src/engine/`. Determine which of these holds: (a) `runStrategyBacktest` delegates to `runBacktest` (then the block above already covers the strategy path — confirm the delegation reaches this validation, not an earlier short-circuit); or (b) `runStrategyBacktest` is a SEPARATE entry with its own validation. If (b), place the cap check in the shared pre-exec validation BOTH entries run (extract a small `assertUniverseCapacity(request, deps.universe)` helper called from both) so the cap is enforced on the real strategy path too — not only generic `runBacktest`. Record which case holds + where you put the check in your report.
+
 - [ ] **Step 5: Thread `universe` into the router**
 
 Where `runBacktest` builds the router (`const router = deps.router ?? createTrustedRouter(...)` / the sandbox router path), pass the universe deps through so `createExecutorRouter` receives `universe: { enabled: true, n: request.symbols.length, memBaseMb: deps.universe.memBaseMb, memPerSymbolMb: deps.universe.memPerSymbolMb }` when enabled. (If the router is injected via `deps.router` in tests, ensure the production assembly — Step 6 — sets it.)
@@ -914,26 +941,47 @@ describe.skipIf(!DOCKER_AVAILABLE)('universe-session golden gate (Docker)', () =
 Run: `export DATABASE_URL="postgres://bt:bt@127.0.0.1:15455/bt" && pnpm test universe-session-equivalence`
 Expected: PASS (byte-identical) if Docker is available; a clean SKIP otherwise. A skipped run is NOT acceptance — it MUST actually run against Docker here (Docker is available in this env). If it FAILS on a hash mismatch, that localizes a determinism regression in the collapse (per-symbol barIndex, init order, or buffer isolation) — fix in Tasks 4–7.
 
-- [ ] **Step 4: Add per-symbol fail-closed + cap-reject tests**
+- [ ] **Step 4a: Per-symbol fail-closed golden (Docker-gated)**
 
-Add two more tests (the fail-closed one Docker-gated, the cap one not):
+Inside the same `describe.skipIf(!DOCKER_AVAILABLE)` block:
 
 ```ts
   it('one symbol’s instance failure degrades only that symbol; the run still completes', async () => {
-    // Use a bundle/fixture where symbol[1] throws (or inject a failing bundle for one symbol). Assert the
-    // run status is completed, symbol[1] contributes idle/zero trades, the other symbols produce their
-    // normal trades, and executor errors contain a symbol[1]-tagged entry. (Docker-gated.)
+    // Use a bundle/fixture where symbol[1] throws (or inject a one-symbol-failing bundle). Assert the run
+    // status is completed, symbol[1] contributes idle/zero trades for ALL its bars (latched — Task 6),
+    // the other symbols produce their normal trades, and executor errors contain a symbol[1]-tagged entry.
+    // Then assert byte-identity vs the per-symbol path under the SAME injected failure (normalize+restamp+contentRef).
   });
 ```
 
+- [ ] **Step 4b: Cap reject on the REAL strategy entrypoint (NOT Docker-gated — rejects before any spawn)**
+
+This MUST exercise `runStrategyBacktest` (the real strategy path, per Task 8 reachability), and MUST run even without Docker (the cap rejects pre-execution, so nothing is materialized/spawned). Put it in its OWN describe, outside the Docker gate:
+
 ```ts
-// cap reject (no Docker needed) — can live in runner-universe-cap.test.ts (Task 8) or here:
-  it('rejects when symbols exceed maxN', async () => {
-    const out = await runStrategyBacktest({ ...req, runId: 'run-C' },
-      { registry: depsA.registry, marketTape, router: depsA.router, universe: { enabled: true, maxN: 1, memBaseMb: 128, memPerSymbolMb: 8 } });
-    expect(out.status).toBe('rejected');
+describe('universe-session cap (real strategy entrypoint, no Docker)', () => {
+  it('runStrategyBacktest rejects when symbols exceed maxN, before spawning', async () => {
+    const spA = await materializeReadableBundle(loadInlineBundle('short-after-pump.bundle.json'));
+    try {
+      const marketTape = await buildOverlayDataset(new FixtureDataPort(FIXTURES_DIR), {
+        datasetRef: req.datasetRef, symbols: req.symbols, timeframe: req.timeframe, period: req.period,
+      });
+      const deps = buildSandboxStrategyBaselineDeps({ spDir: spA.bundleDir });
+      try {
+        const out = await runStrategyBacktest(
+          { ...req, runId: 'run-CAP', engine: 'strategy' },              // req has ≥3 symbols
+          { registry: deps.registry, marketTape, router: deps.router,
+            universe: { enabled: true, maxN: 1, memBaseMb: 128, memPerSymbolMb: 8 } },
+        );
+        expect(out.status).toBe('rejected');
+        expect(out.validation?.issues?.[0]?.path).toBe('/symbols');
+      } finally { deps.router.closeAll(); }
+    } finally { await spA.cleanup(); }
   });
+});
 ```
+
+> This is the user-required proof that the cap fires on the real strategy entrypoint, not only a generic `runBacktest` unit (Task 8). It runs in every lane (no Docker), so a Docker-less CI still gates the cap.
 
 - [ ] **Step 5: Confirm existing goldens hold with the flag ON and OFF**
 
