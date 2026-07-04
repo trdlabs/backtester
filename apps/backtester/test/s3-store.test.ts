@@ -5,8 +5,7 @@ import { InMemoryArtifactStore } from '../src/artifacts/store';
 import { S3BundleStore } from '../src/sandbox/s3-bundle-store';
 import { InMemoryBundleStore } from '../src/sandbox/bundle-store';
 import { bundleHash } from '../src/sandbox/bundle';
-import { createModuleManifest } from '@trading-backtester/sdk/builder';
-import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
+import { makeBundle } from './helpers.js';
 
 describe('S3ObjectClient fake contract', () => {
   it('put→get round-trips, head reflects presence, absent get is undefined', async () => {
@@ -49,22 +48,6 @@ describe('S3ArtifactStore', () => {
     expect(s3Ref).toBe(memRef);
   });
 });
-
-function makeBundle(): ModuleBundle {
-  const manifest = createModuleManifest({
-    id: 'b',
-    version: '1.0.0',
-    kind: 'strategy',
-    name: 'fixture',
-    summary: 's',
-    rationale: 'r',
-    hooks: ['onBarClose'],
-    paramsSchema: { type: 'object' },
-    capabilities: { platformSdk: true },
-    dataNeeds: { closedCandlesUpToCurrent: true },
-  });
-  return { manifest, entry: 'module.mjs', files: { 'module.mjs': 'export function signals(c){return c.map(()=>false);}' } };
-}
 
 describe('S3BundleStore', () => {
   it('put→get round-trips and returns the same hash as bundleHash', async () => {

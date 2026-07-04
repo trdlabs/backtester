@@ -18,6 +18,7 @@ import type {
   RunTimelineEntry,
 } from '@trading/research-contracts';
 import { canTransition, type InternalJobStatus } from './lifecycle';
+import { QUEUE_NOTIFY_CHANNEL } from './queue-notify-channel.js';
 import type {
   JobEventRow,
   JobRow,
@@ -136,6 +137,11 @@ const SELECT_COLS = '*';
 
 export class PgJobStore implements JobStore {
   constructor(private readonly pool: Pool) {}
+
+  /** Wake listening workers: a job just became claimable. Best-effort — a lost NOTIFY only costs poll latency. */
+  private async notifyQueued(): Promise<void> {
+    await this.pool.query(`SELECT pg_notify($1, '')`, [QUEUE_NOTIFY_CHANNEL]);
+  }
 
   async insertOrGet(job: NewJob): Promise<{ job: JobRow; created: boolean }> {
     const timeline: RunTimelineEntry[] = [{ status: 'accepted', atMs: job.acceptedAtMs }];
@@ -264,6 +270,7 @@ export class PgJobStore implements JobStore {
         patch.attempts ?? null,
       ],
     );
+    if (to === 'queued' && r.rowCount === 1) await this.notifyQueued();
     return r.rowCount === 1;
   }
 
@@ -394,6 +401,7 @@ export class PgJobStore implements JobStore {
       [nowMs, JSON.stringify([{ status: 'expired', atMs: nowMs }])],
     );
 
+    let requeued = 0;
     let coalescePoisoned: { rows: JobDbRow[] } = { rows: [] };
     if (coalesceEnabled) {
       // Coalescing crash-attribution (INV-6: gated on coalesceEnabled — the plain attempts-based
@@ -411,7 +419,7 @@ export class PgJobStore implements JobStore {
          RETURNING *`,
         [nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }]), waitCap],
       );
-      await this.pool.query(
+      const coalesceRequeue = await this.pool.query(
         `UPDATE backtest_job SET
            status = 'queued', queued_at_ms = $1::bigint, leased_by = NULL, lease_expires_at = NULL,
            compute_wait_attempts = compute_wait_attempts + 1,
@@ -421,6 +429,7 @@ export class PgJobStore implements JobStore {
            AND compute_wait_attempts < $3`,
         [nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }]), waitCap],
       );
+      requeued += coalesceRequeue.rowCount ?? 0;
     }
     // Crash DURING/AFTER the engine (or coalescing disabled): existing attempts-based path. When
     // coalesceEnabled, the engine_attempt_charged = false rows have already been handled above, so
@@ -440,7 +449,7 @@ export class PgJobStore implements JobStore {
       [nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }]), maxAttempts],
     );
     // Requeue: expired-lease running jobs under the cap → back to 'queued', lease cleared (non-terminal).
-    await this.pool.query(
+    const attemptsRequeue = await this.pool.query(
       `UPDATE backtest_job SET
          status = 'queued', queued_at_ms = $1::bigint, leased_by = NULL, lease_expires_at = NULL,
          timeline_json = timeline_json || $2::jsonb
@@ -449,6 +458,7 @@ export class PgJobStore implements JobStore {
          ${engineChargedFilter}`,
       [nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }]), maxAttempts],
     );
+    requeued += attemptsRequeue.rowCount ?? 0;
     const timedOut = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
          status = 'timed_out', terminal_at_ms = $1::bigint, terminal_code = 'run_deadline_exceeded',
@@ -457,6 +467,7 @@ export class PgJobStore implements JobStore {
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'timed_out', atMs: nowMs }])],
     );
+    if (requeued > 0) await this.notifyQueued();
     return [...expired.rows, ...coalescePoisoned.rows, ...poisoned.rows, ...timedOut.rows].map(rowToJob);
   }
 

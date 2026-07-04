@@ -19,6 +19,7 @@ import { isTerminal, publicStatus } from '../jobs/lifecycle';
 import { publishCompletion, reapAndPublish, type CompletionDeps } from '../jobs/completion';
 import { submitRun, SubmitError, type SubmitDeps } from '../jobs/submit';
 import { buildRegistryDescriptor } from './registry-route.js';
+import { registerBundleRoutes } from './bundles.js';
 
 export interface ServerDeps extends SubmitDeps, CompletionDeps {
   store: JobStore;
@@ -190,6 +191,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const updated = await deps.store.get(runId);
     return toStatusView(updated!);
   });
+
+  registerBundleRoutes(app, deps);
 
   return app;
 }

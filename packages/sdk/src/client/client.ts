@@ -10,7 +10,9 @@ import type {
 } from '../artifacts/index';
 import type {
   CapabilityDescriptor,
+  ContentHash,
   DatasetDescriptor,
+  ModuleBundle,
   ModuleValidateRequest,
   RegistryDescriptor,
   RunJobHandle,
@@ -28,6 +30,16 @@ import {
   BacktesterRateLimitError,
   BacktesterValidationError,
 } from './errors';
+
+/** True when `err` is a client error thrown by `raise()` carrying the given HTTP status. */
+function isStatus(err: unknown, status: number): boolean {
+  return err instanceof BacktesterError && err.status === status;
+}
+
+/** Reads the server's `code` field off a client error thrown by `raise()`, if present. */
+function codeOf(err: unknown): string | undefined {
+  return err instanceof BacktesterError ? err.code : undefined;
+}
 
 export interface FetchLikeInit {
   method?: string;
@@ -100,6 +112,8 @@ export class BacktesterClient {
   private readonly token: string;
   private readonly fetchImpl: FetchLike;
   private readonly retry: RetryOptions;
+  /** Bytes cache keyed by content hash, populated by putBundle() — backs submitRun's by-ref self-heal. */
+  private readonly bundleCache = new Map<ContentHash, ModuleBundle>();
 
   constructor(opts: BacktesterClientOptions) {
     this.base = opts.baseUrl.replace(/\/+$/, '');
@@ -135,7 +149,8 @@ export class BacktesterClient {
         await this.sleep(this.backoffMs(attempt));
         continue;
       }
-      if (res.ok) return (await res.json()) as T;
+      // HEAD responses carry no body by HTTP convention (used by hasBundle) — skip the JSON parse.
+      if (res.ok) return (method === 'HEAD' ? undefined : await res.json()) as T;
       const retryable = res.status === 429 || (idempotent && (res.status === 502 || res.status === 503 || res.status === 504));
       if (!retryable || attempt === maxAttempts) return this.raise(res, path);
       const raSeconds = numericRetryAfterS(res);
@@ -201,8 +216,47 @@ export class BacktesterClient {
     return this.request('POST', '/v1/modules/validate', req);
   }
 
-  submitRun(req: RunSubmitRequest): Promise<RunJobHandle> {
-    return this.request('POST', '/v1/runs', req);
+  /** Uploads a module bundle by content, ahead of (or instead of) a by-ref submitRun. */
+  async putBundle(bundle: ModuleBundle): Promise<ContentHash> {
+    const { hash } = await this.request<{ hash: ContentHash }>('POST', '/v1/bundles', bundle);
+    this.bundleCache.set(hash, bundle);
+    return hash;
+  }
+
+  /** True (200) / false (404) — does the server already have this bundle content? Other statuses throw. */
+  async hasBundle(hash: ContentHash): Promise<boolean> {
+    try {
+      await this.request('HEAD', `/v1/bundles/${hash}`);
+      return true;
+    } catch (e) {
+      if (isStatus(e, 404)) return false;
+      throw e;
+    }
+  }
+
+  /**
+   * Submits a run. If the server rejects a submit with 409 `unknown_bundle` (the referenced bundle
+   * isn't known server-side — e.g. it expired, or the ref was stale) and the client can put its hands
+   * on the bundle bytes — either inline (`req.moduleBundle`) or from the `putBundle` cache keyed by
+   * `req.bundleRef` — it self-heals with ONE re-PUT + ONE retry, reusing the identical `req` object so
+   * the retry carries the SAME `resumeToken` (never a duplicate run). The real by-ref flow submits with
+   * `bundleRef` ONLY (the server 400s a request carrying both fields), so the cache is what makes that
+   * flow self-healable. If no bytes are in hand (inline or cached), the 409 is surfaced — there is
+   * nothing to re-PUT. Bounded to one retry: a second 409 propagates rather than looping.
+   */
+  async submitRun(req: RunSubmitRequest): Promise<RunJobHandle> {
+    try {
+      return await this.request<RunJobHandle>('POST', '/v1/runs', req);
+    } catch (e) {
+      if (isStatus(e, 409) && codeOf(e) === 'unknown_bundle') {
+        const bytes = req.moduleBundle ?? (req.bundleRef ? this.bundleCache.get(req.bundleRef) : undefined);
+        if (bytes) {
+          await this.putBundle(bytes);
+          return await this.request<RunJobHandle>('POST', '/v1/runs', req); // same req ⇒ same resumeToken
+        }
+      }
+      throw e;
+    }
   }
 
   getRunStatus(runId: string): Promise<RunStatusView> {

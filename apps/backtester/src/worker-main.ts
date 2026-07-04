@@ -4,6 +4,8 @@
 import { buildApp, type AppHandles } from './app.js';
 import { loadConfig, type AppConfig } from './config.js';
 import { runWorkerLoop } from './jobs/worker.js';
+import { createPgQueueWaker, createTimeoutWaker, type QueueWaker } from './jobs/queue-notify.js';
+import { PgJobStore } from './jobs/pg-job-store.js';
 import { startWorkerHealthServer } from './jobs/worker-health.js';
 import { pathToFileURL } from 'node:url';
 
@@ -23,6 +25,12 @@ async function main(): Promise<void> {
   const ac = new AbortController();
   const deps = app.workerDeps; // exposed by buildApp (Step 4)
   const lease = { workerId: config.workerId, ttlMs: config.workerLeaseTtlMs, maxAttempts: config.workerMaxAttempts };
+
+  // One dedicated waker per worker process. The `instanceof PgJobStore` check is the AUTHORITATIVE
+  // gate — the flag alone must never construct a Pg (LISTEN) waker against an InMemory store.
+  const usePgWaker =
+    config.queueNotify && config.databaseUrl !== undefined && deps.store instanceof PgJobStore;
+  const waker: QueueWaker = usePgWaker ? createPgQueueWaker(config.databaseUrl!) : createTimeoutWaker();
 
   let loopDone = false;
   let draining = false;
@@ -48,6 +56,7 @@ async function main(): Promise<void> {
       heartbeatMs: config.workerHeartbeatMs,
       pollMs: config.workerPollMs,
       signal: ac.signal,
+      waker,
     },
   ).finally(() => {
     loopDone = true;
@@ -57,6 +66,7 @@ async function main(): Promise<void> {
     draining = true; // readiness → 503 immediately; liveness stays 200 during graceful drain
     ac.abort();
     await loop;
+    await waker.dispose(); // the waker owns its own connection, separate from app.dispose()'s pool
     await app.dispose();
     await health?.close();
     process.exit(0);

@@ -222,6 +222,36 @@ WORKER_CONCURRENCY` — see the capacity-budget formula above.
   honored; the HTTP-date form is ignored → backoff), network/502-504 only for GETs or submits
   carrying a `resumeToken`. `retry: { maxAttempts: 1 }` disables.
 
+### Queue-wake (LISTEN/NOTIFY)
+
+`BACKTESTER_QUEUE_NOTIFY=true` (default false; **Postgres only** — no effect on the in-memory store)
+makes each worker hold one dedicated `LISTEN backtest_job_queued` connection and wake the instant a
+job is enqueued (submit) or requeued (reap), instead of waiting out `WORKER_POLL_MS`. Latency-only:
+polling remains the backstop, so a dropped/late notification just costs up to one poll interval —
+never a stuck job. Cost: **+1 Postgres connection per worker process**, outside `BACKTESTER_PG_POOL_MAX`
+(fleet math: `worker_pods × (pool_max + 1)` + API pods). Kill-switch: set the flag false.
+
+Note: the `pg_notify` **emit** side runs unconditionally on Postgres (on every enqueue/requeue) — the
+flag gates only the **LISTEN/waker** side. With the flag off there is no listener, so each emit is a DB
+no-op costing one extra lightweight `SELECT pg_notify(...)` round-trip on the enqueue path; worker
+claim/drain behavior is byte-for-byte unchanged. This is negligible at single-user scale; if enqueue
+throughput ever becomes hot, gate the emit at construction too.
+
+### Bundle-by-ref
+
+`POST /v1/bundles` (body = a ModuleBundle) validates the bundle and stores it in the content-addressed
+`BundleStore`, returning `{ hash }`. `HEAD /v1/bundles/:hash` reports presence. `POST /v1/runs` accepts
+`bundleRef` (a `sha256:…` content hash) as an alternative to inline `moduleBundle` — exactly one of the
+two. A run submitted by-ref that references an unknown hash gets `409 unknown_bundle`; the SDK self-heals
+by re-uploading once and retrying with the same `resumeToken`. Fingerprint/dedup identity is
+submission-style-invariant (inline X and bundleRef=hash(X) share one identity), so a by-ref submit of an
+already-computed bundle is a dedup HIT.
+
+**Multi-node:** `FileBundleStore` is host-local — a bundle uploaded to one node is invisible to another.
+Cross-fleet bundle-by-ref requires the shared `S3BundleStore` (`BACKTESTER_STORE_BACKEND=s3`). On a single
+node it works as-is; the `409 → re-PUT` self-heal covers a ref that misses on the wrong node (one extra
+upload, never a failure). No bundle GC/TTL yet — deferred to the multi-user gate.
+
 ## Result dedup (Phase C item 11)
 
 Skips redundant compute (engine + sandbox execution) for a run whose identity was already computed

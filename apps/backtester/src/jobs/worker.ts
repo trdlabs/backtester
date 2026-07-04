@@ -715,7 +715,14 @@ export async function drainQueue(deps: WorkerDeps, concurrency = 1): Promise<num
  */
 export async function runWorkerLoop(
   deps: WorkerDeps,
-  opts: { concurrency: number; heartbeatMs: number; pollMs: number; signal: AbortSignal },
+  opts: {
+    concurrency: number;
+    heartbeatMs: number;
+    pollMs: number;
+    signal: AbortSignal;
+    /** Wakes the idle wait early on a queue NOTIFY. Absent ⇒ today's inline-timeout poll (unchanged). */
+    waker?: import('./queue-notify.js').QueueWaker;
+  },
 ): Promise<void> {
   let pendingRenew: Promise<unknown> = Promise.resolve();
   // Active-leader identities for this worker: populated by the gate's registerLeader (Task 6, lock-win)
@@ -758,10 +765,14 @@ export async function runWorkerLoop(
       }
       if (opts.signal.aborted) break;
       if (processed === 0) {
-        await new Promise<void>((resolve) => {
-          const t = setTimeout(resolve, opts.pollMs);
-          opts.signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
-        });
+        if (opts.waker) {
+          await opts.waker.waitForWake(opts.pollMs, opts.signal);
+        } else {
+          await new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, opts.pollMs);
+            opts.signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+          });
+        }
       }
     }
   } finally {
