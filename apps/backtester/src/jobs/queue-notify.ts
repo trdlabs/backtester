@@ -65,13 +65,37 @@ export function createPgQueueWaker(connectionString: string): QueueWaker {
   };
 
   let backoffMs = 100;
+  let reconnecting = false;
+  // Reentrancy guard: a single dying connection can fire 'error' then 'end' (TCP reset), or
+  // Client.connect() can reject AND emit 'error' — each path calls reconnect(). Without a guard,
+  // two concurrent cycles would both read/clear `client`, both sleep the same backoffMs (racing
+  // the counter, weakening the exponential growth), and both call connect(true), spawning two
+  // independent Client instances — the race loser becomes an orphaned live LISTEN connection whose
+  // own error/end handlers spawn further reconnect chains (unbounded connection leak). At most one
+  // reconnect cycle runs at a time; a genuine later disconnect still triggers a fresh reconnect once
+  // this cycle's `finally` clears the flag. Retries loop *inside* this single invocation (rather than
+  // recursing into a fresh reconnect() call) so the retry can never race the enclosing `finally`.
   const reconnect = async (): Promise<void> => {
-    if (disposed) return;
-    try { await client?.end(); } catch { /* already gone */ }
-    client = undefined;
-    await new Promise((r) => setTimeout(r, backoffMs));
-    backoffMs = Math.min(backoffMs * 2, 5_000);
-    try { await connect(true); backoffMs = 100; } catch { void reconnect(); }
+    if (disposed || reconnecting) return;
+    reconnecting = true;
+    try {
+      for (;;) {
+        try { await client?.end(); } catch { /* already gone */ }
+        client = undefined;
+        await new Promise((r) => setTimeout(r, backoffMs));
+        backoffMs = Math.min(backoffMs * 2, 5_000);
+        if (disposed) return;
+        try {
+          await connect(true);
+          backoffMs = 100;
+          return;
+        } catch {
+          // connect failed — loop and retry with the next backoff step.
+        }
+      }
+    } finally {
+      reconnecting = false;
+    }
   };
 
   const started = connect(false).catch(() => { void reconnect(); });
@@ -88,6 +112,11 @@ export function createPgQueueWaker(connectionString: string): QueueWaker {
         const t = setTimeout(done, pollMs);
         signal.addEventListener('abort', done);
       });
+      // Accepted edge case: if two NOTIFYs arrive in one synchronous batch while this wait is
+      // resolving, the second onNotify() sets pendingWake = true, but this tail unconditionally
+      // clears it — the second wake is lost. This is fine: NOTIFY is a latency-only optimization,
+      // and pollMs polling is the correctness backstop, so the worst case is one extra poll
+      // interval before the next drain picks up the missed work, never a stuck job.
       pendingWake = false;
     },
     async dispose() {

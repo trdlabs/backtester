@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { Client } from 'pg';
 import { createPgQueueWaker, createTimeoutWaker } from '../src/jobs/queue-notify.js';
 import { QUEUE_NOTIFY_CHANNEL } from '../src/jobs/queue-notify-channel.js';
