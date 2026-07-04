@@ -200,8 +200,14 @@ covers a ref that misses on the "wrong" node — at most one extra upload, never
   unknown_bundle`; both sources → `400`; malformed ref → `400`.
 - **Fingerprint-invariance golden:** `requestFingerprint(inline X) === requestFingerprint(bundleRef
   = hash(X))`. Plus an end-to-end Pg-gated dedup check: inline submit, then by-ref submit of the
-  same bundle → **dedup HIT** (same `result_hash`, `engineMs: null` on the second). This is the gate
-  binding by-ref to dedup.
+  same bundle → **dedup HIT**; the second run skips the engine (`engineMs: null`, `deduped_from`
+  set), while its result payload is **re-stamped for its own runId**. Do NOT assert equal
+  `result_hash` across the two runs — `result_hash` is runId-stamped, so distinct runIds MUST
+  differ (preserve-contract + restamp model). Prove compute equivalence with the existing
+  normalize/restamp golden pattern (normalize both to a common runId → byte-identical), NOT by
+  comparing the two runs' raw hashes. (Equal `result_hash` is correct only for a `resumeToken`
+  replay — the same run re-attached — which is a different case from a duplicate run.) This is the
+  gate binding by-ref to dedup.
 - **SDK:** `putBundle` returns the hash; `hasBundle` true/false; submit by-ref; self-healing on
   `409` does one re-PUT + retry **with the same resumeToken** when bytes are available, and does NOT
   retry (surfaces) when only a `bundleRef` was given.
