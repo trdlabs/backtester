@@ -51,7 +51,7 @@ describe('SDK bundle-ref', () => {
     await expect(c.hasBundle(H)).rejects.toBeTruthy();
   });
 
-  it('submitRun with moduleBundle self-heals ONE 409 unknown_bundle via re-PUT + retry with the same resumeToken', async () => {
+  it('submitRun with bundleRef-only self-heals ONE 409 unknown_bundle from the putBundle cache (re-PUT + retry, same resumeToken)', async () => {
     let submitCalls = 0;
     let putCalls = 0;
     const tokens: unknown[] = [];
@@ -73,20 +73,29 @@ describe('SDK bundle-ref', () => {
       },
     });
     const c = new BacktesterClient({ baseUrl: 'http://x', token: 't', fetchImpl: fetchImpl as never });
-    await c.submitRun({ resumeToken: 'tok', bundleRef: H, moduleBundle: {} as never } as never);
-    expect(putCalls).toBe(1);
+    // Populate the cache the same way the real bundle-by-ref flow does: putBundle first.
+    const hash = await c.putBundle({} as never);
+    expect(hash).toBe(H);
+    // Real by-ref submit carries ONLY bundleRef — the server 400s if moduleBundle is also present.
+    await c.submitRun({ resumeToken: 'tok', bundleRef: H } as never);
+    expect(putCalls).toBe(2); // 1 cache-populating put + 1 self-heal re-PUT
     expect(submitCalls).toBe(2);
     expect(tokens).toEqual(['tok', 'tok']); // same resumeToken on retry
   });
 
-  it('submitRun with ONLY bundleRef surfaces 409 (no bytes to re-PUT)', async () => {
+  it('submitRun with a bundleRef that was never putBundle-d (not cached) surfaces the 409 (no bytes to re-PUT)', async () => {
+    let putCalls = 0;
     const fetchImpl = mockFetch({
+      'POST /v1/bundles': () => {
+        putCalls++;
+        return new Response(JSON.stringify({ hash: 'sha256:' + 'z'.repeat(64) }), { status: 200 });
+      },
       'POST /v1/runs': () =>
         new Response(JSON.stringify({ code: 'unknown_bundle', message: 'x' }), { status: 409 }),
     });
     const c = new BacktesterClient({ baseUrl: 'http://x', token: 't', fetchImpl: fetchImpl as never });
-    await expect(
-      c.submitRun({ resumeToken: 'tok', bundleRef: 'sha256:' + 'c'.repeat(64) } as never),
-    ).rejects.toBeTruthy();
+    const H2 = ('sha256:' + 'c'.repeat(64)) as ContentHash; // never putBundle'd — not in cache
+    await expect(c.submitRun({ resumeToken: 'tok', bundleRef: H2 } as never)).rejects.toBeTruthy();
+    expect(putCalls).toBe(0); // no cache hit ⇒ no re-PUT attempted
   });
 });

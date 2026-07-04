@@ -112,6 +112,8 @@ export class BacktesterClient {
   private readonly token: string;
   private readonly fetchImpl: FetchLike;
   private readonly retry: RetryOptions;
+  /** Bytes cache keyed by content hash, populated by putBundle() — backs submitRun's by-ref self-heal. */
+  private readonly bundleCache = new Map<ContentHash, ModuleBundle>();
 
   constructor(opts: BacktesterClientOptions) {
     this.base = opts.baseUrl.replace(/\/+$/, '');
@@ -217,6 +219,7 @@ export class BacktesterClient {
   /** Uploads a module bundle by content, ahead of (or instead of) a by-ref submitRun. */
   async putBundle(bundle: ModuleBundle): Promise<ContentHash> {
     const { hash } = await this.request<{ hash: ContentHash }>('POST', '/v1/bundles', bundle);
+    this.bundleCache.set(hash, bundle);
     return hash;
   }
 
@@ -232,19 +235,25 @@ export class BacktesterClient {
   }
 
   /**
-   * Submits a run. If the server rejects a by-ref submit with 409 `unknown_bundle` (the referenced
-   * bundle isn't known server-side — e.g. it expired, or the ref was stale), and the caller still holds
-   * the bundle bytes (`req.moduleBundle` present), self-heals with ONE re-PUT + retry, reusing the
-   * identical `req` object so the retry carries the SAME `resumeToken` (never a duplicate run). If only
-   * `bundleRef` was given (no bytes in hand), the 409 is surfaced — there is nothing to re-PUT.
+   * Submits a run. If the server rejects a submit with 409 `unknown_bundle` (the referenced bundle
+   * isn't known server-side — e.g. it expired, or the ref was stale) and the client can put its hands
+   * on the bundle bytes — either inline (`req.moduleBundle`) or from the `putBundle` cache keyed by
+   * `req.bundleRef` — it self-heals with ONE re-PUT + ONE retry, reusing the identical `req` object so
+   * the retry carries the SAME `resumeToken` (never a duplicate run). The real by-ref flow submits with
+   * `bundleRef` ONLY (the server 400s a request carrying both fields), so the cache is what makes that
+   * flow self-healable. If no bytes are in hand (inline or cached), the 409 is surfaced — there is
+   * nothing to re-PUT. Bounded to one retry: a second 409 propagates rather than looping.
    */
   async submitRun(req: RunSubmitRequest): Promise<RunJobHandle> {
     try {
       return await this.request<RunJobHandle>('POST', '/v1/runs', req);
     } catch (e) {
-      if (isStatus(e, 409) && codeOf(e) === 'unknown_bundle' && req.moduleBundle) {
-        await this.putBundle(req.moduleBundle);
-        return await this.request<RunJobHandle>('POST', '/v1/runs', req); // same req ⇒ same resumeToken
+      if (isStatus(e, 409) && codeOf(e) === 'unknown_bundle') {
+        const bytes = req.moduleBundle ?? (req.bundleRef ? this.bundleCache.get(req.bundleRef) : undefined);
+        if (bytes) {
+          await this.putBundle(bytes);
+          return await this.request<RunJobHandle>('POST', '/v1/runs', req); // same req ⇒ same resumeToken
+        }
       }
       throw e;
     }
