@@ -11,6 +11,8 @@ import { DEFAULT_SANDBOX, SANDBOX_IMAGE } from '../src/engine/sandbox-policy';
 import type { JobStore } from '../src/jobs/job-store';
 import type { RunSubmitRequest } from '@trading/research-contracts';
 import type { StoreFactory } from './store-factories';
+import { createModuleManifest } from '@trading-backtester/sdk/builder';
+import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = resolve(HERE, '../fixtures/candles');
@@ -108,6 +110,23 @@ export async function makeApp(
       await handle.teardown();
     },
   };
+}
+
+/** Shared fixture ModuleBundle for tests that need a bundle by value or by hash. */
+export function makeBundle(): ModuleBundle {
+  const manifest = createModuleManifest({
+    id: 'b',
+    version: '1.0.0',
+    kind: 'strategy',
+    name: 'fixture',
+    summary: 's',
+    rationale: 'r',
+    hooks: ['onBarClose'],
+    paramsSchema: { type: 'object' },
+    capabilities: { platformSdk: true },
+    dataNeeds: { closedCandlesUpToCurrent: true },
+  });
+  return { manifest, entry: 'module.mjs', files: { 'module.mjs': 'export function signals(c){return c.map(()=>false);}' } };
 }
 
 export function runBody(over: Partial<RunSubmitRequest> = {}): RunSubmitRequest {

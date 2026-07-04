@@ -32,9 +32,12 @@ function normalize(req: RunSubmitRequest, bundleHashValue: ContentHash | null) {
   };
 }
 
-/** Fingerprint of an INCOMING submit request (bundle bytes present → hashed inline). */
+/** Fingerprint of an INCOMING submit request. Bundle source is folded to a single ContentHash before
+ *  normalization: bundle bytes present → hashed inline; otherwise `bundleRef` (already a hash) is used
+ *  directly — so an inline submit and a by-ref submit of the SAME bundle produce the SAME fingerprint. */
 export function requestFingerprint(req: RunSubmitRequest): string {
-  return sha256Hex(canonicalJson(normalize(req, req.moduleBundle ? bundleHash(req.moduleBundle) : null)));
+  const bundleHashValue = req.moduleBundle ? bundleHash(req.moduleBundle) : (req.bundleRef ?? null);
+  return sha256Hex(canonicalJson(normalize(req, bundleHashValue)));
 }
 
 /**

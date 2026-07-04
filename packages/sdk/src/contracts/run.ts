@@ -46,6 +46,8 @@ export interface ModuleValidateRequest {
 export interface RunSubmitRequest extends Omit<BacktestRunRequest, 'runId'> {
   readonly runId?: string;
   readonly moduleBundle?: ModuleBundle;
+  /** Content hash of a bundle already uploaded via POST /v1/bundles. Mutually exclusive with moduleBundle. */
+  readonly bundleRef?: ContentHash;
   readonly resumeToken?: string;
   readonly correlationId?: string;
   readonly workflowId?: string;
