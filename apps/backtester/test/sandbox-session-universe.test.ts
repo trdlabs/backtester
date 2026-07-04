@@ -181,4 +181,44 @@ describe('SandboxSession universe mode', () => {
     const inits = driver.sent.filter((m) => (m as { t?: string }).t === 'init');
     expect(inits).toHaveLength(2);
   });
+
+  // Review fix: callHookBatch's eager-build/rewind bookkeeping (bookkeepingAfter snapshot +
+  // partial-stop restore) must target the SAME per-symbol slot buildHookPayload advances in
+  // universe mode — not the frozen this.barIndex/this.lastBarTs scalars. A batch is single-symbol
+  // (the executor keys it by ctxs[0].symbol), so this drives a 3-bar universe batch for ONE symbol
+  // with an okBatch mid-stop (stoppedAt=1, a non-empty decision on bar1) and asserts the rewind
+  // lands in AAA's map slot at barIndex 1 (not the initial -1, not advanced through bar2's build).
+  it('callHookBatch okBatch partial-stop rewinds the PER-SYMBOL map slot (universe mode), not the scalars', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const ctxs = [0, 1, 2].map((i) => makeCtx('AAA', i * 60_000));
+    const batchPromise = session.callHookBatch(ctxs);
+    writeOk(driver); // reply to lazy init(AAA)
+    driver.stdout.write(`${JSON.stringify({ t: 'okBatch', seq: 1, stoppedAt: 1, decisions: ['SIGNAL'] })}\n`);
+    const result = await batchPromise;
+
+    expect(result).toEqual({ ok: true, stoppedAt: 1, decisions: ['SIGNAL'] });
+
+    // Discriminator: under the PRE-FIX bug, bookkeepingAfter snapshots the frozen scalars (always
+    // {barIndex:-1, lastBarTs:undefined} in universe mode, since buildHookPayload never writes the
+    // scalars there) and the restore below writes into those scalars too — so AAA's REAL map slot
+    // is left un-rewound, stuck at barIndex 2 (from the eager build of entry 2) with
+    // lastBarTs=2*60_000. The next call below, for ctxs[2] (ts=2*60_000), would then see
+    // ctx.bar.ts === st.lastBarTs and emit newBar: null (silently dropping bar2 — the harness would
+    // never learn about it). Post-fix, the restore rewinds AAA's map slot to "state after entry 1"
+    // (barIndex 1, lastBarTs=60_000), so the next call sees a ts mismatch and correctly re-emits
+    // bar2's newBar. This is NOT a vacuous assertion — it fails under the pre-fix scalar-only
+    // bookkeeping and passes only once the rewind targets the per-symbol map slot.
+    const nextPromise = session.callHook('onBarClose', ctxs[2]!);
+    driver.stdout.write(`${JSON.stringify({ t: 'ok', seq: 2, decisions: [] })}\n`);
+    await nextPromise;
+
+    const hookEntries = driver.sent.filter(
+      (m): m is { t: string; newBar: { ts: number } | null; snapshot: { barIndex: number } } =>
+        (m as { t?: string }).t === 'hook',
+    );
+    const lastHook = hookEntries[hookEntries.length - 1]!;
+    expect(lastHook.newBar).toEqual({ ts: 2 * 60_000, open: 1, high: 1, low: 1, close: 1, volume: 1 });
+    expect(lastHook.snapshot.barIndex).toBe(2);
+  });
 });

@@ -276,6 +276,35 @@ export class SandboxSession {
   }
 
   /**
+   * Read the current barIndex/lastBarTs bookkeeping slot that callHookBatch is tracking for
+   * `symbol` — the per-symbol map slot in universe mode, or the scalars otherwise. Mirrors
+   * buildHookPayload's own useMap branch so callHookBatch's snapshot/restore always agrees with
+   * where buildHookPayload actually wrote the advanced counter.
+   */
+  private readBookkeeping(symbol: string): { barIndex: number; lastBarTs: number | undefined } {
+    if (this.cfg.universe === true) {
+      const st = this.perSymbol.get(symbol);
+      return { barIndex: st?.barIndex ?? -1, lastBarTs: st?.lastBarTs };
+    }
+    return { barIndex: this.barIndex, lastBarTs: this.lastBarTs };
+  }
+
+  /**
+   * Write back a rewound barIndex/lastBarTs snapshot for `symbol` — into the per-symbol map slot
+   * in universe mode, or the scalars otherwise. Counterpart to readBookkeeping; used by
+   * callHookBatch's partial-stop rewind so the REAL counter (map slot, in universe mode) is what
+   * gets rolled back, not a frozen scalar.
+   */
+  private writeBookkeeping(symbol: string, state: { barIndex: number; lastBarTs: number | undefined }): void {
+    if (this.cfg.universe === true) {
+      this.perSymbol.set(symbol, { barIndex: state.barIndex, lastBarTs: state.lastBarTs });
+    } else {
+      this.barIndex = state.barIndex;
+      this.lastBarTs = state.lastBarTs;
+    }
+  }
+
+  /**
    * Batch variant of callHook (17b) — sends N pre-built `onBarClose` payloads in ONE envelope; the
    * harness may stop early (first non-empty decision) or fail partway through (see hook-batch.mjs's
    * `runHookBatch`). INERT: no production caller yet (the engine still drives callHook one bar at a
@@ -319,11 +348,15 @@ export class SandboxSession {
     const channel = this.channel;
     if (channel === undefined) return { ok: false, stoppedAt: -1, error: this.lastError };
 
+    // Batch is single-symbol (the executor keys a batch by ctxs[0].symbol) — read/restore below
+    // target THAT symbol's bookkeeping slot (map, in universe mode). Falls back to cfg.symbol only
+    // for an empty batch, where it's never actually consulted (bars stays empty).
+    const batchSymbol = ctxs[0]?.symbol ?? this.cfg.symbol;
     const bars: HookBatchEntry[] = [];
     const bookkeepingAfter: Array<{ barIndex: number; lastBarTs: number | undefined }> = [];
     for (const ctx of ctxs) {
       bars.push(this.buildHookPayload(ctx)); // advances barIndex/lastBarTs per entry (shared with callHook)
-      bookkeepingAfter.push({ barIndex: this.barIndex, lastBarTs: this.lastBarTs });
+      bookkeepingAfter.push(this.readBookkeeping(batchSymbol));
     }
 
     this.seq += 1;
@@ -363,8 +396,7 @@ export class SandboxSession {
       // Harness executed 0..stoppedAt; roll host-side bar bookkeeping back for the discarded tail
       // so the next lockstep/batch call re-sends those bars' newBar increments (see doc above).
       const restore = bookkeepingAfter[outcome.stoppedAt];
-      this.barIndex = restore.barIndex;
-      this.lastBarTs = restore.lastBarTs;
+      this.writeBookkeeping(batchSymbol, restore);
       return finish({ ok: true, stoppedAt: outcome.stoppedAt, decisions: outcome.decisions });
     }
     if (outcome.kind === 'err' && outcome.barOffset !== undefined) {
