@@ -2,7 +2,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app';
 import { loadConfig } from '../src/config';
-import { testConfig } from './helpers';
+import { FixtureDataPort } from '../src/data/reader';
+import { testConfig, FIXTURES_DIR } from './helpers';
 
 function historical2Server(symbols: string[]): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -47,5 +48,15 @@ describe('buildApp data-source factory', () => {
     await expect(buildApp(cfg)).rejects.toThrow(
       /BACKTESTER_DATA_SOURCE=real requires a real platform URL/,
     );
+  });
+
+  it('does NOT throw when a dataPort override is supplied, even with dataSource=real and no realPlatformUrl', async () => {
+    // The guard exists to prevent a SILENT fixture fallback. When the caller injects a dataPort
+    // directly, the factory ternary never runs and config.realPlatformUrl is irrelevant — the
+    // guard must not fire.
+    const cfg = testConfig({ dataSource: 'real' });
+    const app = await buildApp(cfg, { dataPort: new FixtureDataPort(FIXTURES_DIR) });
+    expect(app.dataPort).toBeInstanceOf(FixtureDataPort);
+    await app.dispose();
   });
 });
