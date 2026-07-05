@@ -87,6 +87,12 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     ? (ownedPool ? new PgComputeLockStore(ownedPool) : new InMemoryComputeLockStore())
     : undefined;
 
+  if (config.dataSource === 'real' && !config.realPlatformUrl) {
+    throw new Error(
+      'BACKTESTER_DATA_SOURCE=real requires a real platform URL (bypassed loadConfig validation?)',
+    );
+  }
+
   const dataPort =
     overrides.dataPort ??
     (config.dataSource === 'http' && config.dataApiUrl

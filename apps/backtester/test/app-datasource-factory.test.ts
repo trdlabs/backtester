@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app';
 import { loadConfig } from '../src/config';
+import { testConfig } from './helpers';
 
 function historical2Server(symbols: string[]): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -37,5 +38,14 @@ describe('buildApp data-source factory', () => {
     expect(datasets.map(d => d.datasetRef)).toContain('REALSYM:1m');
     expect(datasets.map(d => d.datasetRef)).not.toContain('MOCKSYM:1m');
     await app.dispose();
+  });
+
+  it('rejects dataSource=real with no realPlatformUrl instead of silently falling back to FixtureDataPort', async () => {
+    // Bypasses loadConfig's own fail-fast validation by constructing the AppConfig literal directly
+    // (as a caller assembling config from another source might) — buildApp itself must guard this.
+    const cfg = testConfig({ dataSource: 'real' });
+    await expect(buildApp(cfg)).rejects.toThrow(
+      /BACKTESTER_DATA_SOURCE=real requires a real platform URL/,
+    );
   });
 });
