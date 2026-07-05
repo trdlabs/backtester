@@ -299,10 +299,10 @@ describe.skipIf(!enabled)('cross-repo E2E (backtester rows-path → real platfor
     expect(result.evidence.datasetFingerprint).toMatch(/^sha256:/);
   }, 120_000);
 
-  it('real platform: single-symbol run is deterministic across two identical closed-window runs', async () => {
+  it('real platform: single-symbol run is deterministic across two identical closed-window runs', async (ctx) => {
     const w = await pickClosedWindow(BASE_URL, REAL_TOKEN, 1);
     if (!w) {
-      console.warn('skip real-single: corpus has no usable 1m symbol');
+      ctx.skip();
       return;
     }
     const req = { symbols: w.symbols, timeframe: TF, from: w.from, to: w.to };
@@ -316,10 +316,10 @@ describe.skipIf(!enabled)('cross-repo E2E (backtester rows-path → real platfor
     expect(a.datasetFingerprint).toBe(b.datasetFingerprint);
   }, 120_000);
 
-  it('real platform: multi-symbol run is deterministic across two identical closed-window runs', async () => {
+  it('real platform: multi-symbol run is deterministic across two identical closed-window runs', async (ctx) => {
     const w = await pickClosedWindow(BASE_URL, REAL_TOKEN, 3);
     if (!w) {
-      console.warn('skip real-multi: corpus has <3 usable 1m symbols');
+      ctx.skip();
       return;
     }
     const req = { symbols: w.symbols, timeframe: TF, from: w.from, to: w.to };
