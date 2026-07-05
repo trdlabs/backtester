@@ -62,6 +62,12 @@ export interface AppHandles {
 }
 
 export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {}): Promise<AppHandles> {
+  if (!overrides.dataPort && config.dataSource === 'real' && !config.realPlatformUrl) {
+    throw new Error(
+      'BACKTESTER_DATA_SOURCE=real requires a real platform URL (bypassed loadConfig validation?)',
+    );
+  }
+
   let ownedPool: Pool | undefined;
   let store = overrides.store;
   if (!store) {

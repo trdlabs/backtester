@@ -172,14 +172,31 @@ end-to-end; the multi-symbol path surfaced + fixed a code gap (**`RowsReader` wa
 `queryRange` now honours `q.symbols`, **PR #89** squash `bb1269a`) — real 3-symbol universe runs now
 complete (OFF and ON, byte-identical). "Point at the real platform" is otherwise config-only.
 
-Remaining to CLOSE Phase A:
+**Finish slice DONE (2026-07-05, PR #91, squash `ad95303`).** Both items below are closed.
 
-1. `trading-platform`: harden the production historical-data path — decide the `'real'` config posture
-   (distinct `BACKTESTER_REAL_PLATFORM_URL/_TOKEN` vs today's shared `mock`/`real` pair), error
-   taxonomy / retries / contract-gate behaviour, and a determinism check (same window twice → same
-   `result_hash`).
-2. run the cross-repo E2E against the **real** `trading-platform` (opt-in gate, sibling of
-   `cross-repo-historical-e2e.integration.test.ts`), then make it the default backend.
+Remaining to CLOSE Phase A (now closed):
+
+1. ✅ **DONE** — `dataSource:'real'` now has its own distinct `BACKTESTER_REAL_PLATFORM_URL`/`_TOKEN`
+   pair (previously shared the `mock` pair); `loadConfig` fails fast with a stable message when
+   `real` is selected and either value is missing or whitespace-only (and, as of the
+   `feat/phase-a-followups` slice, stores the trimmed value rather than the padded raw env string).
+   `RowsDataPort.openDataset` surfaces a normalized, finite failure cause (`RealDataUnavailableError`:
+   `unauthorized` / `connection_refused` / `contract_mismatch` / `rows_resource_unavailable` /
+   `dataset_not_found` / `discover_failed`) instead of silently returning `undefined`; the worker maps
+   it to the terminal `missing_dataset` code with a fixed `cause=<reason>; datasetRef=<ref>`
+   errorDetail, on both the momentum AND overlay/strategy engine paths. `buildApp`'s factory also
+   throws explicitly if `dataSource:'real'` reaches it without a URL (a caller bypassing `loadConfig`
+   validation), closing the silent-fixture-fallback gap.
+2. ✅ **DONE** — an opt-in cross-repo E2E gate (extends
+   `cross-repo-historical-e2e.integration.test.ts`) spawns a real historical-contract server and
+   drives `dataSource:'real'` end-to-end: a closed window + symbol set derived from
+   `/historical/coverage` (never hardcoded), two identical runs compared for stable
+   `resultHash`/`datasetFingerprint` (single- AND multi-symbol determinism). The multi-symbol case
+   self-skips (reported as `skipped`, not silently passed) when the fixture corpus has fewer than 3
+   usable 1m symbols — it does **not** run in CI today on the 1-symbol golden corpus; the real
+   multi-symbol path is instead proven live on the VPS (see the verify-spike note above).
+   `dataSource:'real'` is documented as the recommended **production posture**; the code default
+   stays `fixture`.
 
 ### Phase B — internal hygiene (no consumer impact) — mostly done
 
@@ -417,10 +434,15 @@ node-per-algorithm model and is already designed.
 
 ## Definition of Done
 
-The system is “working” when (✅ except the real-platform data path):
+The system is “working” when (✅ across the board — the real-platform data path ships as an
+opt-in production posture, not a code default, by design):
 
 - `trading-lab` submits hypothesis backtests to `trading-backtester` by default ✅
 - `trading-backtester` executes the overlay path with sandboxing ✅
 - results and artifacts come back correctly ✅
-- historical data comes through the **real** platform contract (mock proven; real-platform path VERIFIED live 2026-07-05 — contract + auth + single/multi-symbol runs; default-flip + hardening + real-platform E2E gate pending — Phase A)
+- historical data comes through the **real** platform contract ✅ — mock proven; real-platform path
+  VERIFIED live 2026-07-05 (contract + auth + single/multi-symbol runs) and the closing hardening
+  slice SHIPPED 2026-07-05 (PR #91, squash `ad95303`): distinct real-platform config pair + fail-fast,
+  normalized failure-cause taxonomy, opt-in E2E determinism gate. `dataSource:'real'` is the
+  recommended production posture; the code default deliberately stays `fixture` (Phase A)
 - `sp4_mock` is no longer written (✅; type member retained for legacy read back-compat)

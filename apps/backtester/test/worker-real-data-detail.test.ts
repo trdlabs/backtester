@@ -40,6 +40,25 @@ function momentumJob(runId: string): NewJob {
   };
 }
 
+// Same request shape, routed through the OVERLAY engine (materializeFor's overlay branch calls
+// buildOverlayDataset -> dataPort.openDataset — the actual production real-platform call site).
+// No bundleHash/moduleBundle needed: the strategy-only pre-flight guard doesn't apply to 'overlay',
+// and buildOverlayDataset throws before any registry/sandbox work, so the failure is identical.
+const REQ_OVERLAY = { ...REQ, engine: 'overlay' } as const;
+
+function overlayJob(runId: string): NewJob {
+  return {
+    jobId: runId,
+    runId,
+    requestFingerprint: `fp-${runId}`,
+    request: REQ_OVERLAY as never,
+    effectiveSeed: 42,
+    datasetRef: 'smoke-btc-1m',
+    runTimeoutMs: 3_600_000,
+    acceptedAtMs: CLOCK,
+  };
+}
+
 // A dataPort whose openDataset always throws the normalized platform-failure error (Task 3),
 // with a fixed cause + datasetRef — drives processNextQueued's catch and asserts the
 // missing_dataset terminal-code mapping (Task 4).
@@ -76,6 +95,11 @@ async function enqueue(store: InMemoryJobStore, runId: string): Promise<void> {
   await store.transition(runId, 'accepted', 'queued', { atMs: CLOCK, queuedAtMs: CLOCK });
 }
 
+async function enqueueOverlay(store: InMemoryJobStore, runId: string): Promise<void> {
+  await store.insertOrGet(overlayJob(runId));
+  await store.transition(runId, 'accepted', 'queued', { atMs: CLOCK, queuedAtMs: CLOCK });
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe('worker maps RealDataUnavailableError', () => {
@@ -91,6 +115,28 @@ describe('worker maps RealDataUnavailableError', () => {
 
     // errorDetail is not projected onto the terminal row today (see worker-error-visibility.test.ts) —
     // assert it via the job_error console line the same way that test does.
+    const errSpy = vi.mocked(console.error);
+    const errorLines = errSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('"evt":"job_error"'));
+    expect(errorLines).toHaveLength(1);
+    const parsed = JSON.parse(errorLines[0]);
+    expect(parsed.code).toBe('missing_dataset');
+    expect(parsed.detail).toBe('cause=unauthorized; datasetRef=BTCUSDT:1m');
+  });
+
+  it('terminates missing_dataset with the fixed cause detail on the OVERLAY engine path', async () => {
+    // Drives materializeFor's overlay branch (buildOverlayDataset -> dataPort.openDataset), the
+    // real-platform call site for overlay/strategy runs — distinct from the momentum path above.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { store, deps } = makeCtx();
+    await enqueueOverlay(store, 'run-real-data-overlay-1');
+    await processNextQueued(deps);
+
+    const finished = await store.get('run-real-data-overlay-1');
+    expect(finished?.status).toBe('failed');
+    expect(finished?.terminalCode).toBe('missing_dataset');
+
     const errSpy = vi.mocked(console.error);
     const errorLines = errSpy.mock.calls
       .map((c) => String(c[0]))
