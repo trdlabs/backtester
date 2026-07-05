@@ -230,8 +230,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ...(env.BACKTESTER_S3_REGION ? { region: env.BACKTESTER_S3_REGION } : {}),
     };
   }
-  const realPlatformUrl = env.BACKTESTER_REAL_PLATFORM_URL;
-  const realPlatformToken = env.BACKTESTER_REAL_PLATFORM_TOKEN;
+  const realPlatformUrl = env.BACKTESTER_REAL_PLATFORM_URL?.trim();
+  const realPlatformToken = env.BACKTESTER_REAL_PLATFORM_TOKEN?.trim();
   const dataSourceResolved =
     env.BACKTESTER_DATA_SOURCE === 'http' ? 'http' :
     env.BACKTESTER_DATA_SOURCE === 'mock' ? 'mock' :
