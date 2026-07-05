@@ -18,11 +18,10 @@ describe('normalizeCloseReason', () => {
     // TP/SL analogues.
     expect(normalizeCloseReason('take_hit')).toBe('take_profit');
     expect(normalizeCloseReason('stop_hit')).toBe('stop_loss');
-    // end_of_data / forced_mtm: forced mark-to-market close because the data window ran out — the
-    // engine's doc comment states end_of_data carries forced_mtm semantics. Neither is a price-target
-    // or stop hit; both are duration/time-boundary driven, so they bucket with time_exit.
-    expect(normalizeCloseReason('end_of_data')).toBe('time_exit');
-    expect(normalizeCloseReason('forced_mtm')).toBe('time_exit');
+    // end_of_data / forced_mtm: backtest data-window forced mark-to-market closes (harness artifact),
+    // NOT strategy-authored time exits — bucket to 'other' so they can't false-match a golden time_exit.
+    expect(normalizeCloseReason('end_of_data')).toBe('other');
+    expect(normalizeCloseReason('forced_mtm')).toBe('other');
     // overlay_early_exit: a strategy/overlay-authored discretionary early exit — not a profit target,
     // not a stop, not a duration boundary. No non-other bucket applies, so it maps to 'other'.
     expect(normalizeCloseReason('overlay_early_exit')).toBe('other');
