@@ -33,5 +33,14 @@ The committed `2026-06-18-real-all` `rowsBySymbol.oi_total_usd`/`liq_*` were pro
 2. **Fix #2:** index the OI/liq window by calendar minute (align to `market-access.ts::windowMinutes`), so a skipped/delayed bar produces a gap rather than a silently-compressed window.
 3. **Clarify #3/#5:** document whether `USE_AGGREGATED_MARKET_DATA` was on for the retired long_oi bot, and whether the historical `rowsBySymbol` collector captured the aggregator's per-minute output (so a backtest on that срез sees the same OI series). If yes, #1/#2 fixes should make future golden reproducible; if no, the fixture OI is not faithful and a re-capture is needed.
 
+## Attribution (confirmed by a decision-trace diagnostic)
+
+Instrumenting the vendored module's per-bar decisions over the срез (14 `dump_detected`, 7 `enter`, **0 `missing_open_interest` / 0 `missing_liquidations`** across all 1368 bars):
+- **#1 does NOT fire on this specific срез** — the fixture has zero OI/liq gaps, so the `?? 0` gap-fabrication path is never reached here. #1 remains a real contract bug (fix it), but it is not the cause of THIS divergence.
+- **Dump-detection (price-based) is faithful in every case** — the module detects the dump on essentially the same bar as the golden's own entry timing.
+- **Primary cause (5 of 6 divergent trades: 06:14, 10:25, 11:27, 15:11, + cascading 07:05): the OI-gated entry evaluation.** After an aligned dump, the divergence is confined to `evaluateEntry`'s OI-dependent branch (`oiRecovery`/`liqRatioPct` gates) opening/rejecting at different times — i.e. #2 (call-sequence windowing) and/or #3 (OI magnitude/aggregation). Starkest cases: 11:27 and 15:11 (dump + price aligned with golden, only the OI-gated entry check diverges).
+- **A SECOND, separate cause (the 01:29 trade): a fill/price divergence, NOT OI.** Same entry bar as golden, but `entryPrice` differs 4.4% (0.2327 vs 0.2229), and the pure-price exit path then diverges completely. This points to the fixture's OHLC/fill data (or fill model) differing from what the live bot filled at — a distinct data-fidelity axis from OI, worth tracking separately.
+- **Ruled out:** `ctx.rng`/`ctx.indicators` are never referenced in the entry path; RNG/indicators do not contribute.
+
 ## Impact on G7 / the backtester
 No backtester change is needed for correctness — `market-access.ts` already implements the contract. Once the live adapter is aligned (or a new post-fix golden is captured), the Stage-1 `it.skip` exact-parity test (`apps/backtester/test/long-oi-parity/signal-parity.test.ts`) should flip green on committed data. The 2/8 already-clean matches confirm the backtest engine + timestamp handling are correct.
