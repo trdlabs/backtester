@@ -8,11 +8,14 @@ This repository is part of the `trdlabs` trading ecosystem.
 - other repositories, system architecture, or integration boundaries
 - API, MCP, SDK, or contract changes
 - rollout, migration, or cross-repo validation
+- local development, Docker, running the full ecosystem stack, or mock-platform data intervals
 
 **Read order when triggered:**
 1. `../control-center/repos.yaml`
 2. `../control-center/AGENTS.md`
 3. `../control-center/repos/trading-backtester.md`
+4. `../control-center/docs/operations/local-development.md` when starting or debugging the local stack
+5. `../control-center/docs/operations/mock-platform-data.md` when historical intervals (1m/1h/1d) or mock fixtures matter
 
 If `../control-center` is absent (standalone clone), use local repo docs only.
 
