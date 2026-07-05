@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RowsDataPort, RealDataUnavailableError } from '../src/data/rows-data-port';
+import { HistoricalClient } from '@trading-platform/sdk/historical';
 
 // ── Fixture data: full CanonicalRowV2 rows (19 fields incl. schema_version) ─────
 
@@ -386,5 +387,39 @@ describe('RowsDataPort', () => {
         await s?.close();
       }
     });
+  });
+});
+
+// SDK contract pin (Task 4, phase-a-followups): classifyDiscoverError (rows-data-port.ts) infers
+// RealDataCause from the SDK's raw thrown-error MESSAGE — it expects `HistoricalClient.discover()`
+// to embed the HTTP status as `platform /historical/discover: HTTP <status>`. This test drives the
+// REAL SDK HistoricalClient (not RowsDataPort/our classifier) against a fake server so a future SDK
+// change that stops embedding the status fails loudly here, instead of silently degrading every
+// real-platform failure to the generic 'discover_failed' bucket.
+describe('SDK contract pin: HistoricalClient.discover() error shape', () => {
+  it('embeds the HTTP status in the thrown error message on a 401', async () => {
+    let s: FastifyInstance | undefined;
+    try {
+      s = Fastify({ logger: false });
+      s.get('/historical/discover', (_r, reply) => reply.code(401).send({ error: 'unauthorized' }));
+      const url = await s.listen({ host: '127.0.0.1', port: 0 });
+
+      const client = new HistoricalClient({ baseUrl: url });
+      let caught: unknown;
+      try {
+        await client.discover();
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      // The looser shape classifyDiscoverError actually parses (/HTTP (\d{3})\b/)...
+      expect(message).toMatch(/HTTP\s*401/);
+      // ...and the exact current form, so a wording drift is visible even if it still matches the regex.
+      expect(message).toBe('platform /historical/discover: HTTP 401');
+    } finally {
+      await s?.close();
+    }
   });
 });
