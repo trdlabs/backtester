@@ -12,17 +12,18 @@ import { pathToFileURL } from 'node:url';
 import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
 import { installDenyShims, classifyError } from './deny-shims.mjs';
 import { runHookBatch } from './hook-batch.mjs';
+import { makeInstanceStore, symbolOf, resolveInstance } from './universe-instances.mjs';
 
 // Defense-in-depth: запрет спавна/shell + секрет-env (FR-006/019). Ставится ДО загрузки bundle —
 // patched singleton'ы видны коду модуля (общие node-core). Основная гарантия — флаги контейнера.
 installDenyShims();
 
 // --- session state (в памяти контейнера) ---
-let instance; // инстанцированный модуль bundle
-let rng; // session-seeded RNG
-const buffer = []; // аккумулированные закрытые свечи (≤ t)
-const oiBuffer = []; // 023 — аккумулированные OI-снимки минут ≤ t (null = gap), index-aligned с buffer
-const liqBuffer = []; // 023 — аккумулированные liq-снимки минут ≤ t (null = gap)
+// Universe session: один контейнер хостит N символов, поэтому instance/rng/buffer*
+// живут per-symbol в `store` (universe-instances.mjs), а не как module-level singletons.
+// Bundle-модуль (loadedModule) кэшируется ОДИН раз — новый instance создаётся per symbol.
+const store = makeInstanceStore();
+let loadedModule; // импортированный bundle-модуль, кэш между символами
 
 function writeLine(obj) {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
@@ -45,8 +46,8 @@ function normalize(out) {
   return Array.isArray(out) ? out : [out];
 }
 
-/** Выбрать функцию-хук на инстансе по имени. */
-function pickHook(hook) {
+/** Выбрать функцию-хук на переданном инстансе по имени (per-symbol instance — не singleton). */
+function pickHookFor(instance, hook) {
   if (instance === undefined || instance === null) return undefined;
   switch (hook) {
     case 'init':
@@ -66,17 +67,36 @@ function pickHook(hook) {
   }
 }
 
+/**
+ * Импортировать bundle-модуль (кэш ОДИН раз) и разрешить instance (per symbol) через
+ * resolveInstance — в universe-режиме non-function default export fail-closed (см.
+ * universe-instances.mjs), вне universe-режима — прежнее поведение (shared object допустим).
+ */
+async function loadFactory(entryPoint, universe) {
+  if (loadedModule === undefined) {
+    const url = pathToFileURL(`/sandbox/bundle/${entryPoint}`).href;
+    loadedModule = await import(url);
+  }
+  return resolveInstance(loadedModule, { universe });
+}
+
 async function handleInit(msg) {
+  const symbol = symbolOf(msg);
   try {
-    const url = pathToFileURL(`/sandbox/bundle/${msg.entryPoint}`).href;
-    const mod = await import(url);
-    const factory = mod.default;
-    instance = typeof factory === 'function' ? factory() : (factory ?? mod);
-    if (instance === undefined || instance === null) {
+    const resolved = await loadFactory(msg.entryPoint, msg.universe === true);
+    if (resolved.ok === false) {
+      err(undefined, 'init', resolved.code, resolved.reason);
+      return; // fail-closed: no slot created
+    }
+    const built = {
+      instance: resolved.instance,
+      rng: createSeededRng(typeof msg.seed === 'number' ? msg.seed : 0),
+    };
+    if (built.instance === undefined || built.instance === null) {
       err(undefined, 'init', 'bundle_load_failed', 'entry produced no module instance');
       return;
     }
-    rng = createSeededRng(typeof msg.seed === 'number' ? msg.seed : 0);
+    store.ensure(symbol, () => built);
     ok(undefined, []);
   } catch (e) {
     // Загрузка bundle: forbidden static import → classify; иначе синтаксис/инстанцирование → bundle_load_failed.
@@ -87,20 +107,25 @@ async function handleInit(msg) {
 
 async function handleHook(msg) {
   const { seq, hook, snapshot, newBar, newOi, newLiq } = msg;
+  const slot = store.get(symbolOf(msg));
+  if (slot === undefined) {
+    err(seq, hook, 'sandbox_output_malformed', `hook before init for symbol ${String(symbolOf(msg))}`);
+    return;
+  }
   try {
-    if (newBar !== null && newBar !== undefined) buffer.push(newBar);
+    if (newBar !== null && newBar !== undefined) slot.buffer.push(newBar);
     // 023: инкрементальная подача OI/liq (зеркало newBar). undefined = не подаётся (kind'а нет / не
     // новый бар); null = gap минуты t (явный слот, без carry-forward); объект = покрытый снимок.
-    if (newOi !== undefined) oiBuffer.push(newOi);
-    if (newLiq !== undefined) liqBuffer.push(newLiq);
-    const ctx = rehydrateContext(snapshot, buffer, rng, oiBuffer, liqBuffer);
-    const fn = pickHook(hook);
+    if (newOi !== undefined) slot.oiBuffer.push(newOi);
+    if (newLiq !== undefined) slot.liqBuffer.push(newLiq);
+    const ctx = rehydrateContext(snapshot, slot.buffer, slot.rng, slot.oiBuffer, slot.liqBuffer);
+    const fn = pickHookFor(slot.instance, hook);
     if (fn === undefined) {
       ok(seq, []); // отсутствующий хук → пустой результат (как 018)
       return;
     }
     // await: sync-хук вернёт значение как есть; async-попытки (сеть/import/спавн) ловятся в catch.
-    const out = await fn.call(instance, ctx);
+    const out = await fn.call(slot.instance, ctx);
     if (hook === 'init' || hook === 'dispose') {
       ok(seq, []); // void-хуки
       return;
@@ -108,6 +133,7 @@ async function handleHook(msg) {
     ok(seq, normalize(out));
   } catch (e) {
     // Запрещённая попытка (сеть/host-write/env/спавн/forbidden-import) → стабильный код (deny-shims).
+    // Per-symbol soft error: контейнер остаётся живым (хост сохраняет сессию — см. Task 6).
     err(seq, hook, classifyError(e), e && e.message ? e.message : e);
   }
 }
@@ -117,15 +143,20 @@ async function handleHook(msg) {
 // it imports the untrusted bundle from a container-absolute path). Still INERT: nothing on the host
 // sends {t:'hookBatch'} yet.
 async function handleHookBatch(msg) {
+  const slot = store.get(symbolOf(msg));
+  if (slot === undefined) {
+    errBatch(msg.seq, msg.hook, 'sandbox_output_malformed', `hookBatch before init for symbol ${String(symbolOf(msg))}`, 0);
+    return;
+  }
   try {
     const r = await runHookBatch(msg.bars, msg.hook, {
-      buffer,
-      oiBuffer,
-      liqBuffer,
-      rng,
-      instance,
+      buffer: slot.buffer,
+      oiBuffer: slot.oiBuffer,
+      liqBuffer: slot.liqBuffer,
+      rng: slot.rng,
+      instance: slot.instance,
       rehydrateContext,
-      pickHook,
+      pickHook: (h) => pickHookFor(slot.instance, h),
       normalize,
     });
     if (r.kind === 'ok') {

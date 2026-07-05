@@ -1,0 +1,14 @@
+{
+  "runId": "us9-universe-multi",
+  "mode": "research",
+  "moduleRef": { "id": "short_after_pump", "version": "0.1.0" },
+  "datasetRef": "universe-fixture-1m",
+  "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+  "timeframe": "1m",
+  "period": { "from": "2025-01-01T00:00:00Z", "to": "2025-01-01T00:30:00Z" },
+  "riskProfileRef": { "id": "default_risk", "version": "1.0.0" },
+  "executionProfileRef": { "id": "default_exec", "version": "1.0.0" },
+  "seed": 12345,
+  "metrics": ["pnl", "max_drawdown", "win_rate", "sharpe"],
+  "robustnessChecks": ["walk_forward"]
+}

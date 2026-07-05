@@ -1,0 +1,53 @@
+{
+  "manifest": {
+    "id": "short_after_pump",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Short after pump (injected ETHUSDT failure)",
+    "summary": "Шорт после резкого роста цены при достаточном объёме; ETHUSDT throws (Task 9 fail-closed golden).",
+    "rationale": "Task 9 fail-closed golden: ETHUSDT's onBarClose always throws so the harness catches it and the session latches that symbol to fail-closed, while other symbols run the normal short_after_pump logic.",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pumpPct",
+        "windowMin",
+        "minVolume"
+      ],
+      "properties": {
+        "pumpPct": {
+          "type": "number"
+        },
+        "windowMin": {
+          "type": "number"
+        },
+        "minVolume": {
+          "type": "number"
+        }
+      }
+    },
+    "params": {
+      "pumpPct": 10,
+      "windowMin": 20,
+      "minVolume": 1000000
+    },
+    "capabilities": {
+      "platformSdk": true
+    },
+    "dataNeeds": {
+      "closedCandlesUpToCurrent": true,
+      "asOfIndicators": true
+    },
+    "hooks": [
+      "onBarClose"
+    ],
+    "bundleContractVersion": "019.1"
+  },
+  "entry": "module/index.js",
+  "files": {
+    "module/index.js": "// Task 9 fail-closed golden fixture — otherwise byte-for-byte the same `short_after_pump` logic\n// as short-after-pump.bundle.json, EXCEPT: any call for ctx.symbol === 'ETHUSDT' throws immediately.\n// The harness (entry.mjs handleHook try/catch) catches this and emits {t:'err', code:'sandbox_crashed'},\n// which SandboxSession fail-closes (latches ETHUSDT to idle for all remaining bars) WITHOUT tearing\n// down the shared container — other symbols keep running on the same session. Used ONLY by\n// universe-session-equivalence.test.ts's fail-closed golden (Task 9 Step 4a).\n\nexport default function createStrategyModule() {\n  return {\n    onBarClose(ctx) {\n      if (ctx.symbol === 'ETHUSDT') {\n        throw new Error('injected failure for Task 9 fail-closed golden (ETHUSDT)');\n      }\n\n      const windowMin = Number(ctx.params.windowMin ?? 20);\n      const pumpPct = Number(ctx.params.pumpPct ?? 10);\n      const minVolume = Number(ctx.params.minVolume ?? 0);\n\n      const rsi = ctx.indicators.query({ name: 'rsi', params: { period: 14 } });\n      const macd = ctx.indicators.query({ name: 'macd' });\n      const atr = ctx.indicators.query({ name: 'atr', params: { period: 14 } });\n      const bollinger = ctx.indicators.query({ name: 'bollinger', params: { period: 20, stddev: 2 } });\n\n      const history = ctx.data.closedCandles(windowMin);\n      if (history.length < windowMin) return { kind: 'idle' };\n\n      const past = history[0];\n      const changePct = ((ctx.bar.close - past.close) / past.close) * 100;\n      if (changePct >= pumpPct && ctx.bar.volume >= minVolume) {\n        const parts = [`pump ${changePct.toFixed(1)}% >= ${pumpPct}% при объёме ${ctx.bar.volume}`];\n        if (typeof rsi === 'number') parts.push(`RSI=${rsi.toFixed(1)}`);\n        if (typeof macd === 'object' && macd !== null && 'histogram' in macd) {\n          parts.push(`MACD.hist=${macd.histogram.toFixed(4)}`);\n        }\n        if (typeof atr === 'number') parts.push(`ATR=${atr.toFixed(4)}`);\n        if (typeof bollinger === 'object' && bollinger !== null && 'upper' in bollinger) {\n          parts.push(`BB.upper=${bollinger.upper.toFixed(2)}`);\n        }\n        return { kind: 'enter', side: 'short', rationale: parts.join('; ') };\n      }\n      return { kind: 'idle' };\n    },\n  };\n}\n"
+  }
+}

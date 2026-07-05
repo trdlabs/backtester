@@ -45,6 +45,22 @@ export function sessionContainerName(
   return dockerSanitize(raw).slice(0, 200);
 }
 
+/**
+ * Container name for a universe session (one container per bundle, N symbols inside). Drops the symbol
+ * segment `sessionContainerName` used; includes `kind` + the bundle-hash prefix so a strategy and an
+ * overlay bundle sharing a moduleId/version cannot collide on the same runId.
+ */
+export function universeContainerName(
+  runId: string,
+  kind: 'strategy' | 'overlay',
+  bundleHash: string,
+  suffix?: string,
+): string {
+  const hash8 = bundleHash.replace(/^sha256:/, '').slice(0, 8);
+  const raw = `sbx-${runId}-${kind}-${hash8}${suffix !== undefined ? `-${suffix}` : ''}`;
+  return dockerSanitize(raw).slice(0, 200);
+}
+
 /** Сформировать `-v host:dst:ro` (bind) или `--mount …,volume-subpath=…,readonly` (volume). */
 function mountArgs(src: MountSource, dst: string): readonly string[] {
   if (src.kind === 'bind') return ['-v', `${src.hostPath}:${dst}:ro`];

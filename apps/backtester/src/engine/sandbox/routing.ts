@@ -29,6 +29,7 @@ import {
   createSandboxPolicyRegistry,
 } from '../sandbox-policy.js';
 import { SandboxModuleExecutor, type SandboxExecutorDeps } from './sandbox-executor.js';
+import { deriveUniversePolicy } from './universe-policy.js';
 import type { SandboxErrorArtifact } from './errors.js';
 
 /** Происхождение резолвнутого модуля — метаданные routing'а (НЕ привилегия). */
@@ -161,6 +162,10 @@ export interface ExecutorRouterDeps {
   readonly sandboxPolicyRef?: Ref;
   readonly trustedExecutor?: ModuleExecutor;
   readonly sandboxDeps?: SandboxExecutorDeps;
+  // Universe mode (Task 7): when `enabled`, `sandboxFor` derives a scaled policy (deriveUniversePolicy)
+  // and threads `universe` into the constructed SandboxModuleExecutor's deps so its sessions collapse
+  // to one shared container. Absent ⇒ base policy + no universe cfg, byte-identical to pre-Task-7.
+  readonly universe?: SandboxExecutorDeps['universe'];
 }
 
 /** 019 sandbox-aware router (расширяет 018 seam агрегацией ошибок для verify/диагностики). */
@@ -187,8 +192,12 @@ export function createExecutorRouter(deps: ExecutorRouterDeps = {}): ExecutorRou
   function sandboxFor(bundle: ModuleBundle): ModuleExecutor {
     const existing = sandboxExecutors.get(bundle.descriptor.bundleHash);
     if (existing !== undefined) return existing;
-    const policy = policies.resolve(policyRef) ?? DEFAULT_SANDBOX;
-    const exec = new SandboxModuleExecutor(bundle, policy, deps.sandboxDeps);
+    const basePolicy = policies.resolve(policyRef) ?? DEFAULT_SANDBOX;
+    const u = deps.universe;
+    const policy = u?.enabled === true
+      ? deriveUniversePolicy(basePolicy, u.n, { memBaseMb: u.memBaseMb, memPerSymbolMb: u.memPerSymbolMb })
+      : basePolicy;
+    const exec = new SandboxModuleExecutor(bundle, policy, { ...deps.sandboxDeps, universe: u });
     sandboxExecutors.set(bundle.descriptor.bundleHash, exec);
     return exec;
   }

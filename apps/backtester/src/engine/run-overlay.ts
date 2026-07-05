@@ -9,6 +9,8 @@ export interface OverlayRunDeps {
   readonly registry: TrustedModuleRegistry;
   readonly marketTape?: MarketTapeDataset;
   readonly router?: ExecutorRouter;
+  /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap (byte-identical). */
+  readonly universe?: { readonly enabled: boolean; readonly maxN: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
 }
 
 /**
@@ -22,5 +24,6 @@ export async function runOverlayBacktest(request: BacktestRunRequest, deps: Over
     registry: deps.registry,
     marketTape: deps.marketTape,
     ...(deps.router ? { router: deps.router } : {}),
+    ...(deps.universe ? { universe: deps.universe } : {}),
   });
 }

@@ -110,6 +110,14 @@ export interface AppConfig {
   readonly barBatching: boolean;
   /** 17b: max bars per hookBatch (clamped >= 2). */
   readonly batchBars: number;
+  /** 17c: run all symbols of a bundle in ONE container (N per-symbol instances). Default off (dark launch). */
+  readonly universeSession: boolean;
+  /** 17c: reject a universe run whose symbol count exceeds this (pre-exec validation). */
+  readonly universeMaxN: number;
+  /** 17c: per-container memory floor (MiB), added to universeMemPerSymbolMb × N. */
+  readonly universeMemBaseMb: number;
+  /** 17c: per-symbol memory (MiB) added on top of the base for a universe container. */
+  readonly universeMemPerSymbolMb: number;
   /** Queue-wake LISTEN/NOTIFY enabled (Phase D item 16). Default off. */
   readonly queueNotify: boolean;
   /** Compute-lock TTL (ms). Default = workerLeaseTtlMs. */
@@ -257,6 +265,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // `|| 64` OUTSIDE the max: garbage → NaN → 64, while '0'/'1' clamp to the floor 2 (a falsy-zero
     // inside would silently resolve '0' to 64 — the master flag, not batchBars, is the off switch).
     batchBars: Math.max(2, Math.floor(Number(env.BACKTESTER_BATCH_BARS ?? 64))) || 64,
+    universeSession: env.BACKTESTER_UNIVERSE_SESSION === 'true',
+    universeMaxN: Math.max(1, Math.floor(Number(env.BACKTESTER_UNIVERSE_MAX_N ?? 64))) || 64,
+    universeMemBaseMb: Math.max(1, Math.floor(Number(env.BACKTESTER_UNIVERSE_MEM_BASE_MB ?? 128))) || 128,
+    universeMemPerSymbolMb: Math.max(1, Math.floor(Number(env.BACKTESTER_UNIVERSE_MEM_PER_SYMBOL_MB ?? 8))) || 8,
     queueNotify: env.BACKTESTER_QUEUE_NOTIFY === 'true',
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
