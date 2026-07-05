@@ -192,6 +192,7 @@ export class SandboxSession {
       params: this.cfg.params,
       manifestHooks: manifest.hooks,
       entryPoint: descriptor.entryPoint,
+      universe: true,
     });
     const outcome = await this.channel!.receive(Date.now() + CONTAINER_STARTUP_GRACE_MS);
     if (outcome.kind !== 'ok') return this.fail(this.mapFailure(outcome, 'init', 'bundle_load_failed'));

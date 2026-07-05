@@ -18,6 +18,11 @@ export interface InitRequest {
   readonly params: Readonly<Record<string, unknown>>;
   readonly manifestHooks: readonly string[];
   readonly entryPoint: string; // относительный путь внутри /sandbox/bundle
+  // Universe mode (Task 9 fix): when true, the harness fails closed at init if the bundle's default
+  // export is not a function — a non-function default is a SHARED instance, safe only in its own
+  // per-symbol container (non-universe), never across N symbols sharing one universe container.
+  // Absent/false ⇒ byte-identical to pre-fix behavior (non-universe init never sets this).
+  readonly universe?: boolean;
 }
 
 /** hook-конверт (host → harness). */

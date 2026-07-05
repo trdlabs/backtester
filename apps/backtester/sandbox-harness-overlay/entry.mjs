@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
 import { installDenyShims, classifyError } from './deny-shims.mjs';
 import { runHookBatch } from './hook-batch.mjs';
-import { makeInstanceStore, symbolOf } from './universe-instances.mjs';
+import { makeInstanceStore, symbolOf, resolveInstance } from './universe-instances.mjs';
 
 // Defense-in-depth: запрет спавна/shell + секрет-env (FR-006/019). Ставится ДО загрузки bundle —
 // patched singleton'ы видны коду модуля (общие node-core). Основная гарантия — флаги контейнера.
@@ -67,22 +67,29 @@ function pickHookFor(instance, hook) {
   }
 }
 
-/** Импортировать bundle-модуль (кэш ОДИН раз) и создать НОВЫЙ instance (per symbol). */
-async function loadFactory(entryPoint) {
+/**
+ * Импортировать bundle-модуль (кэш ОДИН раз) и разрешить instance (per symbol) через
+ * resolveInstance — в universe-режиме non-function default export fail-closed (см.
+ * universe-instances.mjs), вне universe-режима — прежнее поведение (shared object допустим).
+ */
+async function loadFactory(entryPoint, universe) {
   if (loadedModule === undefined) {
     const url = pathToFileURL(`/sandbox/bundle/${entryPoint}`).href;
     loadedModule = await import(url);
   }
-  const factory = loadedModule.default;
-  const instance = typeof factory === 'function' ? factory() : (factory ?? loadedModule);
-  return instance;
+  return resolveInstance(loadedModule, { universe });
 }
 
 async function handleInit(msg) {
   const symbol = symbolOf(msg);
   try {
+    const resolved = await loadFactory(msg.entryPoint, msg.universe === true);
+    if (resolved.ok === false) {
+      err(undefined, 'init', resolved.code, resolved.reason);
+      return; // fail-closed: no slot created
+    }
     const built = {
-      instance: await loadFactory(msg.entryPoint),
+      instance: resolved.instance,
       rng: createSeededRng(typeof msg.seed === 'number' ? msg.seed : 0),
     };
     if (built.instance === undefined || built.instance === null) {

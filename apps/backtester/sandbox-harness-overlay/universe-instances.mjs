@@ -19,6 +19,34 @@ export function makeInstanceStore() {
   };
 }
 
+/**
+ * Resolve the module instance from an imported bundle module (`loadedModule.default`).
+ *
+ * A FUNCTION default export is a factory: called fresh each time → always per-symbol isolated
+ * (`{ ok: true, instance }`), regardless of universe mode.
+ *
+ * A NON-FUNCTION default export (a plain object, or the module itself when there's no default) is
+ * a SHARED reference — safe only when the caller lives in its own per-symbol container (pre-Task-5
+ * one-container-per-symbol; `universe` false/absent), which is why that path stays `{ ok: true,
+ * instance }` unchanged. Under a universe container (N symbols sharing one process) that same
+ * shared object would leak `this`-state across symbols, silently breaking byte-identity — so in
+ * universe mode this shape FAILS CLOSED (`{ ok: false, code, reason }`) instead of being accepted.
+ */
+export function resolveInstance(loadedModule, { universe } = {}) {
+  const factory = loadedModule.default;
+  if (typeof factory === 'function') {
+    return { ok: true, instance: factory() };
+  }
+  if (universe === true) {
+    return {
+      ok: false,
+      code: 'bundle_load_failed',
+      reason: 'universe session requires a factory-function default export for per-symbol isolation',
+    };
+  }
+  return { ok: true, instance: factory ?? loadedModule };
+}
+
 /** Single routing key for init/hook/hookBatch messages. */
 export function symbolOf(msg) {
   if (msg == null) return undefined;

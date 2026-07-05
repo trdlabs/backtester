@@ -24,3 +24,11 @@ export interface InstanceStore {
 export function makeInstanceStore(): InstanceStore;
 
 export function symbolOf(msg: unknown): string | undefined;
+
+export type ResolveInstanceResult =
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  | { readonly ok: true; readonly instance: any }
+  | { readonly ok: false; readonly code: 'bundle_load_failed'; readonly reason: string };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function resolveInstance(loadedModule: any, opts?: { universe?: boolean }): ResolveInstanceResult;
