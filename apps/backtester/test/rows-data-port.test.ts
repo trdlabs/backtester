@@ -125,6 +125,62 @@ function buildFixtureServer(opts: FixtureServerOpts = {}): FastifyInstance {
   return app;
 }
 
+// ── Multi-symbol fixture: BTCUSDT + ETHUSDT, /historical/rows honours the `symbols` CSV filter ──
+
+const ETH_ROWS: CanonicalRowV2[] = Array.from({ length: 6 }, (_, i) => ({
+  ...ROWS[i]!,
+  symbol: 'ETHUSDT',
+  open:   3000 + i * 10,
+  high:   3010 + i * 10,
+  low:    2990 + i * 10,
+  close:  3005 + i * 10,
+}));
+const ALL_ROWS: CanonicalRowV2[] = [...ROWS, ...ETH_ROWS];
+
+function buildMultiSymbolServer(): FastifyInstance {
+  const app = Fastify({ logger: false });
+  const PL = 100;
+
+  app.get('/historical/coverage', (_req, reply) => {
+    return reply.send({
+      entries: [
+        { symbol: 'BTCUSDT', timeframe: '1m', fromMs: ROWS[0]!.minute_ts, toMs: ROWS[5]!.minute_ts, barCount: 6, availability: 'available' },
+        { symbol: 'ETHUSDT', timeframe: '1m', fromMs: ETH_ROWS[0]!.minute_ts, toMs: ETH_ROWS[5]!.minute_ts, barCount: 6, availability: 'available' },
+      ],
+      symbols: ['BTCUSDT', 'ETHUSDT'],
+      timeframes: ['1m'],
+      availability: 'available',
+      asOf: Date.now(),
+    });
+  });
+
+  app.get('/historical/discover', (_req, reply) => {
+    return reply.send({
+      historicalContractVersion: 'historical.2',
+      capabilities: { readOnly: true, execution: false, mutation: false, liveIngestion: false },
+      resources: [
+        { name: 'rows', availability: 'available', supportedFilters: ['symbols', 'fromMs', 'toMs'], pagination: { cursor: true, maxPageItems: PL }, fields: [] },
+      ],
+      symbols: ['BTCUSDT', 'ETHUSDT'],
+      timeframes: ['1m'],
+    });
+  });
+
+  app.get('/historical/rows', (req, reply) => {
+    const q = req.query as { symbols?: string; fromMs?: string; toMs?: string; cursor?: string; limit?: string };
+    const want = new Set((q.symbols ?? '').split(',').map(s => s.trim()).filter(Boolean));
+    const fromMs = q.fromMs ? Number(q.fromMs) : 0;
+    const toMs   = q.toMs   ? Number(q.toMs)   : Infinity;
+    const filtered = ALL_ROWS
+      .filter(r => want.has(r.symbol) && r.minute_ts >= fromMs && r.minute_ts <= toMs)
+      .sort((a, b) => a.minute_ts - b.minute_ts || a.symbol.localeCompare(b.symbol));
+    const limit = q.limit ? Math.min(Number(q.limit), PL) : PL;
+    return reply.send(paginate(filtered, q.cursor, limit));
+  });
+
+  return app;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('RowsDataPort', () => {
@@ -283,6 +339,26 @@ describe('RowsDataPort', () => {
       for await (const batch of reader!.queryRange({ tsFrom: 0, tsTo: Number.MAX_SAFE_INTEGER, symbols: ['BTCUSDT'] })) rangeRows.push(...batch);
       for await (const batch of reader!.queryOneSymbolTimeSeries({ symbol: 'BTCUSDT', tsFrom: 0, tsTo: Number.MAX_SAFE_INTEGER })) tsRows.push(...batch);
       expect(tsRows).toHaveLength(rangeRows.length);
+    });
+  });
+
+  describe('queryRange() multi-symbol (real-platform universe)', () => {
+    it('yields rows for ALL requested symbols, not just the datasetRef symbol', async () => {
+      let s: FastifyInstance | undefined;
+      try {
+        s = buildMultiSymbolServer();
+        const url = await s.listen({ host: '127.0.0.1', port: 0 });
+        const port = new RowsDataPort({ baseUrl: url });
+        const reader = await port.openDataset('BTCUSDT:1m');
+        expect(reader).toBeDefined();
+        const seen = new Set<string>();
+        for await (const batch of reader!.queryRange({ tsFrom: 0, tsTo: Number.MAX_SAFE_INTEGER, symbols: ['BTCUSDT', 'ETHUSDT'] })) {
+          for (const r of batch) seen.add((r as { symbol: string }).symbol);
+        }
+        expect([...seen].sort()).toEqual(['BTCUSDT', 'ETHUSDT']);
+      } finally {
+        await s?.close();
+      }
     });
   });
 });

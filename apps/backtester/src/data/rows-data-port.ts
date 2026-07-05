@@ -58,8 +58,12 @@ export class RowsReader implements HistoricalDatasetReader {
   ) {}
 
   async *queryRange(q: RangeQuery): AsyncIterable<ReaderRow[]> {
+    // Honour the requested symbol set — multi-symbol universe runs pass all request.symbols
+    // through buildOverlayDataset; fall back to the datasetRef-bound symbol when omitted.
+    // client.queryRows is already multi-symbol, so every symbol streams from one call.
+    const symbols = q.symbols !== undefined && q.symbols.length > 0 ? [...q.symbols] : [this.symbol];
     for await (const page of this.client.queryRows({
-      symbols: [this.symbol],
+      symbols,
       fromMs: q.tsFrom,
       toMs: q.tsTo,
     })) {
