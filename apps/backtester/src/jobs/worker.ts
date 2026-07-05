@@ -523,7 +523,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         // Build the inline execution registry from the SAME canonical definition that `/v1/registry`
         // advertises, adding only the submitted overlay bundle — so discovery and execution can't drift.
         registry = buildInlineOverlayRegistry([sandboxBundle!.bundle]);
-        sandboxRouter = workerInternals.overlayRouterFor(deps);
+        sandboxRouter = workerInternals.overlayRouterFor(deps, claimed.request.symbols.length);
       }
 
       await chargeEngineAttempt(); // INV-5: engine-commit charge (overlay path)
@@ -531,6 +531,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         registry,
         marketTape,
         ...(sandboxRouter ? { router: sandboxRouter } : {}),
+        ...(deps.universe ? { universe: deps.universe } : {}),
       });
       if (outcome.status !== 'completed') {
         throw new RunnerError(

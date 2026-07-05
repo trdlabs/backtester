@@ -50,6 +50,14 @@ export async function materializeReadableBundle(
 export interface SandboxOverlayDirs {
   /** `early_exit_short_after_pump` overlay bundle dir (materialized + world-readable). */
   readonly eeDir: string;
+  /**
+   * Universe-session scope fix (overlay-engine path): when set, the router is built with `universe`
+   * deps (Task 7's `createExecutorRouter({ universe: {...} })`) so `sandboxFor` derives a scaled
+   * policy and threads `universe` into the `SandboxModuleExecutor`, collapsing the sandboxed overlay
+   * bundle's per-symbol sessions to ONE shared container for N symbols. Absent ⇒ one container per
+   * symbol (pre-fix behavior).
+   */
+  readonly universe?: { readonly enabled: boolean; readonly n: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
 }
 
 /** Materialized bundle dir for the sandbox baseline-only (sandboxed STRATEGY) run. */
@@ -100,6 +108,7 @@ export function buildSandboxOverlayDeps(dirs: SandboxOverlayDirs): SandboxOverla
     sandboxPolicies: createSandboxPolicyRegistry([policy]),
     sandboxPolicyRef: { id: policy.id, version: policy.version },
     sandboxDeps: { harnessDir: config.overlaySandbox.harnessDir, containerSuffix: nextContainerSuffix() },
+    ...(dirs.universe ? { universe: dirs.universe } : {}),
   });
 
   return { registry, router };
