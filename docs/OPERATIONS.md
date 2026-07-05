@@ -65,11 +65,58 @@ The backtester publishes its trusted modules + run presets so a consumer submits
 
 | Variable | Purpose |
 |----------|---------|
-| `BACKTESTER_DATA_SOURCE` | `fixture` (default dev) or `mock` / `http` for networked historical API |
+| `BACKTESTER_DATA_SOURCE` | `fixture` (**code default**) or `mock` / `http` / `real` for networked historical API — see *Real platform data source* below |
 | `BACKTESTER_MOCK_PLATFORM_URL` | Base URL when `DATA_SOURCE=mock` |
 | `BACKTESTER_MOCK_PLATFORM_TOKEN` | Bearer for mock-platform ops/historical routes |
+| `BACKTESTER_REAL_PLATFORM_URL` | Base URL when `DATA_SOURCE=real` (own pair, distinct from the mock pair) |
+| `BACKTESTER_REAL_PLATFORM_TOKEN` | Bearer when `DATA_SOURCE=real` (own pair, distinct from the mock pair) |
 | `BACKTESTER_AUTH_TOKEN` | Bearer for lab → backtester HTTP API |
 | `BACKTESTER_ENABLE_OVERLAY_ENGINE` | `true` to allow `engine: overlay` submissions |
+
+### Real platform data source (production posture)
+
+`BACKTESTER_DATA_SOURCE=real` selects the same `RowsDataPort` implementation as `mock`, but points it
+at the **live** trading-platform historical API instead of `trading-mock-platform`. It uses its own
+env pair — `BACKTESTER_REAL_PLATFORM_URL` + `BACKTESTER_REAL_PLATFORM_TOKEN` — distinct from
+`BACKTESTER_MOCK_PLATFORM_URL` / `BACKTESTER_MOCK_PLATFORM_TOKEN`; the two are never shared or
+fallen back to one another.
+
+- **Fail-fast validation:** if either var is missing, empty, or whitespace-only while
+  `BACKTESTER_DATA_SOURCE=real`, `loadConfig` throws at startup — the service never boots
+  half-configured:
+
+  ```
+  BACKTESTER_REAL_PLATFORM_URL and BACKTESTER_REAL_PLATFORM_TOKEN are required when BACKTESTER_DATA_SOURCE=real
+  ```
+
+- **Production posture, not the code default:** `'real'` is the **recommended production posture**
+  for a deployment that must read genuine market history, but it is **not** the code default — the
+  code default stays `fixture` (safe, hermetic, no external dependency) so CI/local/dev keep working
+  with zero configuration. Selecting `real` is always an explicit operator choice via env, mirroring
+  how `dedup`/`coalesce`/`obs` default OFF in code and are enabled only through `deploy/vps/`.
+
+- **Token model:** `BACKTESTER_REAL_PLATFORM_TOKEN` is the **raw bearer** sent on the wire; the
+  platform verifies it by checking that `sha256(token)` is present in its `HISTORICAL_HTTP_TOKENS`
+  allowlist. The backtester never sees or needs the hash — only the raw token.
+
+- **Failure taxonomy:** any platform-side failure while sourcing real data terminates the run with
+  terminal code `missing_dataset` and a fixed-shape `errorDetail`:
+
+  ```
+  cause=<cause>; datasetRef=<datasetRef>
+  ```
+
+  `<cause>` is one of a finite, normalized set — raw SDK/HTTP text or tokens never surface past this
+  boundary:
+
+  | Cause | Meaning |
+  |-------|---------|
+  | `unauthorized` | Platform rejected the bearer (401/403) |
+  | `connection_refused` | Platform unreachable (network/connection failure) |
+  | `contract_version_mismatch` | Platform's historical API contract version doesn't match |
+  | `rows_resource_unavailable` | `/historical/rows` returned a non-2xx, non-auth failure |
+  | `dataset_not_found` | Requested dataset/symbol has no data on the platform |
+  | `discover_failed` | `/historical/discover` failed (dataset discovery step) |
 
 ### trading-lab (demo overlay)
 

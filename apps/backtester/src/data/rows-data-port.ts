@@ -25,6 +25,41 @@ import type { BacktesterDataPort } from './reader';
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+export type RealDataCause =
+  | 'unauthorized'
+  | 'connection_refused'
+  | 'contract_version_mismatch'
+  | 'rows_resource_unavailable'
+  | 'dataset_not_found'
+  | 'discover_failed';
+
+/** Thrown by RowsDataPort.openDataset on any platform-side failure. `message` is the fixed
+ *  errorDetail string contract: `cause=<reason>; datasetRef=<datasetRef>`. */
+export class RealDataUnavailableError extends Error {
+  constructor(readonly reason: RealDataCause, readonly datasetRef: string) {
+    super(`cause=${reason}; datasetRef=${datasetRef}`);
+    this.name = 'RealDataUnavailableError';
+  }
+}
+
+/**
+ * Normalize a discover() failure into a finite cause. Raw SDK/Node text never surfaces past
+ * this function — HistoricalClient.discover() throws a plain `Error` with message
+ * `platform /historical/discover: HTTP <status>` on a non-2xx response, or whatever the
+ * underlying fetch implementation throws on a network failure (Node's fetch throws
+ * `TypeError: fetch failed` with `cause.code === 'ECONNREFUSED'` for a refused connection).
+ * `discover_failed` is the safe fallback for anything unclassifiable.
+ */
+function classifyDiscoverError(err: unknown): RealDataCause {
+  const anyErr = err as { message?: string; code?: string; cause?: { code?: string } } | undefined;
+  const msg = typeof anyErr?.message === 'string' ? anyErr.message : '';
+  const httpStatus = /HTTP (\d{3})\b/.exec(msg)?.[1];
+  if (httpStatus === '401' || httpStatus === '403') return 'unauthorized';
+  const netCode = anyErr?.code ?? anyErr?.cause?.code;
+  if (netCode === 'ECONNREFUSED' || /ECONNREFUSED|fetch failed|ENOTFOUND|EAI_AGAIN/.test(msg)) return 'connection_refused';
+  return 'discover_failed';
+}
+
 type FetchLike = typeof globalThis.fetch;
 
 export interface RowsDataPortOptions {
@@ -114,17 +149,22 @@ export class RowsDataPort implements BacktesterDataPort {
     let descriptor;
     try {
       descriptor = await this.client.discover();
-    } catch {
-      return undefined;
+    } catch (err) {
+      throw new RealDataUnavailableError(classifyDiscoverError(err), ref);
     }
 
     // historical.2-only: refuse to read anything else (no legacy merge fallback).
-    if (descriptor.historicalContractVersion !== 'historical.2') return undefined;
+    if (descriptor.historicalContractVersion !== 'historical.2') {
+      throw new RealDataUnavailableError('contract_version_mismatch', ref);
+    }
     const rowsResource = descriptor.resources.find((r) => r.name === 'rows');
-    if (!rowsResource || rowsResource.availability !== 'available') return undefined;
+    if (!rowsResource || rowsResource.availability !== 'available') {
+      throw new RealDataUnavailableError('rows_resource_unavailable', ref);
+    }
 
-    if (!descriptor.symbols.includes(symbol)) return undefined;
-    if (!descriptor.timeframes.includes(timeframe)) return undefined;
+    if (!descriptor.symbols.includes(symbol) || !descriptor.timeframes.includes(timeframe)) {
+      throw new RealDataUnavailableError('dataset_not_found', ref);
+    }
 
     return new RowsReader(this.client, symbol);
   }

@@ -72,6 +72,11 @@ export class TapeCache<V> {
   stats(): { hits: number; misses: number; size: number } {
     return { hits: this.hits, misses: this.misses, size: this.entries.size };
   }
+
+  /** Test-only: empties all entries so the next `getOrBuild` for any key is a cold miss. */
+  clear(): void {
+    this.entries.clear();
+  }
 }
 
 /** Read `TAPE_CACHE_MAX_ENTRIES` (default 16; 0 disables; garbage falls back to 16). */
@@ -85,3 +90,15 @@ export function readMaxEntries(): number {
 /** Long-lived singletons — persist across runs for the life of the worker process. */
 export const overlayTapeCache = new TapeCache<MarketTapeDataset>(readMaxEntries());
 export const momentumTapeCache = new TapeCache<MaterializedDataset>(readMaxEntries());
+
+/**
+ * Test-only: empties both singleton caches so a subsequent `getOrBuild` call for either cache is
+ * guaranteed to miss and rebuild. Needed by tests that must prove two nominally-"identical" requests
+ * each independently exercise the real data-fetch/build path rather than the second one silently
+ * short-circuiting on the shared in-memory object from the first (the singletons persist across
+ * separate `buildApp()` calls within the same worker process — `app.dispose()` does not touch them).
+ */
+export function __resetTapeCachesForTest(): void {
+  overlayTapeCache.clear();
+  momentumTapeCache.clear();
+}

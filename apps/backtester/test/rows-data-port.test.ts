@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { RowsDataPort } from '../src/data/rows-data-port';
+import { RowsDataPort, RealDataUnavailableError } from '../src/data/rows-data-port';
 
 // ── Fixture data: full CanonicalRowV2 rows (19 fields incl. schema_version) ─────
 
@@ -216,55 +216,81 @@ describe('RowsDataPort', () => {
       expect(await port.openDataset('BTCUSDT:1m')).toBeDefined();
     });
 
-    it('returns undefined for unknown timeframe', async () => {
+    it('throws dataset_not_found for unknown timeframe', async () => {
       const port = new RowsDataPort({ baseUrl });
-      expect(await port.openDataset('BTCUSDT:5m')).toBeUndefined();
+      await expect(port.openDataset('BTCUSDT:5m')).rejects.toMatchObject({ reason: 'dataset_not_found', datasetRef: 'BTCUSDT:5m' });
     });
 
-    it('returns undefined for unknown symbol', async () => {
+    it('throws dataset_not_found for unknown symbol', async () => {
       const port = new RowsDataPort({ baseUrl });
-      expect(await port.openDataset('ETHUSDT:1m')).toBeUndefined();
+      await expect(port.openDataset('ETHUSDT:1m')).rejects.toBeInstanceOf(RealDataUnavailableError);
     });
 
-    it('returns undefined for malformed ref (no colon)', async () => {
+    it('keeps returning undefined for malformed ref (no colon) — caller bug, not a platform failure', async () => {
       const port = new RowsDataPort({ baseUrl });
       expect(await port.openDataset('BTCUSDT1m')).toBeUndefined();
     });
 
-    it('returns undefined when contract is not historical.2', async () => {
+    it('throws contract_version_mismatch when contract is not historical.2', async () => {
       let s: FastifyInstance | undefined;
       try {
         s = buildFixtureServer({ contractVersion: 'historical.1' });
         const url = await s.listen({ host: '127.0.0.1', port: 0 });
-        const port = new RowsDataPort({ baseUrl: url });
-        expect(await port.openDataset('BTCUSDT:1m')).toBeUndefined();
+        await expect(new RowsDataPort({ baseUrl: url }).openDataset('BTCUSDT:1m'))
+          .rejects.toMatchObject({ reason: 'contract_version_mismatch' });
       } finally {
         await s?.close();
       }
     });
 
-    it('returns undefined when rows resource is unavailable', async () => {
+    it('throws rows_resource_unavailable when rows resource is unavailable', async () => {
       let s: FastifyInstance | undefined;
       try {
         s = buildFixtureServer({ rowsAvailability: 'unavailable' });
         const url = await s.listen({ host: '127.0.0.1', port: 0 });
-        const port = new RowsDataPort({ baseUrl: url });
-        expect(await port.openDataset('BTCUSDT:1m')).toBeUndefined();
+        await expect(new RowsDataPort({ baseUrl: url }).openDataset('BTCUSDT:1m'))
+          .rejects.toMatchObject({ reason: 'rows_resource_unavailable' });
       } finally {
         await s?.close();
       }
     });
 
-    it('returns undefined when rows resource is absent', async () => {
+    it('throws rows_resource_unavailable when rows resource is absent', async () => {
       let s: FastifyInstance | undefined;
       try {
         s = buildFixtureServer({ omitRowsResource: true });
         const url = await s.listen({ host: '127.0.0.1', port: 0 });
-        const port = new RowsDataPort({ baseUrl: url });
-        expect(await port.openDataset('BTCUSDT:1m')).toBeUndefined();
+        await expect(new RowsDataPort({ baseUrl: url }).openDataset('BTCUSDT:1m'))
+          .rejects.toMatchObject({ reason: 'rows_resource_unavailable' });
       } finally {
         await s?.close();
       }
+    });
+
+    it('throws unauthorized on a 401 from the historical API', async () => {
+      let s: FastifyInstance | undefined;
+      try {
+        s = Fastify({ logger: false });
+        s.get('/historical/discover', (_r, reply) => reply.code(401).send({ error: 'unauthorized' }));
+        const url = await s.listen({ host: '127.0.0.1', port: 0 });
+        await expect(new RowsDataPort({ baseUrl: url, token: 'bad' }).openDataset('BTCUSDT:1m'))
+          .rejects.toMatchObject({ reason: 'unauthorized' });
+      } finally {
+        await s?.close();
+      }
+    });
+
+    it('throws connection_refused when the endpoint is unreachable', async () => {
+      // 127.0.0.1:1 is reserved/closed → ECONNREFUSED
+      await expect(new RowsDataPort({ baseUrl: 'http://127.0.0.1:1' }).openDataset('BTCUSDT:1m'))
+        .rejects.toMatchObject({ reason: 'connection_refused' });
+    });
+
+    it('formats the error message as the fixed errorDetail contract', async () => {
+      const port = new RowsDataPort({ baseUrl });
+      await expect(port.openDataset('BTCUSDT:5m')).rejects.toMatchObject({
+        message: 'cause=dataset_not_found; datasetRef=BTCUSDT:5m',
+      });
     });
   });
 

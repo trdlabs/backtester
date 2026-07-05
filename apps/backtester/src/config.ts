@@ -60,9 +60,10 @@ export interface AppConfig {
   /**
    * Historical data source: in-process fixture reader, the networked Research Historical Data API
    * (`http`), or the canonical `/historical/rows` rows port (`mock`/`real`). `mock` and `real` are
-   * semantically distinct but share one implementation (RowsDataPort) and one URL env
-   * (BACKTESTER_MOCK_PLATFORM_URL): `mock` points at trading-mock-platform, `real` at the live
-   * `start-historical-http` platform. The code default stays `fixture` (safe for CI/local).
+   * semantically distinct and share one implementation (RowsDataPort) but each has its OWN URL/token
+   * env pair: `mock` points at trading-mock-platform via BACKTESTER_MOCK_PLATFORM_URL/_TOKEN, `real`
+   * at the live `start-historical-http` platform via BACKTESTER_REAL_PLATFORM_URL/_TOKEN. `real` is
+   * the recommended production posture, but the code default stays `fixture` (safe for CI/local).
    */
   readonly dataSource: 'fixture' | 'http' | 'mock' | 'real';
   /** Base URL of the Research Historical Data API (required when dataSource === 'http'). */
@@ -73,6 +74,10 @@ export interface AppConfig {
   readonly mockPlatformUrl?: string;
   /** Bearer token for mock-platform auth (MOCK_OPS_TOKENS-verified). */
   readonly mockPlatformToken?: string;
+  /** Base URL of the live real platform (required when dataSource === 'real'). */
+  readonly realPlatformUrl?: string;
+  /** Bearer token for real-platform auth (required when dataSource === 'real'). */
+  readonly realPlatformToken?: string;
   readonly dataApiPageLimit: number;
   /** Postgres connection string. When set, the service uses PgJobStore; otherwise in-memory. */
   readonly databaseUrl?: string;
@@ -225,6 +230,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ...(env.BACKTESTER_S3_REGION ? { region: env.BACKTESTER_S3_REGION } : {}),
     };
   }
+  const realPlatformUrl = env.BACKTESTER_REAL_PLATFORM_URL;
+  const realPlatformToken = env.BACKTESTER_REAL_PLATFORM_TOKEN;
+  const dataSourceResolved =
+    env.BACKTESTER_DATA_SOURCE === 'http' ? 'http' :
+    env.BACKTESTER_DATA_SOURCE === 'mock' ? 'mock' :
+    env.BACKTESTER_DATA_SOURCE === 'real' ? 'real' : 'fixture';
+  if (dataSourceResolved === 'real' && (!realPlatformUrl?.trim() || !realPlatformToken?.trim())) {
+    throw new Error(
+      'BACKTESTER_REAL_PLATFORM_URL and BACKTESTER_REAL_PLATFORM_TOKEN are required when BACKTESTER_DATA_SOURCE=real',
+    );
+  }
   return {
     host: env.BACKTESTER_HOST ?? '127.0.0.1',
     port: Number(env.BACKTESTER_PORT ?? 8080),
@@ -234,15 +250,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     bundlesDir: env.BACKTESTER_BUNDLES_DIR ?? resolve(HERE, '../.data/bundles'),
     storeBackend,
     ...(s3 ? { s3 } : {}),
-    dataSource:
-      env.BACKTESTER_DATA_SOURCE === 'http'  ? 'http'    :
-      env.BACKTESTER_DATA_SOURCE === 'mock'  ? 'mock'    :
-      env.BACKTESTER_DATA_SOURCE === 'real'  ? 'real'    :
-                                               'fixture',
+    dataSource: dataSourceResolved,
     ...(env.BACKTESTER_DATA_API_URL       ? { dataApiUrl:       env.BACKTESTER_DATA_API_URL }       : {}),
     ...(env.BACKTESTER_DATA_API_TOKEN     ? { dataApiToken:     env.BACKTESTER_DATA_API_TOKEN }     : {}),
     ...(env.BACKTESTER_MOCK_PLATFORM_URL   ? { mockPlatformUrl:   env.BACKTESTER_MOCK_PLATFORM_URL }   : {}),
     ...(env.BACKTESTER_MOCK_PLATFORM_TOKEN ? { mockPlatformToken: env.BACKTESTER_MOCK_PLATFORM_TOKEN } : {}),
+    ...(realPlatformUrl   ? { realPlatformUrl }   : {}),
+    ...(realPlatformToken ? { realPlatformToken } : {}),
     dataApiPageLimit: Number(env.BACKTESTER_DATA_API_PAGE_LIMIT ?? 1000),
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
     pgPoolMax: Math.max(1, Number(env.BACKTESTER_PG_POOL_MAX ?? 10) || 10),

@@ -37,6 +37,7 @@ import type { SandboxExecutorDeps } from '../engine/sandbox/sandbox-executor';
 import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
 import { boundedErrorDetail } from './bounded-error-detail.js';
+import { RealDataUnavailableError } from '../data/rows-data-port';
 import { TrustedMomentumExecutor, type ModuleExecutor } from '../runner/module-executor';
 import { runBacktest, type BacktestResult } from '../runner/run-backtest';
 import type { RunOutcome } from '../engine/artifacts';
@@ -652,7 +653,11 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       ...(dedupedFrom !== undefined ? { dedupedFrom } : {}),
     }, deps.lease?.workerId);
   } catch (err) {
-    const code = err instanceof RunnerError ? err.code : 'runner_failure';
+    const code = err instanceof RunnerError
+      ? err.code
+      : err instanceof RealDataUnavailableError
+      ? 'missing_dataset'
+      : 'runner_failure';
     caughtErrorDetail = boundedErrorDetail(err);
     // eslint-disable-next-line no-console
     console.error(JSON.stringify({

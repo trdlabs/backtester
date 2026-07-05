@@ -23,6 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RunResultSummary, RunStatusView } from '@trading/research-contracts';
 import { buildApp, type AppHandles } from '../src/app';
 import { testConfig, testDeps, AUTH } from './helpers';
+import { __resetTapeCachesForTest } from '../src/data/tape-cache';
 
 const PLATFORM_REPO = process.env.PLATFORM_REPO ?? '/home/alexxxnikolskiy/projects/trading-platform';
 const ENTRYPOINT = resolve(PLATFORM_REPO, 'dist/src/storage/historical/bin/start-historical-http.js');
@@ -38,6 +39,153 @@ const DATASET_REF = 'BTCUSDT:1m';
 const PERIOD = { from: '2025-01-02T00:00:00.000Z', to: '2025-01-02T00:30:00.000Z' };
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// ── Task 5: real-platform gate (dataSource:'real' against the SAME spawned server) ─────────────
+//
+// Closed window + symbol set are DERIVED from the spawned server's /historical/coverage — NEVER
+// hardcoded dates/symbols. The sibling trading-platform fixture corpus is not guaranteed to hold
+// specific symbols/dates, so hardcoding would make the gate environment-specific/flaky. If the
+// corpus has fewer usable symbols than requested, the case skips (logged) rather than failing.
+const TF = '1m';
+const MARGIN_MS = 2 * 60_000; // trim below max toMs → exclude any still-forming tail bar (closed window)
+// The spawned server here never sets HISTORICAL_HTTP_TOKENS (see startPlatformServer), so it is
+// loopback-trusted and accepts any bearer token — this is a fixed placeholder, not a real secret.
+const REAL_TOKEN = 'cross-repo-e2e-real-token';
+
+interface CoverageEntry {
+  symbol: string;
+  timeframe: string;
+  fromMs: number;
+  toMs: number;
+  barCount: number;
+  availability: string;
+}
+
+async function pickClosedWindow(
+  baseUrl: string,
+  token: string,
+  n: number,
+): Promise<{ symbols: string[]; from: string; to: string } | undefined> {
+  const res = await fetch(`${baseUrl}/historical/coverage`, { headers: { authorization: `Bearer ${token}` } });
+  const cov = (await res.json()) as { entries: CoverageEntry[] };
+  const usable = cov.entries
+    .filter((e) => e.timeframe === TF && e.availability === 'available' && e.barCount > 0)
+    .slice(0, n);
+  if (usable.length < n) return undefined; // corpus too small → caller skips (logged)
+  const from = Math.max(...usable.map((e) => e.fromMs));
+  const to = Math.min(...usable.map((e) => e.toMs)) - MARGIN_MS;
+  if (to <= from) return undefined; // window ≤ margin → would invert/empty the period; skip cleanly
+  return {
+    symbols: usable.map((e) => e.symbol),
+    from: new Date(from).toISOString(),
+    to: new Date(to).toISOString(),
+  };
+}
+
+/** `dataSource:'real'` pointed at the SAME spawned server, via the 'real' factory path (Task 2)
+ *  instead of 'mock' — proves the real-platform wiring, not a second server. */
+function realCfg(baseUrl: string, token: string) {
+  return testConfig({
+    dataSource: 'real',
+    realPlatformUrl: baseUrl,
+    realPlatformToken: token,
+    enableOverlayEngine: true,
+    autoWorker: false,
+  });
+}
+
+interface ClosedWindowRunResult {
+  outcome: string;
+  resultHash: string | undefined;
+  datasetFingerprint: string | undefined;
+}
+
+/**
+ * Submit an overlay run over a closed window, drain it to a terminal state, and return the fields
+ * needed for the determinism assertions. `RunResultSummary` nests `datasetFingerprint` under
+ * `evidence` (see the `result.evidence.datasetFingerprint` assertion above) — this test-only helper
+ * flattens that so callers can compare `.datasetFingerprint` directly. No engine/production code
+ * changes; the field was already returned by the existing `/v1/runs/:id/result` route.
+ */
+async function runToTerminal(
+  app: AppHandles,
+  req: { symbols: string[]; timeframe: string; from: string; to: string },
+  runId: string,
+): Promise<ClosedWindowRunResult> {
+  const datasetRef = `${req.symbols[0]}:${req.timeframe}`;
+  const submit = await app.server.inject({
+    method: 'POST',
+    url: '/v1/runs',
+    headers: AUTH,
+    payload: {
+      runId,
+      engine: 'overlay',
+      mode: 'research',
+      moduleRef: { id: 'short_after_pump', version: '0.1.0' },
+      overlayRefs: [{ id: 'early_exit_short_after_pump', version: '0.1.0' }],
+      datasetRef,
+      symbols: req.symbols,
+      timeframe: req.timeframe,
+      period: { from: req.from, to: req.to },
+      riskProfileRef: { id: 'default_risk', version: '1.0.0' },
+      executionProfileRef: { id: 'default_exec', version: '1.0.0' },
+      seed: 12345,
+      metrics: ['pnl', 'max_drawdown', 'win_rate', 'sharpe'],
+    },
+  });
+  expect(submit.statusCode).toBe(202);
+
+  // Single drain runs the overlay backtest in-process to completion (mirrors the existing test above).
+  expect(await app.drain()).toBe(1);
+
+  const status = (
+    await app.server.inject({ url: `/v1/runs/${runId}/status`, headers: AUTH })
+  ).json() as RunStatusView;
+
+  const result = (
+    await app.server.inject({ url: `/v1/runs/${runId}/result`, headers: AUTH })
+  ).json() as RunResultSummary;
+
+  return {
+    outcome: status.status,
+    resultHash: result.resultHash,
+    datasetFingerprint: result.evidence?.datasetFingerprint,
+  };
+}
+
+/**
+ * Build a fresh `real`-configured app (fixed clock via testDeps()), run one closed-window job to
+ * terminal, and dispose. `runId` is embedded in the hashed `RunOutcome` by design (runner.ts
+ * `simulateTarget({ runId: request.runId, ... })`, kept for platform-golden parity) — so the two
+ * "identical run twice" attempts use the SAME literal runId on two SEPARATE fresh apps/job-stores.
+ * That isolates the comparison to real engine/data determinism instead of incidentally hashing two
+ * different runIds against each other.
+ *
+ * Cache-reset gotcha: `materializeFor` (worker.ts) keys the module-level singleton
+ * `overlayTapeCache` (tape-cache.ts) purely off the DATA dimensions of the request
+ * (datasetRef/symbols/timeframe/period) — not runId, not app instance. That cache is a
+ * "long-lived singleton — persists across runs for the life of the worker process" by design, and
+ * `app.dispose()` does NOT clear it. Since both attempts below submit the IDENTICAL data request
+ * (same window/symbols), the second attempt would be a guaranteed in-memory cache HIT even though
+ * it runs against a brand-new app — `buildOverlayDataset` (the real HTTP fetch to the spawned
+ * platform) would fire only ONCE, and comparing `datasetFingerprint` across the two attempts would
+ * trivially compare the SAME cached object to itself, proving nothing about the real data path.
+ * `__resetTapeCachesForTest()` empties the singleton before each attempt so both genuinely hit the
+ * network and `datasetFingerprint` equality is real evidence that two independent fetches return
+ * identical data.
+ */
+async function runOnce(
+  req: { symbols: string[]; timeframe: string; from: string; to: string },
+  runId: string,
+): Promise<ClosedWindowRunResult> {
+  __resetTapeCachesForTest();
+  const realApp = await buildApp(realCfg(BASE_URL, REAL_TOKEN), testDeps());
+  try {
+    return await runToTerminal(realApp, req, runId);
+  } finally {
+    await realApp.dispose();
+  }
+}
 
 /** Spawn the real platform historical-http server and resolve once /historical/discover is 200. */
 async function startPlatformServer(): Promise<ChildProcess> {
@@ -149,5 +297,39 @@ describe.skipIf(!enabled)('cross-repo E2E (backtester rows-path → real platfor
     expect(result.comparison).toBeDefined();
     expect(result.evidence.datasetRef).toBe(DATASET_REF);
     expect(result.evidence.datasetFingerprint).toMatch(/^sha256:/);
+  }, 120_000);
+
+  it('real platform: single-symbol run is deterministic across two identical closed-window runs', async (ctx) => {
+    const w = await pickClosedWindow(BASE_URL, REAL_TOKEN, 1);
+    if (!w) {
+      ctx.skip();
+      return;
+    }
+    const req = { symbols: w.symbols, timeframe: TF, from: w.from, to: w.to };
+    const a = await runOnce(req, 'real-e2e-single');
+    const b = await runOnce(req, 'real-e2e-single');
+    expect(a.outcome).toBe('completed');
+    expect(b.outcome).toBe('completed');
+    expect(a.resultHash).toBeDefined();
+    expect(a.datasetFingerprint).toBeDefined();
+    expect(a.resultHash).toBe(b.resultHash);
+    expect(a.datasetFingerprint).toBe(b.datasetFingerprint);
+  }, 120_000);
+
+  it('real platform: multi-symbol run is deterministic across two identical closed-window runs', async (ctx) => {
+    const w = await pickClosedWindow(BASE_URL, REAL_TOKEN, 3);
+    if (!w) {
+      ctx.skip();
+      return;
+    }
+    const req = { symbols: w.symbols, timeframe: TF, from: w.from, to: w.to };
+    const a = await runOnce(req, 'real-e2e-multi');
+    const b = await runOnce(req, 'real-e2e-multi');
+    expect(a.outcome).toBe('completed');
+    expect(b.outcome).toBe('completed');
+    expect(a.resultHash).toBeDefined();
+    expect(a.datasetFingerprint).toBeDefined();
+    expect(a.resultHash).toBe(b.resultHash);
+    expect(a.datasetFingerprint).toBe(b.datasetFingerprint);
   }, 120_000);
 });
