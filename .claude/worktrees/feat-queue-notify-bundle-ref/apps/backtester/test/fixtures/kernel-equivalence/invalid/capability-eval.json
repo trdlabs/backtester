@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "id": "cap_eval",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Dynamic eval capability",
+    "summary": "Стратегия, объявляющая динамическое исполнение кода",
+    "rationale": "Демонстрация отказа: запрещённая возможность dynamicEval (FR-018).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": { "type": "object" },
+    "params": {},
+    "capabilities": { "platformSdk": true, "dynamicEval": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["onBarClose"]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "id": "point_in_time_ok",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Point-in-time strategy",
+    "summary": "Стратегия, использующая только закрытые свечи и as-of индикаторы",
+    "rationale": "Корректный point-in-time аналог: никакого forward/oracle/wall-clock.",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": { "type": "object" },
+    "params": {},
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true, "asOfIndicators": true },
+    "hooks": ["onBarClose"]
+  }
+}

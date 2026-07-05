@@ -1,0 +1,55 @@
+# Reference only — copy and adapt; not a production Helm chart.
+# API node: serves /v1 + GET /health; the in-process worker is OFF (BACKTESTER_AUTO_WORKER=false).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backtester-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: backtester-api }
+  template:
+    metadata:
+      labels: { app: backtester-api }
+    spec:
+      containers:
+        - name: api
+          image: trading-backtester:latest
+          command: ["node_modules/.bin/tsx", "apps/backtester/src/index.ts"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: BACKTESTER_AUTO_WORKER
+              value: "false"
+            - name: BACKTESTER_PORT
+              value: "8080"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: backtester-db, key: url } }
+            - name: BACKTESTER_STORE_BACKEND
+              value: "s3"
+            - name: BACKTESTER_S3_ENDPOINT
+              value: "http://minio:9000"
+            - name: BACKTESTER_S3_BUCKET
+              value: "backtester"
+            - name: BACKTESTER_S3_FORCE_PATH_STYLE
+              value: "true"
+            - name: BACKTESTER_S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: backtester-s3, key: accessKey } }
+            - name: BACKTESTER_S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: backtester-s3, key: secretKey } }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backtester-api
+spec:
+  selector: { app: backtester-api }
+  ports:
+    - port: 8080
+      targetPort: 8080

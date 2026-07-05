@@ -1,0 +1,11 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+
+# esbuild (pulled by vitest/tsx) runs a postinstall that links its platform binary. Approve it so
+# `pnpm install` exits clean (in CI too).
+allowBuilds:
+  esbuild: true
+
+# Don't re-run an install check before every `pnpm <script>`.
+verifyDepsBeforeRun: false

@@ -1,0 +1,24 @@
+{
+  "manifest": {
+    "id": "early_exit_long_oi_multi",
+    "version": "0.1.0",
+    "kind": "overlay",
+    "name": "Early exit (multi-hook)",
+    "summary": "Overlay, нарушающий single-hook (две точки перехвата)",
+    "rationale": "Демонстрация отказа: overlay в более чем одной точке перехвата (FR-002).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "maxAdverseBars": { "type": "number" } }
+    },
+    "params": { "maxAdverseBars": 5 },
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["apply", "onBarClose"],
+    "targetStrategyRef": "long_oi",
+    "interceptionPoint": "post_entry_management"
+  }
+}

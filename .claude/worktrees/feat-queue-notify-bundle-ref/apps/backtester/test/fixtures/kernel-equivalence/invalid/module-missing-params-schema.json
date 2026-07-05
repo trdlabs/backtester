@@ -1,0 +1,17 @@
+{
+  "manifest": {
+    "id": "no_params_schema",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Missing params schema",
+    "summary": "Модуль без объявленной paramsSchema",
+    "rationale": "Демонстрация отказа: paramsSchema обязателен (FR-034).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "params": { "pumpPct": 10 },
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["onBarClose"]
+  }
+}

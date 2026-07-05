@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "id": "cap_network",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Network capability",
+    "summary": "Стратегия, объявляющая сетевой доступ",
+    "rationale": "Демонстрация отказа: запрещённая возможность network (FR-018).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": { "type": "object" },
+    "params": {},
+    "capabilities": { "platformSdk": true, "network": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["onBarClose"]
+  }
+}

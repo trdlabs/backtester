@@ -1,0 +1,44 @@
+{
+  "manifest": {
+    "id": "early_exit_short_after_pump",
+    "version": "0.1.0",
+    "kind": "overlay",
+    "name": "Early exit for short_after_pump",
+    "summary": "Ранний выход из short-позиции при затяжном неблагоприятном движении (цена выше входа)",
+    "rationale": "Если после входа в шорт цена N баров держится выше входа — тезис не подтверждён, выходим раньше.",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxAdverseBars"
+      ],
+      "properties": {
+        "maxAdverseBars": {
+          "type": "number"
+        }
+      }
+    },
+    "params": {
+      "maxAdverseBars": 3
+    },
+    "capabilities": {
+      "platformSdk": true
+    },
+    "dataNeeds": {
+      "closedCandlesUpToCurrent": true
+    },
+    "hooks": [
+      "apply"
+    ],
+    "targetStrategyRef": "short_after_pump",
+    "interceptionPoint": "post_entry_management",
+    "bundleContractVersion": "019.1"
+  },
+  "entry": "module/index.js",
+  "files": {
+    "module/index.js": "// Предсобранный ESM payload untrusted overlay-bundle (логика 018 early-exit). Перехват в одной точке\n// post_entry_management (`apply`): при подтверждённом неблагоприятном дрейфе для short (цена ВЫШЕ\n// входа N баров) → patch idle→exit. Самодостаточен внутри module/ (FR-003); работает только с\n// read-only snapshot 017 StrategyContext, регидрированным harness'ем.\n//\n// ПОБАЙТОВЫЙ ДВОЙНИК trusted `earlyExitShortAfterPump.apply` (engine examples/early-exit-short-after-pump.overlay.ts):\n// та же patch-логика И тот же annotate-notes-суффикс с платформенными ctx.indicators (RSI/ATR) — тот же\n// engine code path (_engine) ⇒ те же значения ⇒ тот же decision ⇒ тот же result_hash (golden e381659c).\nexport default function createOverlayModule() {\n  return {\n    apply(ctx) {\n      const maxAdverseBars = Number(ctx.params.maxAdverseBars ?? 3);\n      const position = ctx.position;\n      if (position === null) return { kind: 'pass' };\n\n      // 020: волатильность через платформенный ctx.indicators (НЕ vendor-библиотека).\n      const atr = ctx.indicators.query({ name: 'atr', params: { period: 14 } });\n      const rsi = ctx.indicators.query({ name: 'rsi', params: { period: 14 } });\n\n      const history = ctx.data.closedCandles(maxAdverseBars);\n      if (history.length < maxAdverseBars) return { kind: 'pass' };\n\n      const adverse = history.every((bar) => bar.close > position.entryPrice);\n      if (adverse) {\n        return {\n          kind: 'patch',\n          patch: { kind: 'exit', target: 'overlay_early_exit', reason: 'early_exit_adverse_drift' },\n        };\n      }\n      const ind = [];\n      if (typeof rsi === 'number') ind.push(`RSI=${rsi.toFixed(1)}`);\n      if (typeof atr === 'number') ind.push(`ATR=${atr.toFixed(4)}`);\n      const suffix = ind.length > 0 ? ` (${ind.join(', ')})` : '';\n      return { kind: 'annotate', notes: `held: ${maxAdverseBars}-bar adverse drift not confirmed${suffix}` };\n    },\n  };\n}\n"
+  }
+}

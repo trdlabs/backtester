@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "id": "lookahead_forward",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Lookahead via forward window",
+    "summary": "Стратегия, объявляющая потребность в будущем окне баров",
+    "rationale": "Демонстрация отказа: forward-окно — взгляд в будущее (FR-012).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": { "type": "object" },
+    "params": {},
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true, "forwardWindow": true },
+    "hooks": ["onBarClose"]
+  }
+}

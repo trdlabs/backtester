@@ -1,0 +1,30 @@
+{
+  "manifest": {
+    "id": "early_exit_long_oi",
+    "version": "0.1.0",
+    "kind": "overlay",
+    "name": "Early exit for long_oi",
+    "summary": "Ранний выход из позиции long_oi при затяжном неблагоприятном движении",
+    "rationale": "Если после входа цена N баров не подтверждает тезис — выходим раньше штатного стопа.",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxAdverseBars"],
+      "properties": { "maxAdverseBars": { "type": "number" } }
+    },
+    "params": { "maxAdverseBars": 5 },
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["apply"],
+    "targetStrategyRef": "long_oi",
+    "interceptionPoint": "post_entry_management"
+  },
+  "sampleDecisions": [
+    { "kind": "pass" },
+    { "kind": "veto", "reasonCode": "early_exit_adverse_drift" },
+    { "kind": "annotate", "notes": "held" }
+  ]
+}

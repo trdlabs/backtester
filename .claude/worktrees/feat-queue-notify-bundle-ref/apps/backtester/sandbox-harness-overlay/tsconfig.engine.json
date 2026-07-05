@@ -1,0 +1,28 @@
+{
+  // Slice 6b-A — compile the SINGLE-SOURCE indicator engine (src/engine/indicators/**) to ESM JS in
+  // ./_engine/. NOT part of the app typecheck (root tsconfig excludes this tree). The emitted tree is
+  // loaded by the lifted harness (rehydrate.mjs imports ./_engine/engine.js) inside the container,
+  // which has NO node_modules — so the emit MUST be relative-import-self-contained. Contract imports
+  // are `import type` → erased, leaving only `./`-relative specifiers in the JS.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false,
+    "noEmit": false,
+    "noEmitOnError": false,
+    "rootDir": "../src/engine/indicators",
+    "outDir": "./_engine"
+  },
+  "include": ["../src/engine/indicators/**/*.ts"]
+}

@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "id": "cap_broker",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Broker capability",
+    "summary": "Стратегия, объявляющая прямой доступ к брокеру",
+    "rationale": "Демонстрация отказа: запрещённая возможность brokerDirect (FR-018).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": { "type": "object" },
+    "params": {},
+    "capabilities": { "platformSdk": true, "brokerDirect": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["onBarClose"]
+  }
+}

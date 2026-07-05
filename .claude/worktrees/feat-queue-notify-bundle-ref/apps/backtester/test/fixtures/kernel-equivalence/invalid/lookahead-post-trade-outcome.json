@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "id": "lookahead_post_trade",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Lookahead via post-trade outcome",
+    "summary": "Стратегия, объявляющая вход на post-trade исходе",
+    "rationale": "Демонстрация отказа: post-trade outcome как вход — взгляд в будущее (FR-012).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": { "type": "object" },
+    "params": {},
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true, "postTradeOutcome": true },
+    "hooks": ["onBarClose"]
+  }
+}

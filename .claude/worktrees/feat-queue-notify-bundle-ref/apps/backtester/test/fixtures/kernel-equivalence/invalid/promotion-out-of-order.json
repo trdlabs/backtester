@@ -1,0 +1,9 @@
+{
+  "promotion": {
+    "moduleRef": { "id": "short_after_pump", "version": "0.1.0" },
+    "fromStatus": "research_only",
+    "toStatus": "promoted",
+    "evidenceRef": "evidence-run-2026-001",
+    "reviewDecision": { "decision": "approved", "reviewer": "alice" }
+  }
+}
