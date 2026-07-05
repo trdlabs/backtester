@@ -1,0 +1,27 @@
+{
+  "manifest": {
+    "id": "early_exit_sizing",
+    "version": "0.1.0",
+    "kind": "overlay",
+    "name": "Early exit (separation violation)",
+    "summary": "Overlay, чей patch несёт sizing — нарушение разделения ответственности",
+    "rationale": "Демонстрация отказа: patch добавляет sizing/exposure (зона RiskProfile, FR-015).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "maxAdverseBars": { "type": "number" } }
+    },
+    "params": { "maxAdverseBars": 5 },
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["apply"],
+    "targetStrategyRef": "long_oi",
+    "interceptionPoint": "post_entry_management"
+  },
+  "sampleDecisions": [
+    { "kind": "patch", "patch": { "size": 100, "leverage": 3 } }
+  ]
+}

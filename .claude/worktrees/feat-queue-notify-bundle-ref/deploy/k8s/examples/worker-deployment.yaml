@@ -1,0 +1,52 @@
+# Reference only. Worker node: drains the shared Postgres queue (no HTTP /v1). KEDA scales replicas.
+# Prefer low WORKER_CONCURRENCY and more pods (see docs/OPERATIONS.md capacity budget).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backtester-worker
+spec:
+  replicas: 1 # KEDA overrides this; see keda-scaledobject.yaml
+  selector:
+    matchLabels: { app: backtester-worker }
+  template:
+    metadata:
+      labels: { app: backtester-worker }
+    spec:
+      terminationGracePeriodSeconds: 7200 # allow an in-flight backtest to drain
+      containers:
+        - name: worker
+          image: trading-backtester:latest
+          command: ["node_modules/.bin/tsx", "apps/backtester/src/worker-main.ts"]
+          ports:
+            - containerPort: 8081
+          env:
+            - name: WORKER_CONCURRENCY
+              value: "2"
+            - name: WORKER_HEALTH_PORT
+              value: "8081"
+            - name: WORKER_ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: backtester-db, key: url } }
+            - name: BACKTESTER_STORE_BACKEND
+              value: "s3"
+            - name: BACKTESTER_S3_ENDPOINT
+              value: "http://minio:9000"
+            - name: BACKTESTER_S3_BUCKET
+              value: "backtester"
+            - name: BACKTESTER_S3_FORCE_PATH_STYLE
+              value: "true"
+            - name: BACKTESTER_S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: backtester-s3, key: accessKey } }
+            - name: BACKTESTER_S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: backtester-s3, key: secretKey } }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8081 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8081 }
+            periodSeconds: 10
+          resources:
+            # Budget = WORKER_CONCURRENCY × avg_symbols_per_run × sandbox limits (see OPERATIONS.md).
+            requests: { cpu: "2", memory: "1Gi" }
+            limits: { cpu: "4", memory: "2Gi" }

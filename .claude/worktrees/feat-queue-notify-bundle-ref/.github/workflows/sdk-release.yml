@@ -1,0 +1,91 @@
+# Manual SDK release workflow — triggered via workflow_dispatch only.
+# Published assets are IMMUTABLE: fail-closed checks refuse to overwrite an existing
+# tag or GitHub release for the same version.
+name: SDK Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # ── Fail-closed pre-flight checks ──────────────────────────────────────
+
+      - name: Validate version format (semver only)
+        run: |
+          node -e 'if (!/^\d+\.\d+\.\d+$/.test(process.env.VERSION ?? "")) process.exit(1)'
+
+      - name: Assert package.json version matches input
+        run: |
+          test "$(node -p "require('./packages/sdk/package.json').version")" = "$VERSION"
+
+      - name: Refuse if git tag already exists
+        run: |
+          ! git ls-remote --exit-code --tags origin "refs/tags/sdk-v$VERSION" >/dev/null 2>&1
+
+      - name: Refuse if GitHub release already exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ! gh release view "sdk-v$VERSION" >/dev/null 2>&1
+
+      # ── Build and verify ───────────────────────────────────────────────────
+
+      - name: Full check
+        run: pnpm check
+
+      - name: Build SDK
+        run: pnpm sdk:build
+
+      - name: Pack SDK
+        run: pnpm sdk:pack
+
+      - name: Verify packed SDK
+        run: pnpm sdk:verify
+
+      # ── Generate checksum and manifest ─────────────────────────────────────
+
+      - name: Generate SHA-256 checksum and release manifest
+        run: |
+          ASSET=".artifacts/sdk/trading-backtester-sdk-$VERSION.tgz"
+          SHA256="$(sha256sum "$ASSET" | cut -d' ' -f1)"
+          printf '%s  %s\n' "$SHA256" "$(basename "$ASSET")" > "$ASSET.sha256"
+          pnpm exec tsx scripts/sdk-release-manifest.ts \
+            "$VERSION" "$GITHUB_SHA" "$(basename "$ASSET")" "$SHA256" \
+            ".artifacts/sdk/trading-backtester-sdk-$VERSION.manifest.json"
+
+      # ── Create GitHub release (also creates the tag) ───────────────────────
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "sdk-v$VERSION" \
+            ".artifacts/sdk/trading-backtester-sdk-$VERSION.tgz" \
+            ".artifacts/sdk/trading-backtester-sdk-$VERSION.tgz.sha256" \
+            ".artifacts/sdk/trading-backtester-sdk-$VERSION.manifest.json" \
+            --target "$GITHUB_SHA" \
+            --title "@trading-backtester/sdk $VERSION" \
+            --notes "Public standalone trading-backtester SDK $VERSION"

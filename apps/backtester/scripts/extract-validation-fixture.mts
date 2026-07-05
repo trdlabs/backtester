@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SLICE =
   process.env.SLICE_PATH ??
-  resolve(HERE, '../../../../trading-mock-platform/data/snapshots/fixtures/2026-06-18-real-all/ops/bundle.json');
+  resolve(HERE, '../../../../mock-platform/data/snapshots/fixtures/2026-06-18-real-all/ops/bundle.json');
 const OUT = resolve(HERE, '../test/fixtures/exec-validation/long-oi-time-exit.json');
 
 const b = JSON.parse(readFileSync(SLICE, 'utf8'));

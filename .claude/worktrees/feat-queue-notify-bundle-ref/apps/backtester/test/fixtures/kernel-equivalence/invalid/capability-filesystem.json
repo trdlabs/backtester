@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "id": "cap_filesystem",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Filesystem capability",
+    "summary": "Стратегия, объявляющая доступ к файловой системе",
+    "rationale": "Демонстрация отказа: запрещённая возможность filesystem (FR-018).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": { "type": "object" },
+    "params": {},
+    "capabilities": { "platformSdk": true, "filesystem": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["onBarClose"]
+  }
+}

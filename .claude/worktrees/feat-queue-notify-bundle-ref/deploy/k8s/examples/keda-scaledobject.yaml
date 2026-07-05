@@ -1,0 +1,37 @@
+# Reference only. KEDA scales the worker Deployment from Postgres queue depth. DB creds go through a
+# Secret referenced by TriggerAuthentication — NEVER plaintext in the ScaledObject.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keda-backtester-db
+type: Opaque
+stringData:
+  connection: "postgresql://user:pass@postgres:5432/backtester?sslmode=disable" # from your secret manager
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-backtester-db-auth
+spec:
+  secretTargetRef:
+    - parameter: connection
+      name: keda-backtester-db
+      key: connection
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: backtester-worker
+spec:
+  scaleTargetRef:
+    name: backtester-worker
+  minReplicaCount: 0
+  maxReplicaCount: 10 # cap from the capacity budget in docs/OPERATIONS.md
+  triggers:
+    - type: postgresql
+      metadata:
+        query: "SELECT count(*) FROM backtest_job WHERE status = 'queued'"
+        targetQueryValue: "3" # desired queued jobs per replica
+        activationTargetQueryValue: "0"
+      authenticationRef:
+        name: keda-backtester-db-auth

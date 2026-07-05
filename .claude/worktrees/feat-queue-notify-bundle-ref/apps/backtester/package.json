@@ -1,0 +1,26 @@
+{
+  "name": "@trading-backtester/service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "worker": "tsx src/worker-main.ts",
+    "worker:dev": "tsx watch src/worker-main.ts",
+    "start:data-api": "tsx src/data-api-main.ts"
+  },
+  "dependencies": {
+    "@trading-backtester/sdk": "workspace:*",
+    "@trading-platform/sdk": "https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.7.2/trading-platform-sdk-0.7.2.tgz",
+    "@trading/research-contracts": "workspace:*",
+    "ajv": "^8.20.0",
+    "decimal.js": "^10.4.3",
+    "fastify": "^5.1.0",
+    "pg": "^8.13.1"
+  },
+  "optionalDependencies": {
+    "@aws-sdk/client-s3": "^3.699.0"
+  }
+}

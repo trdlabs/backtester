@@ -1,0 +1,24 @@
+{
+  "manifest": {
+    "id": "early_exit_ghost",
+    "version": "0.1.0",
+    "kind": "overlay",
+    "name": "Early exit (unknown target)",
+    "summary": "Overlay поверх неизвестной стратегии",
+    "rationale": "Демонстрация отказа: targetStrategyRef вне каталога известных стратегий (FR-002).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "maxAdverseBars": { "type": "number" } }
+    },
+    "params": { "maxAdverseBars": 5 },
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["apply"],
+    "targetStrategyRef": "nonexistent_strategy",
+    "interceptionPoint": "post_entry_management"
+  }
+}

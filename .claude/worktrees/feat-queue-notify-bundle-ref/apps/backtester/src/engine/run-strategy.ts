@@ -1,0 +1,33 @@
+import { runBacktest } from './runner.js';
+import type { ExecutorRouter } from './module-executor.js';
+import type { TrustedModuleRegistry } from './registry.js';
+import type { MarketTapeDataset } from '@trading/research-contracts/research';
+import type { BacktestRunRequest } from '@trading/research-contracts';
+import type { RunOutcome } from './artifacts.js';
+
+export interface StrategyRunDeps {
+  readonly registry: TrustedModuleRegistry;
+  readonly marketTape?: MarketTapeDataset;
+  readonly router?: ExecutorRouter;
+  /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Absent ⇒ lockstep. */
+  readonly barBatching?: { readonly maxBars: number };
+}
+
+/**
+ * Strategy-bundle run. Baseline = the submitted kind:'strategy' bundle (provenance:'bundle' → sandbox),
+ * NO overlays (baseline-only). Strips the backtester-only `engine` discriminator AND `overlayRefs`
+ * BEFORE the lifted runner (and its 017 backtest-run-request validation, additionalProperties:false) —
+ * `engine` is not a 017 field and must never reach the engine or the hashed RunOutcome (platform parity).
+ */
+export async function runStrategyBacktest(
+  request: BacktestRunRequest,
+  deps: StrategyRunDeps,
+): Promise<RunOutcome> {
+  const { engine: _engine, overlayRefs: _overlayRefs, ...engineRequest } = request;
+  return await runBacktest(engineRequest, {
+    registry: deps.registry,
+    marketTape: deps.marketTape,
+    ...(deps.router ? { router: deps.router } : {}),
+    ...(deps.barBatching ? { barBatching: deps.barBatching } : {}),
+  });
+}

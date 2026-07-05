@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "id": "nondeterminism_wall_clock",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Nondeterminism via wall-clock",
+    "summary": "Стратегия, объявляющая потребность в wall-clock «сейчас»",
+    "rationale": "Демонстрация отказа: wall-clock вместо симулированных часов (FR-019).",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": { "type": "object" },
+    "params": {},
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true, "wallClock": true },
+    "hooks": ["onBarClose"]
+  }
+}

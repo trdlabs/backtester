@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "id": "cap_sdk_only",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "SDK-only capability",
+    "summary": "Стратегия, использующая только platform SDK + read-only контекст",
+    "rationale": "Корректный sandbox-модуль: никаких запрещённых возможностей.",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": { "type": "object" },
+    "params": {},
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["onBarClose"]
+  }
+}

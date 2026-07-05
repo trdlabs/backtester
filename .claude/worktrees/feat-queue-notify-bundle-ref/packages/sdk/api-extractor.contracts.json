@@ -1,0 +1,13 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/api-extractor/v7/api-extractor.schema.json",
+  "mainEntryPointFilePath": "<projectFolder>/dist-types/contracts/index.d.ts",
+  "bundledPackages": ["@trading-platform/sdk"],
+  "compiler": { "tsconfigFilePath": "<projectFolder>/tsconfig.dts.json" },
+  "dtsRollup": {
+    "enabled": true,
+    "untrimmedFilePath": "<projectFolder>/dist/contracts/index.d.ts"
+  },
+  "apiReport": { "enabled": false },
+  "docModel": { "enabled": false },
+  "tsdocMetadata": { "enabled": false }
+}

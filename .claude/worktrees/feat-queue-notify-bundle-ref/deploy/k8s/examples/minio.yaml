@@ -1,0 +1,37 @@
+# Reference only — the first-class self-hosted S3-compatible target. Swap for a managed S3 by
+# pointing BACKTESTER_S3_ENDPOINT at it and setting BACKTESTER_S3_FORCE_PATH_STYLE=false.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: minio }
+  template:
+    metadata:
+      labels: { app: minio }
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom: { secretKeyRef: { name: backtester-s3, key: accessKey } }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: backtester-s3, key: secretKey } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+spec:
+  selector: { app: minio }
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000

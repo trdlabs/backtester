@@ -1,0 +1,15 @@
+{
+  "request": {
+    "runId": "run-2026-006",
+    "mode": "research",
+    "moduleRef": { "id": "short_after_pump" },
+    "overlayRefs": [{ "id": "early_exit_long_oi", "version": "0.1.0" }],
+    "datasetRef": "top300-1m-2025",
+    "symbols": ["BTCUSDT"],
+    "timeframe": "1m",
+    "period": { "from": "2025-01-01", "to": "2025-03-01" },
+    "seed": 42,
+    "riskProfileRef": { "id": "default_risk", "version": "1.0.0" },
+    "metrics": ["pnl"]
+  }
+}

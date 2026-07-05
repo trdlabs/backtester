@@ -27,4 +27,4 @@ From the repo root, after re-vendoring:
 
 The drift-guard test (`apps/backtester/test/long-oi-vendored.test.ts`) fails
 if any vendored `.ts` file's checksum no longer matches, or if a vendored
-`.ts` file is missing from the manifest.
+`.ts` file is missing from the manifest. This checksum drift guard is a re-vendor-time lock that detects accidental in-repo edits to the vendored copy, not continuous divergence from the upstream `trading-platform` source — upstream drift is only caught when someone re-vendors and regenerates CHECKSUMS.txt.

@@ -1,0 +1,27 @@
+node_modules/
+dist/
+dist-types/
+# Slice 6b-A — overlay sandbox harness `_engine` is generated from src/engine/indicators/** by
+# `build:sandbox-harness-overlay` (run in pretest + vitest globalSetup). Source of truth is the .ts;
+# the drift-guard test asserts the committed manifest hash matches the source.
+/apps/backtester/sandbox-harness-overlay/_engine/
+
+.artifacts/
+.data/
+coverage/
+*.log
+*.tsbuildinfo
+.DS_Store
+.worktrees/
+# gortex daemon/CLI local output (e.g. `gortex audit` writes .gortex/badge.svg) — never committed
+.gortex/
+# superpowers subagent-driven-development scratch (briefs, reports, ledger, review diffs) — never committed
+.superpowers/
+# harness-generated evidence artifacts (produce-evidence.mts output) — never committed
+apps/backtester/.evidence-out/
+# evidence signing key(s) — Ed25519 private PEM for backtest-evidence/v1; NEVER committed
+.secrets/
+*.pem
+
+# VPS stand concrete env (secrets)
+deploy/vps/backtester.env

@@ -1,0 +1,53 @@
+{
+  "manifest": {
+    "id": "short_after_pump",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Short after pump",
+    "summary": "Шорт после резкого роста цены при достаточном объёме",
+    "rationale": "Резкий памп без фундаментала часто откатывает; вход в шорт по подтверждённому росту.",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pumpPct",
+        "windowMin",
+        "minVolume"
+      ],
+      "properties": {
+        "pumpPct": {
+          "type": "number"
+        },
+        "windowMin": {
+          "type": "number"
+        },
+        "minVolume": {
+          "type": "number"
+        }
+      }
+    },
+    "params": {
+      "pumpPct": 10,
+      "windowMin": 20,
+      "minVolume": 1000000
+    },
+    "capabilities": {
+      "platformSdk": true
+    },
+    "dataNeeds": {
+      "closedCandlesUpToCurrent": true,
+      "asOfIndicators": true
+    },
+    "hooks": [
+      "onBarClose"
+    ],
+    "bundleContractVersion": "019.1"
+  },
+  "entry": "module/index.js",
+  "files": {
+    "module/index.js": "// Предсобранный ESM payload untrusted strategy-bundle (логика 018 `short_after_pump`).\n//\n// САМОДОСТАТОЧЕН ВНУТРИ module/ (FR-003): никаких импортов из репозиторного src/ или dist/, host-fs,\n// npm-registry или внешних пакетов. Работает ТОЛЬКО с read-only 017 `StrategyContext`, который harness\n// (US2) регидрирует из сериализованного snapshot'а. 017/018 TS type-импорты при «сборке» стёрты.\n//\n// Контракт инстанцирования (совпадает с harness T025, US2): entry default-экспортирует фабрику,\n// возвращающую объект-модуль с lifecycle-хуками (по manifest.hooks). Здесь — только onBarClose.\n//\n// ПОБАЙТОВЫЙ ДВОЙНИК trusted `shortAfterPump.onBarClose` (engine examples/short-after-pump.strategy.ts):\n// та же rationale-форма с платформенными ctx.indicators (RSI/MACD/ATR/Bollinger) — тот же engine\n// code path (_engine) ⇒ те же значения ⇒ тот же decision ⇒ тот же result_hash (golden 0be9931c).\n\nexport default function createStrategyModule() {\n  return {\n    onBarClose(ctx) {\n      const windowMin = Number(ctx.params.windowMin ?? 20);\n      const pumpPct = Number(ctx.params.pumpPct ?? 10);\n      const minVolume = Number(ctx.params.minVolume ?? 0);\n\n      // Платформенные индикаторы через стабильный ctx.indicators (warmup → undefined).\n      const rsi = ctx.indicators.query({ name: 'rsi', params: { period: 14 } });\n      const macd = ctx.indicators.query({ name: 'macd' });\n      const atr = ctx.indicators.query({ name: 'atr', params: { period: 14 } });\n      const bollinger = ctx.indicators.query({ name: 'bollinger', params: { period: 20, stddev: 2 } });\n\n      const history = ctx.data.closedCandles(windowMin);\n      if (history.length < windowMin) return { kind: 'idle' };\n\n      const past = history[0];\n      const changePct = ((ctx.bar.close - past.close) / past.close) * 100;\n      if (changePct >= pumpPct && ctx.bar.volume >= minVolume) {\n        const parts = [`pump ${changePct.toFixed(1)}% >= ${pumpPct}% при объёме ${ctx.bar.volume}`];\n        if (typeof rsi === 'number') parts.push(`RSI=${rsi.toFixed(1)}`);\n        if (typeof macd === 'object' && macd !== null && 'histogram' in macd) {\n          parts.push(`MACD.hist=${macd.histogram.toFixed(4)}`);\n        }\n        if (typeof atr === 'number') parts.push(`ATR=${atr.toFixed(4)}`);\n        if (typeof bollinger === 'object' && bollinger !== null && 'upper' in bollinger) {\n          parts.push(`BB.upper=${bollinger.upper.toFixed(2)}`);\n        }\n        return { kind: 'enter', side: 'short', rationale: parts.join('; ') };\n      }\n      return { kind: 'idle' };\n    },\n  };\n}\n"
+  }
+}

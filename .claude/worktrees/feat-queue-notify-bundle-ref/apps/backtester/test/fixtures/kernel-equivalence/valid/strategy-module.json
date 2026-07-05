@@ -1,0 +1,31 @@
+{
+  "manifest": {
+    "id": "short_after_pump",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Short after pump",
+    "summary": "Шорт после резкого роста цены при достаточном объёме",
+    "rationale": "Резкий памп без фундаментала часто откатывает; вход в шорт по подтверждённому росту.",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pumpPct", "windowMin", "minVolume"],
+      "properties": {
+        "pumpPct": { "type": "number" },
+        "windowMin": { "type": "number" },
+        "minVolume": { "type": "number" }
+      }
+    },
+    "params": { "pumpPct": 10, "windowMin": 20, "minVolume": 1000000 },
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true, "asOfIndicators": true },
+    "hooks": ["onBarClose"]
+  },
+  "sampleDecisions": [
+    { "kind": "enter", "side": "short" },
+    { "kind": "idle" }
+  ]
+}

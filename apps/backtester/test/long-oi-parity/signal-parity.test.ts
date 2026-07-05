@@ -28,7 +28,7 @@ describe('long_oi signal-parity (G7 Stage 1)', () => {
     expect(excluded).toEqual(['2026-06-18T00:04:00.000Z']);
   });
 
-  it('long_oi runs faithfully on real 1-minute data (tradeCount=0 regression closed)', async () => {
+  it('long_oi executes end-to-end and generates trades on real 1-minute data (tradeCount=0 closed)', async () => {
     const generated = await runLongOiOnRows(fx.rows, fx.symbol);
     expect(generated.length).toBeGreaterThan(0); // tradeCount=0 HARD guard — the core G7 claim
     expect(generated.every((t) => t.side === 'long')).toBe(true);

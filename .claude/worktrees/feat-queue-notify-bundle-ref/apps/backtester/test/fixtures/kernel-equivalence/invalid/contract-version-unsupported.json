@@ -1,0 +1,22 @@
+{
+  "manifest": {
+    "id": "short_after_pump",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "Short after pump",
+    "summary": "Шорт после резкого роста цены",
+    "rationale": "Демонстрация отказа: неподдерживаемая версия контракта (FR-037).",
+    "author": "agent",
+    "contractVersion": "000.0",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "pumpPct": { "type": "number" } }
+    },
+    "params": { "pumpPct": 10 },
+    "capabilities": { "platformSdk": true },
+    "dataNeeds": { "closedCandlesUpToCurrent": true },
+    "hooks": ["onBarClose"]
+  }
+}
