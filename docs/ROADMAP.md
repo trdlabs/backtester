@@ -161,8 +161,25 @@ The core product flow is closed. What's left:
 
 ### Phase A — real platform data path
 
-1. `trading-platform`: harden the production historical-data path (today the proven E2E runs against `trading-mock-platform`)
-2. run the cross-repo E2E against the **real** `trading-platform`, then make it the default backend
+**Verify-spike DONE (2026-07-05).** The backtester's live `RowsDataPort` (historical.2 contract)
+was proven against the **real** `trading-platform` historical HTTP API on the VPS (`:8088`,
+`network_mode: host`): `discover`→`historicalContractVersion: 'historical.2'` + `rows` resource
+`available`, 526 real symbols, ~3-week coverage window (the `HISTORICAL_CACHE_DAYS=4` cache is
+LRU-only; the corpus spans weeks). Auth = `Authorization: Bearer <raw>` where
+`HISTORICAL_HTTP_TOKENS` holds sha256-hex hashes; a dedicated backtester token was provisioned
+(appended hash, `historical` container recreated). A real `long_oi` single-symbol run completed
+end-to-end; the multi-symbol path surfaced + fixed a code gap (**`RowsReader` was single-symbol**;
+`queryRange` now honours `q.symbols`, **PR #89** squash `bb1269a`) — real 3-symbol universe runs now
+complete (OFF and ON, byte-identical). "Point at the real platform" is otherwise config-only.
+
+Remaining to CLOSE Phase A:
+
+1. `trading-platform`: harden the production historical-data path — decide the `'real'` config posture
+   (distinct `BACKTESTER_REAL_PLATFORM_URL/_TOKEN` vs today's shared `mock`/`real` pair), error
+   taxonomy / retries / contract-gate behaviour, and a determinism check (same window twice → same
+   `result_hash`).
+2. run the cross-repo E2E against the **real** `trading-platform` (opt-in gate, sibling of
+   `cross-repo-historical-e2e.integration.test.ts`), then make it the default backend.
 
 ### Phase B — internal hygiene (no consumer impact) — mostly done
 
@@ -270,7 +287,10 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     live 429 `{status:429, code:queue_full, category:rate_limit, retryAfterS:5}` → lab maps
     `rate_limited`; resumeToken replay 202-bypasses a constrained queue; 6/6 drained, no backlog.
     Known semantics (documented): a SIMULTANEOUS submit wave passes the racy cap check — the cap
-    guards standing backlog, not one wave. REMAINING in item 16 (later slices): bundle-by-ref,
+    guards standing backlog, not one wave. ✅ **REMAINING item-16 tails SHIPPED (PR #84, squash
+    `842a557`, 2026-07-05): bundle-by-ref (`PUT`/submit-by-hash, fingerprint-invariant → dedup HIT,
+    SDK 0.8.0) + LISTEN/NOTIFY worker wake (`BACKTESTER_QUEUE_NOTIFY`, both default OFF, Pg-only).**
+    Original note (both were): bundle-by-ref,
     LISTEN/NOTIFY — **2026-07-03 review: these two are the recommended cheap pre-load tails**
     (bundle-by-ref kills the ~1 MiB × grid-points re-upload; LISTEN/NOTIFY kills worker/lab poll
     latency + Pg load at hundreds of runs); do them before Tier 3 scale-out. Original item text:
@@ -331,7 +351,14 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     size 1 ⇒ today's behavior. Flag-gated default OFF; merge gate = golden byte-identical
     `result_hash` lockstep-vs-batched on real bundles (INV-6 / twin-equivalence pattern).
 
-17c. **Universe session (enables top-300/400 universe backtests on small hardware).** Today: one
+17c. ✅ **SHIPPED (PR #85, squash `993c497`, 2026-07-05) — Universe session** (container-collapse
+    ONLY, byte-identical; `BACKTESTER_UNIVERSE_SESSION` default OFF, strategy+overlay symmetric
+    2N→2). **Measured on REAL data 2026-07-05** (long_oi × 3-symbol, VPS `:8088`): container-open
+    1036ms→7ms (spawn collapsed), engineMs 3447→2086 (1.65×), byte-identical. **bar-major/message-
+    collapse VERDICT: JUSTIFIED for large N** — faithful OFF profile ipcWait ~44% of engine at N=3,
+    scales ~linearly (universe-collapse cuts spawn, NOT round-trips — that's bar-major's job); it
+    stays a deferred own slice (changes portfolio-apply order → result_hash). Follow-up: universe-
+    mode `ipc_profile` under-counts hookCalls (1281 vs 2157). Original design text: Today: one
     container per (module, symbol) — a 300-symbol run means 300 spawns (~8–10 min), ~38 GB of
     container memory caps, and ~300 messages per bar (~864k round trips per 2-day run). Redesign:
     ONE container per bundle hosting N per-symbol strategy instances (same isolation semantics —
@@ -395,5 +422,5 @@ The system is “working” when (✅ except the real-platform data path):
 - `trading-lab` submits hypothesis backtests to `trading-backtester` by default ✅
 - `trading-backtester` executes the overlay path with sandboxing ✅
 - results and artifacts come back correctly ✅
-- historical data comes through the **real** platform contract (mock proven; real-platform hardening pending)
+- historical data comes through the **real** platform contract (mock proven; real-platform path VERIFIED live 2026-07-05 — contract + auth + single/multi-symbol runs; default-flip + hardening + real-platform E2E gate pending — Phase A)
 - `sp4_mock` is no longer written (✅; type member retained for legacy read back-compat)
