@@ -1,10 +1,18 @@
 # AGENTS.md — trading-backtester
 
-This repository is part of the `trdlabs` ecosystem.
+This repository is part of the `trdlabs` trading ecosystem.
 
-If `../control-center/AGENTS.md` is available, read it before making
-ecosystem-level, architecture, API, MCP, SDK, integration, or other cross-repo
-changes.
+**Before planning or coding, read `../control-center/` when the task involves:**
+- other repositories, system architecture, or integration boundaries
+- API, MCP, SDK, or contract changes
+- rollout, migration, or cross-repo validation
+
+**Read order when triggered:**
+1. `../control-center/repos.yaml`
+2. `../control-center/AGENTS.md`
+3. `../control-center/repos/trading-backtester.md`
+
+If `../control-center` is absent (standalone clone), use local repo docs only.
 
 > Гид для AI-агентов (Codex, Claude Code и др.). Поведенческие правила и обязательный
 > workflow по навигации (Gortex MCP) — в `CLAUDE.md`. Здесь — быстрый контекст и команды.
