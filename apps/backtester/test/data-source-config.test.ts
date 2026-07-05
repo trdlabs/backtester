@@ -15,22 +15,28 @@ describe('dataSource config', () => {
   });
 
   it('recognises BACKTESTER_DATA_SOURCE=real (env cutover to the live platform)', () => {
-    expect(loadConfig({ BACKTESTER_DATA_SOURCE: 'real' }).dataSource).toBe('real');
+    expect(loadConfig({
+      BACKTESTER_DATA_SOURCE: 'real',
+      BACKTESTER_REAL_PLATFORM_URL: 'http://127.0.0.1:8088',
+      BACKTESTER_REAL_PLATFORM_TOKEN: 'tok',
+    }).dataSource).toBe('real');
   });
 
   it('falls back to fixture for any unknown value', () => {
     expect(loadConfig({ BACKTESTER_DATA_SOURCE: 'nonsense' }).dataSource).toBe('fixture');
   });
 
-  it('real and mock share the same URL env (BACKTESTER_MOCK_PLATFORM_URL)', () => {
+  it('real and mock have separate URL/token env pairs (no longer shared)', () => {
     const c = loadConfig({
       BACKTESTER_DATA_SOURCE: 'real',
-      BACKTESTER_MOCK_PLATFORM_URL: 'http://89.124.86.84:8088',
-      BACKTESTER_MOCK_PLATFORM_TOKEN: 'tok',
+      BACKTESTER_REAL_PLATFORM_URL: 'http://89.124.86.84:8088',
+      BACKTESTER_REAL_PLATFORM_TOKEN: 'tok',
     });
     expect(c.dataSource).toBe('real');
-    expect(c.mockPlatformUrl).toBe('http://89.124.86.84:8088');
-    expect(c.mockPlatformToken).toBe('tok');
+    expect(c.realPlatformUrl).toBe('http://89.124.86.84:8088');
+    expect(c.realPlatformToken).toBe('tok');
+    expect(c.mockPlatformUrl).toBeUndefined();
+    expect(c.mockPlatformToken).toBeUndefined();
   });
 });
 
