@@ -60,9 +60,10 @@ export interface AppConfig {
   /**
    * Historical data source: in-process fixture reader, the networked Research Historical Data API
    * (`http`), or the canonical `/historical/rows` rows port (`mock`/`real`). `mock` and `real` are
-   * semantically distinct but share one implementation (RowsDataPort) and one URL env
-   * (BACKTESTER_MOCK_PLATFORM_URL): `mock` points at trading-mock-platform, `real` at the live
-   * `start-historical-http` platform. The code default stays `fixture` (safe for CI/local).
+   * semantically distinct and share one implementation (RowsDataPort) but each has its OWN URL/token
+   * env pair: `mock` points at trading-mock-platform via BACKTESTER_MOCK_PLATFORM_URL/_TOKEN, `real`
+   * at the live `start-historical-http` platform via BACKTESTER_REAL_PLATFORM_URL/_TOKEN. `real` is
+   * the recommended production posture, but the code default stays `fixture` (safe for CI/local).
    */
   readonly dataSource: 'fixture' | 'http' | 'mock' | 'real';
   /** Base URL of the Research Historical Data API (required when dataSource === 'http'). */
