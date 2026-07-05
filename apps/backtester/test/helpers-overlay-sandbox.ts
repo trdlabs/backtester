@@ -56,6 +56,13 @@ export interface SandboxOverlayDirs {
 export interface SandboxStrategyDirs {
   /** `short_after_pump` strategy bundle dir (materialized + world-readable). */
   readonly spDir: string;
+  /**
+   * Task 9 — universe-session golden gate: when set, the router is built with `universe` deps
+   * (Task 7's `createExecutorRouter({ universe: {...} })`) so `sandboxFor` derives a scaled policy
+   * and threads `universe` into the `SandboxModuleExecutor`, collapsing its sessions to ONE shared
+   * container for N symbols. Absent ⇒ byte-identical to pre-Task-7 (one container per symbol).
+   */
+  readonly universe?: { readonly enabled: boolean; readonly n: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
 }
 
 /** Registry + sandbox-aware router built over a materialized bundle. */
@@ -126,6 +133,7 @@ export function buildSandboxStrategyBaselineDeps(dirs: SandboxStrategyDirs): San
     sandboxPolicies: createSandboxPolicyRegistry([policy]),
     sandboxPolicyRef: { id: policy.id, version: policy.version },
     sandboxDeps: { harnessDir: config.overlaySandbox.harnessDir, containerSuffix: nextContainerSuffix() },
+    ...(dirs.universe ? { universe: dirs.universe } : {}),
   });
 
   return { registry, router };
