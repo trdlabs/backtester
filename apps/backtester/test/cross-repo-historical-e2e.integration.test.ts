@@ -23,6 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RunResultSummary, RunStatusView } from '@trading/research-contracts';
 import { buildApp, type AppHandles } from '../src/app';
 import { testConfig, testDeps, AUTH } from './helpers';
+import { __resetTapeCachesForTest } from '../src/data/tape-cache';
 
 const PLATFORM_REPO = process.env.PLATFORM_REPO ?? '/home/alexxxnikolskiy/projects/trading-platform';
 const ENTRYPOINT = resolve(PLATFORM_REPO, 'dist/src/storage/historical/bin/start-historical-http.js');
@@ -73,6 +74,7 @@ async function pickClosedWindow(
   if (usable.length < n) return undefined; // corpus too small → caller skips (logged)
   const from = Math.max(...usable.map((e) => e.fromMs));
   const to = Math.min(...usable.map((e) => e.toMs)) - MARGIN_MS;
+  if (to <= from) return undefined; // window ≤ margin → would invert/empty the period; skip cleanly
   return {
     symbols: usable.map((e) => e.symbol),
     from: new Date(from).toISOString(),
@@ -158,11 +160,25 @@ async function runToTerminal(
  * "identical run twice" attempts use the SAME literal runId on two SEPARATE fresh apps/job-stores.
  * That isolates the comparison to real engine/data determinism instead of incidentally hashing two
  * different runIds against each other.
+ *
+ * Cache-reset gotcha: `materializeFor` (worker.ts) keys the module-level singleton
+ * `overlayTapeCache` (tape-cache.ts) purely off the DATA dimensions of the request
+ * (datasetRef/symbols/timeframe/period) — not runId, not app instance. That cache is a
+ * "long-lived singleton — persists across runs for the life of the worker process" by design, and
+ * `app.dispose()` does NOT clear it. Since both attempts below submit the IDENTICAL data request
+ * (same window/symbols), the second attempt would be a guaranteed in-memory cache HIT even though
+ * it runs against a brand-new app — `buildOverlayDataset` (the real HTTP fetch to the spawned
+ * platform) would fire only ONCE, and comparing `datasetFingerprint` across the two attempts would
+ * trivially compare the SAME cached object to itself, proving nothing about the real data path.
+ * `__resetTapeCachesForTest()` empties the singleton before each attempt so both genuinely hit the
+ * network and `datasetFingerprint` equality is real evidence that two independent fetches return
+ * identical data.
  */
 async function runOnce(
   req: { symbols: string[]; timeframe: string; from: string; to: string },
   runId: string,
 ): Promise<ClosedWindowRunResult> {
+  __resetTapeCachesForTest();
   const realApp = await buildApp(realCfg(BASE_URL, REAL_TOKEN), testDeps());
   try {
     return await runToTerminal(realApp, req, runId);
