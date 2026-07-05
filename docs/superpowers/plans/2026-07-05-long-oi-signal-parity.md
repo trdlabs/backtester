@@ -220,7 +220,7 @@ export interface SignalParityFixture {
   rows: CanonicalRowV2[];
 }
 ```
-(Confirm the exact `@trading-platform/sdk/historical` import path for `CanonicalRowV2` matches how `helpers-replay.ts`/`exec-validation.test.ts` import it; reuse that specifier.)
+Import `CanonicalRowV2` from the **exact specifier `helpers-replay.ts` / `exec-validation.test.ts` already use** (read one of them and copy it verbatim — the type is defined in the platform SDK's historical module, but the backtester may re-export it via a research-contract path; match the existing test, don't introduce a new specifier).
 
 - [ ] **Step 2: Write the extractor script**
 
@@ -312,7 +312,7 @@ return out.baseline.trades.map((t) => ({
   pnlPct: ((t.exitFillPrice - t.entryFillPrice) / t.entryFillPrice) * 100,
 }));
 ```
-Use `symbol`/`timeframe:'1m'`/`period` derived from the rows (`from = rows[0].minute_ts`, `to = rows.at(-1).minute_ts`), `seed: 1`, `metrics: ['pnl']`.
+Derive `symbol`/`timeframe:'1m'`/`period`/`seed:1`/`metrics:['pnl']` exactly as `helpers-replay.ts` does. **`period.to` MUST be EXCLUSIVE** — use `from: new Date(rows[0].minute_ts).toISOString()`, `to: new Date(rows[rows.length - 1].minute_ts + 60_000).toISOString()` (the `+ 60_000` matches `helpers-replay.ts`; without it the LAST minute bar is dropped from the run, silently losing any trade on it).
 
 - [ ] **Step 2: Write the smoke test (tradeCount=0 guard + ctx.market populated)**
 
@@ -444,7 +444,7 @@ export function matchTrades(
     if (!m) { failures.push(`no generated entry at ${gt.openedAtMs} (golden ${gt.tradeId})`); continue; }
     if (m.side !== gt.side) failures.push(`side mismatch ${gt.tradeId}: ${m.side} != ${gt.side}`);
     if (m.exitTs !== gt.closedAtMs) failures.push(`exit bar mismatch ${gt.tradeId}: ${m.exitTs} != ${gt.closedAtMs}`);
-    const gBucket = normalizeCloseReason(gt.closeReason ?? gt.closeReasonRaw);
+    const gBucket = normalizeCloseReason(gt.closeReasonRaw ?? gt.closeReason); // raw-first: closeReasonRaw (tp2/hard_stop) is more specific than the generalized closeReason
     const mBucket = normalizeCloseReason(m.closeReason);
     if (gBucket !== mBucket) failures.push(`close-reason mismatch ${gt.tradeId}: ${mBucket} != ${gBucket}`);
     else if (gBucket === 'other') flaggedOtherOther.push(gt.tradeId);
@@ -514,6 +514,10 @@ describe('long_oi signal-parity (G7 Stage 1)', () => {
     expect(report.failures).toEqual([]);
     expect(report.ok).toBe(true);
     expect(report.matched).toHaveLength(8);
+    // other↔other is "flagged, not silently passed": a matched pair both normalizing to
+    // 'other' is NOT a real signal-parity match. For the ESPORTSUSDT golden (all TP/SL) this
+    // must be empty; a non-empty set fails acceptance even if failures[] is empty.
+    expect(report.flaggedOtherOther).toEqual([]);
   }, 30_000);
 
   it('is deterministic (two runs → identical trades)', async () => {
