@@ -39,6 +39,11 @@ function takerPoint(snap: TakerSnapshot): TakerPoint {
   return Object.freeze({ ts: snap.ts, buyUsd: snap.buyUsd, sellUsd: snap.sellUsd });
 }
 
+// DRIFT-GUARD: a verbatim copy of this function is vendored as the reference oracle in
+// trading-platform/scripts/verify_093_window_parity.mjs (the long_oi ctx.market window-parity
+// gate proving the live adapter's OI/liq/funding/taker windows match this calendar-grid
+// contract). If you change the windowing semantics here, update that vendored copy / the
+// platform gate — otherwise the platform-side parity check silently rots.
 /** Минуты-бакеты `[..t]` ВКЛЮЧИТЕЛЬНО длиной `min(lookback, доступные [0..idx])`; `[]` при невалидном lookback. */
 function windowMinutes(gridTs: readonly number[], idx: number, lookback: number): readonly number[] {
   if (idx < 0 || !Number.isInteger(lookback) || lookback <= 0) return [];
