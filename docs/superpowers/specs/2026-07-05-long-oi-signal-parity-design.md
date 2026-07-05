@@ -28,7 +28,7 @@ Extend the existing `exec-validation` harness rather than build parallel infra:
 
 - **Today:** `helpers-replay.ts::replayPnlPct` builds `makeReplayModule` (force-injects recorded trades) → runs the real `runBacktest` (`createTrustedRouter()`, `SAME_BAR_NO_COST`) → returns `{backtestPnlPct, paperPnlPct}` per trade. Fill-model only.
 - **Stage 1:** a new harness runs the **real `LONG_OI_MODULE`** (`{manifest, init, onBarClose, onPositionBar}`) through the **same `runBacktest`** on the срез's ESPORTSUSDT 1-minute rows, from raw bars, and collects the **engine-generated** trades. `runBacktest` already accepts an arbitrary `StrategyModule` (that is exactly how the replay stub runs today) — so long_oi executes **without** being added to `TRUSTED_REGISTRY_DEFINITION` (which stays `short_after_pump`-only).
-- Reuse the committed golden fixture pattern (`test/fixtures/exec-validation/long-oi-time-exit.json`, produced by `scripts/extract-validation-fixture.mts`): a trimmed, committed `{ trades: PaperTrade[], rowsBySymbol: Record<symbol, CanonicalRowV2[]> }` for ESPORTSUSDT so the test is offline/deterministic and reads no live mock HTTP.
+- Reuse the committed golden fixture pattern (`test/fixtures/exec-validation/long-oi-time-exit.json`, produced by `scripts/extract-validation-fixture.mts`): a trimmed, committed `{ trades: SignalParityGoldenTrade[], rowsBySymbol: Record<symbol, CanonicalRowV2[]> }` for ESPORTSUSDT so the test is offline/deterministic and reads no live mock HTTP. `SignalParityGoldenTrade` extends `PaperTrade` with `entryPrice`, `exitPrice`, `closeReasonRaw` (preserved verbatim from mock-platform `tradesByRun` — see §4a) so trimming loses no source evidence.
 
 ### Unit boundaries
 - `runLongOiOnRows(rows: CanonicalRowV2[], symbol): GeneratedTrade[]` — pure adapter: feed 1-minute rows to `runBacktest` with `LONG_OI_MODULE`, return the engine's trades (entry/exit bar ts, side, exit reason, pnl%). One responsibility: execute the real module.
@@ -43,7 +43,7 @@ Before any harness code, **resolve where the backtester test obtains a runnable 
 2. **Vendor into backtester test fixtures** — copy `long-oi-code/*.ts` under `apps/backtester/test/fixtures/strategies/long_oi/` with a provenance README + a byte-identity guard (checksum test against the platform source) so drift is caught.
 3. **Path/workspace import** — import directly from a sibling checkout (fragile; rejected unless the repos are a workspace).
 
-Task 0's deliverable: the chosen source wired so `import { LONG_OI_MODULE }` resolves in a backtester test, plus (for option 2) a drift guard. Every later task depends on it.
+**Recommended: option 2 (vendor + drift guard).** Option 1 (SDK export) is architecturally cleaner (single source of truth) but blocks G7 Stage 1 on a separate trading-platform/SDK release; Stage 1 needs a **local, self-contained proof harness** now, so vendor `long-oi-code/*.ts` into `apps/backtester/test/fixtures/strategies/long_oi/` with a checksum drift guard against the platform source (a follow-up can migrate to the SDK export once it exists). Task 0's deliverable: the chosen source wired so `import { LONG_OI_MODULE }` resolves in a backtester test, plus (for option 2) the drift guard. Every later task depends on it.
 
 ## 3. Warmup & scorable window
 
@@ -71,11 +71,13 @@ Golden carries `closeReason` ∈ {`take_profit_final`, `stop_loss`, `time_exit`,
 ```
 CanonicalCloseReason = 'take_profit' | 'stop_loss' | 'time_exit' | 'other'
 take_profit_final | tp1 | tp2 | take_profit*   -> 'take_profit'
-stop_loss | sl                                 -> 'stop_loss'
+stop_loss | sl | hard_stop                     -> 'stop_loss'
 time_exit | max_hold | watch_expire            -> 'time_exit'
 everything else                                -> 'other'
 ```
-The exact raw-token map is finalized in the plan by reading the engine's actual exit-reason emissions + the golden `closeReasonRaw` values; `other`↔`other` matches are allowed but flagged in the report (they weaken the assertion) so they don't silently pass.
+`hard_stop` is a **real** `closeReasonRaw` in this fixture — the ESPORTSUSDT stop-loss trades in `2026-06-18-real-all` carry `closeReasonRaw: 'hard_stop'` (while `closeReason: 'stop_loss'`); normalizing by raw without it would misroute all 4 SL trades to `other`. The remaining raw-token map is finalized in the plan by reading the engine's actual exit-reason emissions + the golden `closeReasonRaw` values; `other`↔`other` matches are allowed but flagged in the report (they weaken the assertion) so they don't silently pass.
+
+**Fixture must preserve `closeReasonRaw` (+ entry/exit prices).** The existing `PaperTrade` in `helpers-replay.ts` does not carry `closeReasonRaw`, but this slice needs it (normalization + evidence). The new trimmed fixture uses a widened golden type `SignalParityGoldenTrade` extending `PaperTrade` with `entryPrice`, `exitPrice`, `closeReasonRaw` — carried verbatim from the mock-platform `tradesByRun` `ClosedTrade` so no source evidence is lost in trimming.
 
 ## 5. Error handling / determinism
 
