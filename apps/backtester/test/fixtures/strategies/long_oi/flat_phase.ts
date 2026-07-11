@@ -10,8 +10,8 @@
  * entry-оценки — no-throw / no-zero-substitution / no-NaN → детерминированный `annotate{reason}`.
  */
 
-import type { Bar, StrategyContext } from '@trading-platform/sdk/research-contract';
-import type { StrategyDecision } from '@trading-platform/sdk/research-contract';
+import type { Bar, StrategyContext } from '@trdlabs/sdk/research-contract';
+import type { StrategyDecision } from '@trdlabs/sdk/research-contract';
 import type { LongOiParams } from './params.js';
 import type { LongOiModuleState, LongOiWatchSignal } from './state.js';
 import {

@@ -5,7 +5,7 @@
 // historical.2-only: if the platform reports an older contract or no available `rows` resource,
 // openDataset returns undefined (no fallback to the legacy three-endpoint merge).
 //
-// This is a THIN adapter over the SDK's `HistoricalClient` (@trading-platform/sdk/historical):
+// This is a THIN adapter over the SDK's `HistoricalClient` (@trdlabs/sdk/historical):
 // fetch / pagination / cursor / bearer-token are all owned by the SDK client; this module only
 // maps the wire DTOs (CanonicalRowV2, coverage/discover responses) into the backtester's
 // ReaderRow / DatasetDescriptor shapes and enforces the historical.2 guard.
@@ -13,7 +13,7 @@
 import {
   HistoricalClient,
   type CanonicalRowV2,
-} from '@trading-platform/sdk/historical';
+} from '@trdlabs/sdk/historical';
 import type {
   DatasetDescriptor,
   HistoricalDatasetReader,

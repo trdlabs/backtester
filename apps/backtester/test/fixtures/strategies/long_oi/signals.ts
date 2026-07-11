@@ -9,8 +9,8 @@
  * postSpikeCascade/extremeReboundThinSupport guards, riskScoreScaler, failFast.entryGate suppress-подграф.
  */
 
-import type { Bar, StrategyContext } from '@trading-platform/sdk/research-contract';
-import type { OiPoint } from '@trading-platform/sdk/research-contract';
+import type { Bar, StrategyContext } from '@trdlabs/sdk/research-contract';
+import type { OiPoint } from '@trdlabs/sdk/research-contract';
 import { DEFAULT_PARAMS, type LongOiParams } from './params.js';
 import type { LongOiWatchSignal } from './state.js';
 

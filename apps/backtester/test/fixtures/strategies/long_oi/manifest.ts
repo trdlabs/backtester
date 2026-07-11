@@ -3,13 +3,13 @@
  *
  * Форма зеркалит вывод `buildStrategyManifest` (021): `kind:'strategy'`, `status:'research_only'`,
  * `capabilities:{platformSdk:true}`, `contractVersion=CONTRACT_VERSION`. Собран как литерал, чтобы
- * модуль импортировал ТОЛЬКО `@trading-platform/sdk/research-contract` (forbidden-boundary; не тянет builder-sdk).
+ * модуль импортировал ТОЛЬКО `@trdlabs/sdk/research-contract` (forbidden-boundary; не тянет builder-sdk).
  * `dataNeeds` несёт closed/oi/liq и НЕ несёт lookahead/nondeterminism-флагов (long_oi rule-based,
  * `asOfIndicators:false` — без TA, R4).
  */
 
-import { CONTRACT_VERSION } from '@trading-platform/sdk/research-contract';
-import type { ModuleManifest } from '@trading-platform/sdk/research-contract';
+import { CONTRACT_VERSION } from '@trdlabs/sdk/research-contract';
+import type { ModuleManifest } from '@trdlabs/sdk/research-contract';
 import { DEFAULT_PARAMS, paramsSchema } from './params.js';
 
 export const LONG_OI_MANIFEST: ModuleManifest = {

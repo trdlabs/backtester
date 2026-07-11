@@ -6,13 +6,13 @@
  * `initStrategy`), поэтому `init` пере-создаёт state — состояние одного символа не утекает в другой.
  * Для строгого детерминизма прогона хост может также создавать свежий модуль через `createLongOiModule()`.
  *
- * Чистый модуль: импорт только `@trading-platform/sdk/research-contract` (type-only) + собственные helpers. Регистрация
+ * Чистый модуль: импорт только `@trdlabs/sdk/research-contract` (type-only) + собственные helpers. Регистрация
  * в module-registry (`createTrustedRegistry({strategies:[…]})`) выполняется хостом по `id@version`.
  */
 
-import type { StrategyContext } from '@trading-platform/sdk/research-contract';
-import type { StrategyDecision } from '@trading-platform/sdk/research-contract';
-import type { StrategyModule } from '@trading-platform/sdk/research-contract';
+import type { StrategyContext } from '@trdlabs/sdk/research-contract';
+import type { StrategyDecision } from '@trdlabs/sdk/research-contract';
+import type { StrategyModule } from '@trdlabs/sdk/research-contract';
 import { onBarClose as flatOnBarClose } from './flat_phase.js';
 import { LONG_OI_MANIFEST } from './manifest.js';
 import { onPositionBar as positionOnPositionBar } from './position_phase.js';

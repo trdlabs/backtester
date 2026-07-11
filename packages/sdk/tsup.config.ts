@@ -10,7 +10,7 @@ export default defineConfig({
   },
   format: ['esm'],
   // dts is produced by the dedicated dts-bundling step (Task 2), not tsup — tsup/rollup-dts
-  // cannot inline @trading-platform/sdk subpath-exported types.
+  // cannot inline @trdlabs/sdk subpath-exported types.
   dts: false,
   sourcemap: true,
   clean: true,

@@ -117,7 +117,7 @@ export function checkPackedPackage(input: CheckPackedPackageInput): string[] {
       }
     }
     // 042 FU2: 017-схемы больше не шипятся в backtester SDK — приходят из kernel
-    // @trading-platform/sdk (single source). Требование package/schemas/<asset> снято.
+    // @trdlabs/sdk (single source). Требование package/schemas/<asset> снято.
 
     // 3c. Dist entrypoints: check each required export key has import+types present in files
     const exportsObj = packageJson.exports;

@@ -1,7 +1,7 @@
 // Public authoring ABI — hook-facing types for strategy and overlay module authors.
 //
 // 042 FU1: the 017 contract types are re-sourced from the platform kernel
-// (@trading-platform/sdk/research-contract) — single source of truth, no drift.
+// (@trdlabs/sdk/research-contract) — single source of truth, no drift.
 // Authoring-specific shapes (Candle/MomentumSignals/LifecycleModule/...) stay local; they
 // compose the kernel types below.
 
@@ -45,14 +45,14 @@ export type {
   OverlayPatchDecision,
   OverlayAnnotateDecision,
   OverlayDecision,
-} from '@trading-platform/sdk/research-contract';
+} from '@trdlabs/sdk/research-contract';
 
 // Local bindings of the kernel types used by the authoring-specific shapes below.
 import type {
   StrategyContext,
   StrategyDecision,
   OverlayDecision,
-} from '@trading-platform/sdk/research-contract';
+} from '@trdlabs/sdk/research-contract';
 
 // ── Authoring-specific shapes (backtester SDK public ABI) ─────────────────────────────────
 

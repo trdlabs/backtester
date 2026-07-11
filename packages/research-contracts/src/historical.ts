@@ -1,13 +1,13 @@
 // Historical market-data contract — the shape the backtester's `platformDataClient` speaks.
 //
-// SINGLE SOURCE OF TRUTH = the platform SDK's `CanonicalRowV2` (`@trading-platform/sdk/historical`).
+// SINGLE SOURCE OF TRUTH = the platform SDK's `CanonicalRowV2` (`@trdlabs/sdk/historical`).
 // `CanonicalRow` is that row minus `schema_version` (the engine stamps the version downstream);
 // `ReaderRow` is its alias. We import rather than re-declare the columns, so the backtester can
 // never drift from the platform contract. The reader is credential-free and streaming. For Slice 1
 // the only implementation is an in-process fixture reader; a networked "Research Historical Data API"
 // adapter implements the same interface later (real vs mock interchangeable at the interface).
 
-import type { CanonicalRowV2 } from '@trading-platform/sdk/historical';
+import type { CanonicalRowV2 } from '@trdlabs/sdk/historical';
 
 /** One minute-aligned canonical market row (cross-source aggregate; no per-venue columns). */
 export type CanonicalRow = Omit<CanonicalRowV2, 'schema_version'>;
