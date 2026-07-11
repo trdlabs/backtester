@@ -361,7 +361,7 @@ Net-new capabilities the standalone service should add (the seams already exist)
    replay scripts against the running backtester service; require `result_hash` equality before any
    `trading-lab` cutover.
 
-**Parity anchor:** `CONTRACT_VERSION` (currently `017.2`) and `ARTIFACT_CONTRACT_VERSION` (`022.1`)
+**Parity anchor:** `CONTRACT_VERSION` (currently `017.2`) and `ARTIFACT_CONTRACT_VERSION` (`022.2`)
 must stay in lockstep across platform + backtester — a bump breaks byte-identity. This is *the*
 reason the research contracts must be a **shared, versioned library**, not copied-and-drifted.
 
