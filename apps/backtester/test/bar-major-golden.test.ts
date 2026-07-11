@@ -19,7 +19,9 @@
 // thread `barMajor` through). This proves trusted == sandbox holds under the bar-major driver too,
 // without inventing a new bundle fixture. It intentionally does NOT compare to `BAR_MAJOR_GOLDEN`
 // below — that hash is scoped to the Task-4 fixture's own strategy/dataset, not `short_after_pump`.
-// Docker is unavailable in this environment, so this suite is expected to report SKIPPED.
+// Docker-gated via describe.skipIf(!DOCKER_AVAILABLE): the twin gate RUNS wherever Docker is
+// available (booting real per-symbol containers) and SKIPS otherwise. Verified running+passing on
+// Docker here; skips cleanly on Docker-less CI/WSL2 without failing the suite.
 
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
