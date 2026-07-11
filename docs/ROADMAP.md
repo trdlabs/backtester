@@ -396,6 +396,23 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     Adjacent candidate (2026-07-03 review, Nautilus-inspired): **binary IPC framing** (msgpack
     instead of NDJSON) if IPC-wait still dominates after 17b — measure first, don't pre-build.
 
+    ✅ **Bar-major — Slice A (execution flip) SHIPPED (branch `feat/bar-major-execution-flip`,
+    2026-07-12)**: per-symbol-portfolio, union-timeline bar-major driver
+    (`BACKTESTER_BAR_MAJOR`, default OFF, mutually exclusive with bar-batching/17b) that walks the
+    merged timeline once and calls each symbol's hook in bar-interleaved order (`A@0, B@0, A@1,
+    B@1, …`) instead of symbol-major (`A0, A1, …, B0, B1`), with temporal-sum equity + deterministic
+    per-bar merge for result aggregation; byte-identical OFF path, Docker-gated twin-equivalence
+    golden pins N>1 ON-path determinism. Proven interleave-safe at the transport layer: the universe
+    session's per-symbol bookkeeping (`buildHookPayload`'s `perSymbol` map, keyed by `ctx.symbol` —
+    `sandbox-session.ts`) already keys off the symbol rather than a shared cursor, so it required no
+    change to tolerate the new call order — pinned by a dedicated low-level trace test
+    (`sandbox-session-universe-interleave.test.ts`) asserting both the exact `A,B,A,B` hook-envelope
+    order and each symbol's independently-monotonic `barIndex` sequence. Slice A only changes the
+    HOST-side call order; it does **not** collapse the N-messages-per-bar transport (that stays 17c's
+    universe-session job) — **Slice B (sandbox transport collapse: batching bar-major's interleaved
+    calls into one message per bar across all symbols, composing with 17c's container collapse)
+    remains the outstanding perf win**, deferred as its own slice.
+
     **Recommended order (2026-07-04):** Tier 0 hygiene slice (item 14) → Tier 2 lite (Pg pool knob +
     429 backpressure + SDK retry from item 16) → specs for 17b + 17c (writable now, perf-validated on
     the VPS after re-profiling per 17a). Warm-pool (item 12 tie-in) is largely subsumed by 17c for
