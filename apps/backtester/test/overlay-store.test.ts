@@ -12,6 +12,14 @@ function fakeStore(): { store: ArtifactStore; written: unknown[] } {
   return { store, written };
 }
 
+// Resolve the actual payload of an artifact descriptor from the fake store's written array.
+function payloadOf(res: Awaited<ReturnType<typeof persistOverlayArtifacts>>, written: unknown[], artifactType: string): unknown {
+  const desc = res.manifest.descriptors.find((d) => d.artifactType === artifactType);
+  if (!desc) return undefined;
+  const idx = Number(String(desc.contentHash).replace('hash-', ''));
+  return written[idx];
+}
+
 function runResult(runId: string, trades: unknown[]) {
   return {
     runId, status: 'completed', runKind: 'overlay',
@@ -39,12 +47,13 @@ function nonComparisonOutcome(): Extract<RunOutcome, { status: 'completed' }> {
 
 describe('persistOverlayArtifacts baseline-trades', () => {
   it('emits a baseline-trades descriptor carrying baseline.trades on a comparison run', async () => {
-    const { store } = fakeStore();
+    const { store, written } = fakeStore();
     const baselineTrades = [{ entryTs: 1, exitTs: 2, side: 'long', realizedPnl: -5, closeReason: 'end_of_data' }];
     const res = await persistOverlayArtifacts(store, comparisonOutcome(baselineTrades), 'ds-fp');
     const desc = res.manifest.descriptors.find((d) => d.artifactType === BASELINE_TRADES);
     expect(desc).toBeDefined();
     expect(desc!.approxItemCount).toBe(1);
+    expect(payloadOf(res, written, BASELINE_TRADES)).toEqual(baselineTrades);
   });
 
   it('does NOT emit baseline-trades on a non-comparison run', async () => {
@@ -60,7 +69,7 @@ describe('persistOverlayArtifacts baseline-trades', () => {
     expect(desc).toBeDefined();
     expect(desc!.approxItemCount).toBe(0);
     // payload is the empty array, not omitted
-    expect(written).toContainEqual([]);
+    expect(payloadOf(res, written, BASELINE_TRADES)).toEqual([]);
   });
 
   it('BASELINE_TRADES is exactly "baseline-trades"', () => {
