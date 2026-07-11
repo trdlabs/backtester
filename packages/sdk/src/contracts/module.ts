@@ -1,5 +1,5 @@
 // Module contract types. The rich module manifest is re-sourced from the platform kernel
-// (@trading-platform/sdk/research-contract) — single source, no drift (the path 042 took for the
+// (@trdlabs/sdk/research-contract) — single source, no drift (the path 042 took for the
 // 017 contracts). The bundle layer adds `bundleContractVersion` on top of the kernel manifest.
 export type {
   Author,
@@ -9,9 +9,9 @@ export type {
   ModuleKind,
   ModuleManifest,
   ModuleStatus,
-} from '@trading-platform/sdk/research-contract';
+} from '@trdlabs/sdk/research-contract';
 
-import type { ModuleManifest } from '@trading-platform/sdk/research-contract';
+import type { ModuleManifest } from '@trdlabs/sdk/research-contract';
 
 export type BacktestEngine = 'momentum' | 'overlay' | 'strategy';
 

@@ -1,5 +1,5 @@
 // 042 FU3 — equivalence harness: backtester app-validator vs kernel `validate()`
-// (@trading-platform/sdk/validation) on the 017 fixtures. Proves behavioural identity per arm
+// (@trdlabs/sdk/validation) on the 017 fixtures. Proves behavioural identity per arm
 // before delegating to the kernel (single source of validator logic). Permanent drift guard.
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { validate as appValidate, type ValidationInput } from '../src/engine/validation/index.js';
-import { validate as kernelValidate } from '@trading-platform/sdk/validation';
+import { validate as kernelValidate } from '@trdlabs/sdk/validation';
 import { platformContractContext } from '@trading/research-contracts/research';
 
 const FX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'kernel-equivalence');

@@ -11,7 +11,7 @@ const sdkRoot = resolve(here, '..'); // packages/sdk
 
 // The kernel's validation entry sits next to its schemas/017 dir (schema-assets.js uses the same).
 // Use import.meta.resolve (sync since Node 20.6) to honour the ESM-only exports map.
-const kernelValidationEntry = fileURLToPath(import.meta.resolve('@trading-platform/sdk/validation'));
+const kernelValidationEntry = fileURLToPath(import.meta.resolve('@trdlabs/sdk/validation'));
 const kernelSchemasDir = join(dirname(kernelValidationEntry), 'schemas', '017');
 
 const EXPECTED = [

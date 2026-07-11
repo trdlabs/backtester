@@ -1,4 +1,4 @@
-// 042: типы решений re-source из @trading-platform/sdk kernel (единый источник).
+// 042: типы решений re-source из @trdlabs/sdk kernel (единый источник).
 export type {
   AddToPositionDecision,
   AnnotateDecision,
@@ -12,4 +12,4 @@ export type {
   OverlayVetoDecision,
   StrategyDecision,
   UpdateProtectionDecision,
-} from '@trading-platform/sdk/research-contract';
+} from '@trdlabs/sdk/research-contract';

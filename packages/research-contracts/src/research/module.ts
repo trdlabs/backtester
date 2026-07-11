@@ -1,4 +1,4 @@
-// 042: типы модуля стратегии re-source из @trading-platform/sdk kernel (единый источник).
+// 042: типы модуля стратегии re-source из @trdlabs/sdk kernel (единый источник).
 export type {
   Author,
   CapabilityDeclaration,
@@ -13,4 +13,4 @@ export type {
   ReviewDecisionOutcome,
   StrategyHook,
   StrategyModule,
-} from '@trading-platform/sdk/research-contract';
+} from '@trdlabs/sdk/research-contract';

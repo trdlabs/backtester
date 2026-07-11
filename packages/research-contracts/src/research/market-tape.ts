@@ -1,9 +1,9 @@
-// 042: market-tape контракт re-source из @trading-platform/sdk kernel (единый источник).
+// 042: market-tape контракт re-source из @trdlabs/sdk kernel (единый источник).
 export {
   CANONICAL_EVENT_ORDER,
   MARKET_TAPE_EVENT_KINDS,
   compareMarketTapeEvents,
-} from '@trading-platform/sdk/research-contract';
+} from '@trdlabs/sdk/research-contract';
 export type {
   BarCloseEvent,
   CoverageModel,
@@ -35,4 +35,4 @@ export type {
   TakerSnapshot,
   TakerSnapshotEvent,
   TapeBuildResult,
-} from '@trading-platform/sdk/research-contract';
+} from '@trdlabs/sdk/research-contract';

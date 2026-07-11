@@ -1,7 +1,7 @@
 /**
  * 026 Long OI StrategyModule — детерминированный реплеируемый FSM (LongOiModuleState), data-model §4.
  *
- * Чистый модуль: импорт ТОЛЬКО type-only из `@trading-platform/sdk/research-contract` (017/023) + чистые helpers.
+ * Чистый модуль: импорт ТОЛЬКО type-only из `@trdlabs/sdk/research-contract` (017/023) + чистые helpers.
  * Без I/O (fs/crypto/path), без wall-clock (только `ctx.clock`/`ctx.bar.ts`), без RNG вне `ctx.rng`.
  *
  * Состояние делится на:
@@ -14,8 +14,8 @@
  * forbidden-boundary; единый источник alpha-логики — поведенческая карта, не импорт).
  */
 
-import type { StrategyContext, Bar } from '@trading-platform/sdk/research-contract';
-import type { OiPoint, LiqPoint } from '@trading-platform/sdk/research-contract';
+import type { StrategyContext, Bar } from '@trdlabs/sdk/research-contract';
+import type { OiPoint, LiqPoint } from '@trdlabs/sdk/research-contract';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Фаза FSM

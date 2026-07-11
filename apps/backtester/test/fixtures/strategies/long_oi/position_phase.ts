@@ -11,8 +11,8 @@
  * **C1:** недоступные OI-данные при DCA-оценке → доливка не эмитируется (no-throw), фаза продолжается.
  */
 
-import type { StrategyContext } from '@trading-platform/sdk/research-contract';
-import type { StrategyDecision } from '@trading-platform/sdk/research-contract';
+import type { StrategyContext } from '@trdlabs/sdk/research-contract';
+import type { StrategyDecision } from '@trdlabs/sdk/research-contract';
 import type { LongOiModuleState } from './state.js';
 import {
   evaluateDca,

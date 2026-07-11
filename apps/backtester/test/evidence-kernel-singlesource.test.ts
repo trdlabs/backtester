@@ -1,6 +1,6 @@
 // apps/backtester/test/evidence-kernel-singlesource.test.ts
 // 042 tripwire for the evidence path: the bundle validation the harness relies on MUST delegate to the
-// same @trading-platform/sdk/validation kernel the platform admission uses — not a parallel copy.
+// same @trdlabs/sdk/validation kernel the platform admission uses — not a parallel copy.
 //
 // Adjustment from brief: instead of `manifest: {}` (all fields missing / structure junk), we use the
 // module-missing-params-schema fixture manifest — a well-formed strategy manifest that omits `paramsSchema`
@@ -8,7 +8,7 @@
 // rather than a generic "schema is empty" short-circuit, making the agreement assertion non-vacuous.
 import { describe, expect, it } from 'vitest';
 import { validate as appValidate, type ValidationInput } from '../src/engine/validation/index.js';
-import { validate as kernelValidate } from '@trading-platform/sdk/validation';
+import { validate as kernelValidate } from '@trdlabs/sdk/validation';
 import { platformContractContext } from '@trading/research-contracts/research';
 
 describe('evidence path uses the single-source validation kernel (042)', () => {

@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RowsDataPort, RealDataUnavailableError } from '../src/data/rows-data-port';
-import { HistoricalClient } from '@trading-platform/sdk/historical';
+import { HistoricalClient } from '@trdlabs/sdk/historical';
 
 // ── Fixture data: full CanonicalRowV2 rows (19 fields incl. schema_version) ─────
 

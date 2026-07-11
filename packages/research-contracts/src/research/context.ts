@@ -1,4 +1,4 @@
-// 042: типы контекста стратегии re-source из @trading-platform/sdk kernel (единый источник;
+// 042: типы контекста стратегии re-source из @trdlabs/sdk kernel (единый источник;
 // идентичный лифт ретайрнут — platform owns the strategy contract).
 export type {
   Bar,
@@ -10,4 +10,4 @@ export type {
   PositionSnapshot,
   RunInfo,
   StrategyContext,
-} from '@trading-platform/sdk/research-contract';
+} from '@trdlabs/sdk/research-contract';

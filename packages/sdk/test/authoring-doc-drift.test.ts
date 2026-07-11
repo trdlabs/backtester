@@ -18,7 +18,7 @@ import { getAuthoringDoc } from '../src/builder/index';
 function findKernelSchemaDir(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 10; i++) {
-    const candidate = join(dir, 'node_modules', '@trading-platform', 'sdk', 'dist', 'validation', 'schemas', '017');
+    const candidate = join(dir, 'node_modules', '@trdlabs', 'sdk', 'dist', 'validation', 'schemas', '017');
     if (existsSync(candidate)) return candidate;
     const parent = dirname(dir);
     if (parent === dir) break;
