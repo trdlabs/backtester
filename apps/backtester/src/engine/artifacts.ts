@@ -194,6 +194,13 @@ export interface RunEvidence {
   readonly coverage?: CoverageModel;
   /** 035 (realism) — per-bar funding charges (empty/absent on the default path). */
   readonly fundingLedger?: readonly { readonly barIndex: number; readonly ts: number; readonly rate: number; readonly covered: boolean; readonly cost: number }[];
+  /** Bar-major (Slice A) only: how N per-symbol accounts were capitalised + aggregated. Omitted for symbol-major. */
+  readonly capitalModel?: {
+    readonly model: 'equal_weight_per_symbol';
+    readonly perSymbolInitialEquity: number;
+    readonly symbolCount: number;
+    readonly aggregateBaseline: number;
+  };
 }
 
 /** Наполненная 018-форма результата прогона (§4.9, FR-024). Структурно удовлетворяет 017. */

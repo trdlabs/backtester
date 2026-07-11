@@ -26,4 +26,18 @@ describe('bar-major execution flip', () => {
     const symbolMajor = await runBacktest(req, makeMultiSymbolDeps({ barMajor: false }));
     expect(resultHash(major)).not.toBe(resultHash(symbolMajor));
   });
+
+  it('emits capitalModel metadata for bar-major N>1 and omits it for symbol-major', async () => {
+    const req = makeRequest(['BTCUSDT', 'ETHUSDT']);
+    const major = await runBacktest(req, makeMultiSymbolDeps({ barMajor: true }));
+    const symbolMajor = await runBacktest(req, makeMultiSymbolDeps({ barMajor: false }));
+    if (major.status !== 'completed' || symbolMajor.status !== 'completed') throw new Error('expected completed');
+    expect(major.baseline.evidence.capitalModel).toEqual({
+      model: 'equal_weight_per_symbol',
+      perSymbolInitialEquity: 10_000,
+      symbolCount: 2,
+      aggregateBaseline: 20_000,
+    });
+    expect(symbolMajor.baseline.evidence.capitalModel).toBeUndefined();
+  });
 });

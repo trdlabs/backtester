@@ -672,7 +672,18 @@ async function simulateTarget(
   // bar_close-only лента (как и OHLCV-only) → coverage undefined → байт-идентичность 018 (SC-001).
   const cov = marketTape !== undefined ? marketTape.coverage() : undefined;
   const coverage = cov !== undefined && cov.entries.some((e) => e.present) ? cov : undefined;
-  return assembleResult(target, request, acc, barsProcessed, riskProfileRef, executionProfileRef, coverage);
+  // Task 5: bar-major (N>1) capitalises N per-symbol accounts equally; symbol-major/N=1 stays
+  // undefined so the evidence key is omitted and outputs remain byte-identical (SC-001 style).
+  const capitalModel: RunEvidence['capitalModel'] =
+    barMajor && request.symbols.length > 1
+      ? {
+          model: 'equal_weight_per_symbol' as const,
+          perSymbolInitialEquity: INITIAL_EQUITY,
+          symbolCount: request.symbols.length,
+          aggregateBaseline: INITIAL_EQUITY * request.symbols.length,
+        }
+      : undefined;
+  return assembleResult(target, request, acc, barsProcessed, riskProfileRef, executionProfileRef, coverage, capitalModel);
 }
 
 /** Bar-major driver: per-symbol Portfolio, interleaved by union timestamp, aggregated into `acc`. */
@@ -777,6 +788,7 @@ function assembleResult(
   riskProfileRef: Ref,
   executionProfileRef: Ref,
   coverage: CoverageModel | undefined,
+  capitalModel?: RunEvidence['capitalModel'],
 ): BacktestRunResult {
   const metrics = computeMetrics(request.metrics, acc.equityCurve, acc.trades);
   const overlayRefs: readonly Ref[] = target.overlays.map((o) => refOf(o.manifest.id, o.manifest.version));
@@ -810,6 +822,8 @@ function assembleResult(
     ...(coverage !== undefined ? { coverage } : {}),
     // 035 (realism): только при наличии зарядов (DEFAULT_EXEC → пусто → ключ не добавляется → байт-идентичность).
     ...(acc.fundingLedger.length > 0 ? { fundingLedger: acc.fundingLedger } : {}),
+    // Bar-major only (Task 5): только при N>1 bar-major → ключ не добавляется на symbol-major/N=1 → байт-идентичность.
+    ...(capitalModel !== undefined ? { capitalModel } : {}),
   };
 
   return {
