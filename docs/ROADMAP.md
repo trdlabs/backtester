@@ -374,8 +374,14 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     1036ms→7ms (spawn collapsed), engineMs 3447→2086 (1.65×), byte-identical. **bar-major/message-
     collapse VERDICT: JUSTIFIED for large N** — faithful OFF profile ipcWait ~44% of engine at N=3,
     scales ~linearly (universe-collapse cuts spawn, NOT round-trips — that's bar-major's job); it
-    stays a deferred own slice (changes portfolio-apply order → result_hash). Follow-up: universe-
-    mode `ipc_profile` under-counts hookCalls (1281 vs 2157). Original design text: Today: one
+    stays a deferred own slice (changes portfolio-apply order → result_hash). Follow-up ✅ **RESOLVED**:
+    the "universe `ipc_profile` under-counts hookCalls (1281 vs 2157)" note was a **bar-count
+    artifact**, not a bug — 1281 = 3×427 and 2157 = 3×719 are both clean N×M per-symbol counts of two
+    differently-sized runs; `callHook` credits +1 per (symbol,bar) with no drop (pinned by
+    `sandbox-session-universe-profile.test.ts`, `hookCalls === N×M`). The real gap it surfaced: the
+    per-symbol lazy `init` handshake (`ensureSymbolInit`) did a blocking receive credited nowhere —
+    now folded into `openMs` (symmetric with the non-universe init inside `openInner`) and surfaced
+    as a new `symbolInits` field in the profile line. Original design text: Today: one
     container per (module, symbol) — a 300-symbol run means 300 spawns (~8–10 min), ~38 GB of
     container memory caps, and ~300 messages per bar (~864k round trips per 2-day run). Redesign:
     ONE container per bundle hosting N per-symbol strategy instances (same isolation semantics —
