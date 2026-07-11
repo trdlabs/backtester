@@ -499,6 +499,56 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
   acc.equityCurve.push({ barIndex: t, barTs: bar.ts, equity: portfolio.equityAt(bar.close) });
 }
 
+/** Setup half of `runSymbol` (17b/Task-3 refactor): grid/funding derivation, session init, `BarEnv` construction. Callers must ensure `candles.length >= 1`. */
+async function buildBarEnv(
+  symbol: string,
+  candles: readonly Readonly<Bar>[],
+  builder: PointInTimeContextBuilder,
+  strategy: ResolvedStrategy,
+  overlays: OverlaySplit,
+  portfolio: Portfolio,
+  engine: SimEngine,
+  acc: RunAccumulators,
+  marketTape: MarketTapeDataset | undefined,
+  barBatching: { readonly maxBars: number } | undefined,
+): Promise<BarEnv> {
+  const n = candles.length;
+  const { router, risk, exec, composer } = engine;
+  const gridMinutes = n > 1 ? (candles[1].ts - candles[0].ts) / 60_000 : 1;
+  const fundingCol = exec.fundingEnabled() ? marketTape?.funding(symbol) : undefined;
+  const gridTs = exec.fundingEnabled() ? candles.map((b) => b.ts) : [];
+  const module = strategy.module;
+  const strategyExec = router.forStrategy(strategy);
+
+  // 019: session-lifecycle через seam. trusted → module.init?(ctx) (поведение 018 неизменно);
+  // sandbox → открыть контейнер + init-хук. Вызывается всегда (sandbox-сессия открывается и без 'init').
+  await strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
+
+  return { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs, ...(barBatching ? { batch: barBatching } : {}) };
+}
+
+/** End-of-data half of `runSymbol` (17b/Task-3 refactor): expire leftover pending, forced MTM close, session dispose. Assumes `env.candles.length >= 1`. */
+async function finalizeSymbol(env: BarEnv): Promise<void> {
+  const { candles, portfolio, acc, strategyExec, module, builder } = env;
+  const n = candles.length;
+
+  // End-of-data: leftover pending (решение на ПОСЛЕДНЕМ баре, нет next-bar для settle) → expired
+  // (без сделки, без ошибки; FR-020, US5-AC3).
+  const expired = portfolio.expirePending();
+  if (expired !== null) {
+    const order = acc.orders.find((o) => o.id === expired.id);
+    if (order !== undefined) order.status = 'expired';
+  }
+
+  // End-of-data forced MTM открытой позиции.
+  const last = candles[n - 1];
+  const forced = portfolio.forcedMtmClose(n - 1, last.ts, last.close);
+  if (forced !== null) acc.trades.push(forced);
+
+  // 019: dispose через seam (trusted → module.dispose?; sandbox → dispose-хук, если объявлен).
+  await strategyExec.disposeStrategy?.(module, builder.build(n - 1, stateAt(portfolio, last.close)));
+}
+
 /** Детерминированный проход одного символа (внутри-барный порядок R8) с overlay-композицией. */
 async function runSymbol(
   symbol: string,
@@ -514,18 +564,8 @@ async function runSymbol(
 ): Promise<void> {
   const n = candles.length;
   if (n === 0) return;
-  const { router, risk, exec, composer } = engine;
-  const gridMinutes = n > 1 ? (candles[1].ts - candles[0].ts) / 60_000 : 1;
-  const fundingCol = exec.fundingEnabled() ? marketTape?.funding(symbol) : undefined;
-  const gridTs = exec.fundingEnabled() ? candles.map((b) => b.ts) : [];
-  const module = strategy.module;
-  const strategyExec = router.forStrategy(strategy);
-
-  // 019: session-lifecycle через seam. trusted → module.init?(ctx) (поведение 018 неизменно);
-  // sandbox → открыть контейнер + init-хук. Вызывается всегда (sandbox-сессия открывается и без 'init').
-  await strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
-
-  const env: BarEnv = { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs, ...(barBatching ? { batch: barBatching } : {}) };
+  const env = await buildBarEnv(symbol, candles, builder, strategy, overlays, portfolio, engine, acc, marketTape, barBatching);
+  const { strategyExec, module } = env;
 
   for (let t = 0; t < n; t += 1) {
     preBarStages(env, t);
@@ -564,21 +604,7 @@ async function runSymbol(
     await processBar(env, t, base);
   }
 
-  // End-of-data: leftover pending (решение на ПОСЛЕДНЕМ баре, нет next-bar для settle) → expired
-  // (без сделки, без ошибки; FR-020, US5-AC3).
-  const expired = portfolio.expirePending();
-  if (expired !== null) {
-    const order = acc.orders.find((o) => o.id === expired.id);
-    if (order !== undefined) order.status = 'expired';
-  }
-
-  // End-of-data forced MTM открытой позиции.
-  const last = candles[n - 1];
-  const forced = portfolio.forcedMtmClose(n - 1, last.ts, last.close);
-  if (forced !== null) acc.trades.push(forced);
-
-  // 019: dispose через seam (trusted → module.dispose?; sandbox → dispose-хук, если объявлен).
-  await strategyExec.disposeStrategy?.(module, builder.build(n - 1, stateAt(portfolio, last.close)));
+  await finalizeSymbol(env);
 }
 
 /** Детерминированный closed-candle проход одного таргета → `BacktestRunResult` (research R8). */
