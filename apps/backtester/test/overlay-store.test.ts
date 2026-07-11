@@ -76,3 +76,15 @@ describe('persistOverlayArtifacts baseline-trades', () => {
     expect(BASELINE_TRADES).toBe('baseline-trades');
   });
 });
+
+// The baseline-trades guard uses outcome.comparison != null. The runner sets `variant` and
+// `comparison` together (comparison = computeComparison(baseline, variant) runs in the same
+// overlays block), so the two signals are equivalent. This locks that equivalence so a future
+// divergence — which would desync the guard — is caught here rather than in production.
+describe('RunOutcome comparison/variant equivalence invariant', () => {
+  function assertEquiv(o: Extract<RunOutcome, { status: 'completed' }>) {
+    expect(o.variant != null).toBe(o.comparison != null);
+  }
+  it('holds for a comparison outcome', () => assertEquiv(comparisonOutcome([])));
+  it('holds for a non-comparison outcome', () => assertEquiv(nonComparisonOutcome()));
+});
