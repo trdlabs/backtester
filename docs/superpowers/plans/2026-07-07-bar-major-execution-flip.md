@@ -189,13 +189,23 @@ describe('mergeAccumulators (deterministic ordering)', () => {
     expect(merged.equityCurve).toEqual([{ barIndex: 0, barTs: 100, equity: 20_000 }]);
   });
 
-  it('concatenates orders in request.symbols order preserving per-symbol order', () => {
+  it('merges orders by decisionBarIndex asc, then request.symbols order on ties', () => {
     const accA = emptyAcc();
     const accB = emptyAcc();
-    (accA.orders as unknown[]).push({ id: 'oa1' }, { id: 'oa2' });
-    (accB.orders as unknown[]).push({ id: 'ob1' });
+    (accA.orders as unknown[]).push({ id: 'oa0', decisionBarIndex: 0 }, { id: 'oa2', decisionBarIndex: 2 });
+    (accB.orders as unknown[]).push({ id: 'ob0', decisionBarIndex: 0 }, { id: 'ob1', decisionBarIndex: 1 });
     const merged = mergeAccumulators([accA, accB]);
-    expect(merged.orders.map((o) => (o as { id: string }).id)).toEqual(['oa1', 'oa2', 'ob1']);
+    // idx0: A before B (symbolIndex tie-break) → oa0, ob0; then idx1 ob1; then idx2 oa2
+    expect(merged.orders.map((o) => (o as { id: string }).id)).toEqual(['oa0', 'ob0', 'ob1', 'oa2']);
+  });
+
+  it('concatenates key-less validationIssues in request.symbols order', () => {
+    const accA = emptyAcc();
+    const accB = emptyAcc();
+    (accA.validationIssues as unknown[]).push({ code: 'a1' }, { code: 'a2' });
+    (accB.validationIssues as unknown[]).push({ code: 'b1' });
+    const merged = mergeAccumulators([accA, accB]);
+    expect(merged.validationIssues.map((v) => (v as { code: string }).code)).toEqual(['a1', 'a2', 'b1']);
   });
 });
 ```
@@ -255,24 +265,33 @@ function concatBySymbol<T>(lists: readonly (readonly T[])[]): T[] {
 
 /**
  * Merge N per-symbol accumulators (index order = request.symbols order) into one.
- * equityCurve = temporal sum; trades/decisionRecords/fundingLedger = temporal merge on their ts;
- * orders/fills/riskDecisions/validationIssues carry no reliable ts → deterministic per-symbol concat.
+ * Every list with a stable numeric key is sorted by (key asc, symbolIndex, per-symbol index);
+ * ONLY a genuinely key-less list (validationIssues) falls back to deterministic per-symbol concat.
+ * Confirmed field keys (from artifacts.ts / runner.ts):
+ *   equityCurve  → temporal sum (special)
+ *   trades       → Trade.exitTs           (real ts)
+ *   decisionRecords → DecisionRecord.barTs (real ts)
+ *   fills        → SimulatedFill.fillTs    (real ts)
+ *   fundingLedger → FundingLedgerEntry.ts  (real ts)
+ *   orders       → MutableOrder.decisionBarIndex (per-symbol bar index — no ts on the type)
+ *   riskDecisions → RiskDecision.barIndex  (per-symbol bar index — no ts on the type)
+ *   validationIssues → { code, severity, path?, message } — no numeric key → concat per symbol
  */
 export function mergeAccumulators(perSymbol: readonly RunAccumulators[]): RunAccumulators {
   return {
     equityCurve: aggregateEquityCurve(perSymbol.map((a) => a.equityCurve)),
     trades: mergeByKey(perSymbol.map((a) => a.trades), (t) => t.exitTs),
     decisionRecords: mergeByKey(perSymbol.map((a) => a.decisionRecords), (r) => r.barTs),
+    fills: mergeByKey(perSymbol.map((a) => a.fills), (f) => f.fillTs),
     fundingLedger: mergeByKey(perSymbol.map((a) => a.fundingLedger), (f) => f.ts),
-    orders: concatBySymbol(perSymbol.map((a) => a.orders)),
-    fills: concatBySymbol(perSymbol.map((a) => a.fills)),
-    riskDecisions: concatBySymbol(perSymbol.map((a) => a.riskDecisions)),
+    orders: mergeByKey(perSymbol.map((a) => a.orders), (o) => o.decisionBarIndex),
+    riskDecisions: mergeByKey(perSymbol.map((a) => a.riskDecisions), (r) => r.barIndex),
     validationIssues: concatBySymbol(perSymbol.map((a) => a.validationIssues)),
   };
 }
 ```
 
-Note: `decisionRecords[].barTs` and `fundingLedger[].ts` are set by `processBar`; confirm the exact field names while implementing and adjust `keyOf` if needed. `Trade.exitTs` is confirmed in `artifacts.ts`.
+The keys above are verified against the real interfaces. `mergeByKey`'s stable tertiary sort (per-symbol original index) keeps ties deterministic where a numeric key repeats across symbols (e.g. `decisionBarIndex` is per-symbol-local, so index N exists for every symbol — the symbolIndex tie-break then orders them by `request.symbols`).
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -302,7 +321,9 @@ This is a **refactor-first** step (no behavior change). `runSymbol` becomes `bui
 
 - [ ] **Step 1: Extract `buildBarEnv` and `finalizeSymbol`**
 
-Move the setup lines from `runSymbol` (the `n===0` guard, `gridMinutes`/`fundingCol`/`gridTs`/`module`/`strategyExec` derivation, the `initStrategy` call, and the `env` construction) into `buildBarEnv`, returning the `env`. Keep the guard: if `candles.length === 0`, `buildBarEnv` should still return a valid env (the loop and `finalizeSymbol` are no-ops on empty candles — verify the empty case matches today by keeping the early `return` behavior inside `runSymbol`, or have `finalizeSymbol` guard `n===0`).
+Move the setup lines from `runSymbol` (`gridMinutes`/`fundingCol`/`gridTs`/`module`/`strategyExec` derivation, the `initStrategy` call, and the `env` construction) into `buildBarEnv`, returning the `env`.
+
+**Empty-candles contract:** the `if (candles.length === 0) return;` early-return **stays in `runSymbol`** (before `buildBarEnv`), so a data-less symbol still does NO init — byte-identical to today. `buildBarEnv` and `finalizeSymbol` may therefore assume `candles.length >= 1`. `runBarMajor` (Task 4) enforces the same by `continue`-ing past empty symbols in Phase 1, so it never inits a data-less symbol either.
 
 Move the end-of-data block (`expirePending` + order-status fix, `forcedMtmClose`, `disposeStrategy`) into `finalizeSymbol(env)`, reading `n = env.candles.length`, `last = env.candles[n-1]`, etc.
 
@@ -441,66 +462,87 @@ async function runBarMajor(
   overlays: OverlaySplit,
   marketTape: MarketTapeDataset | undefined,
 ): Promise<number> {
-  // Phase 1 — setup: one BarEnv (own Portfolio + own acc) per symbol.
   const envs: BarEnv[] = [];
   const perAcc: RunAccumulators[] = [];
-  for (const symbol of request.symbols) {
-    const candles = dataset.candles(symbol);
-    const builder = new PointInTimeContextBuilder({
-      run: { runId: target.runId, mode: request.mode, seed: request.seed },
-      params, symbol, candles, rng: createSeededRng(request.seed),
-      ...(marketTape !== undefined ? { marketTape } : {}),
-    });
-    const symbolStrategy = target.strategy.moduleFactory !== undefined
-      ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
-      : target.strategy;
-    const symAcc: RunAccumulators = {
-      decisionRecords: [], orders: [], fills: [], riskDecisions: [],
-      trades: [], equityCurve: [], fundingLedger: [], validationIssues: [],
-    };
-    const portfolio = new Portfolio(INITIAL_EQUITY);
-    // barBatching is undefined in bar-major (flags mutually exclusive).
-    const env = await buildBarEnv(symbol, candles, builder, symbolStrategy, overlays, portfolio, engine, symAcc, marketTape, undefined);
-    envs.push(env);
-    perAcc.push(symAcc);
-  }
+  const finalized = new Set<BarEnv>();
+  try {
+    // Phase 1 — setup: one BarEnv (own Portfolio + own acc) per NON-EMPTY symbol.
+    for (const symbol of request.symbols) {
+      const candles = dataset.candles(symbol);
+      if (candles.length === 0) continue; // parity with runSymbol's `n===0` early return — no init for a data-less symbol
+      const builder = new PointInTimeContextBuilder({
+        run: { runId: target.runId, mode: request.mode, seed: request.seed },
+        params, symbol, candles, rng: createSeededRng(request.seed),
+        ...(marketTape !== undefined ? { marketTape } : {}),
+      });
+      const symbolStrategy = target.strategy.moduleFactory !== undefined
+        ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
+        : target.strategy;
+      const symAcc: RunAccumulators = {
+        decisionRecords: [], orders: [], fills: [], riskDecisions: [],
+        trades: [], equityCurve: [], fundingLedger: [], validationIssues: [],
+      };
+      const portfolio = new Portfolio(INITIAL_EQUITY);
+      // barBatching is undefined in bar-major (flags mutually exclusive).
+      const env = await buildBarEnv(symbol, candles, builder, symbolStrategy, overlays, portfolio, engine, symAcc, marketTape, undefined);
+      envs.push(env);
+      perAcc.push(symAcc);
+    }
 
-  // Phase 2 — bar-major loop over the sorted union timeline; per-symbol cursor.
-  const cursor = envs.map(() => 0);
-  const tsSet = new Set<number>();
-  for (const env of envs) for (const c of env.candles) tsSet.add(c.ts);
-  const unionTs = [...tsSet].sort((a, b) => a - b);
-  for (const ts of unionTs) {
-    for (let s = 0; s < envs.length; s += 1) {   // request.symbols order (envs built in that order)
-      const env = envs[s];
-      const t = cursor[s];
-      if (env.candles[t]?.ts !== ts) continue;   // symbol absent at this ts
-      preBarStages(env, t);
-      const ctx = env.builder.build(t, stateAt(env.portfolio, env.candles[t].close));
-      const base = firstDecision(await env.strategyExec.executeStrategyHook(env.module, 'onBarClose', ctx));
-      await processBar(env, t, base);
-      cursor[s] += 1;
+    // Phase 2 — bar-major loop over the sorted union timeline; per-symbol cursor.
+    const cursor = envs.map(() => 0);
+    const tsSet = new Set<number>();
+    for (const env of envs) for (const c of env.candles) tsSet.add(c.ts);
+    const unionTs = [...tsSet].sort((a, b) => a - b);
+    for (const ts of unionTs) {
+      for (let s = 0; s < envs.length; s += 1) {   // request.symbols order (envs built in that order)
+        const env = envs[s];
+        const t = cursor[s];
+        if (env.candles[t]?.ts !== ts) continue;   // symbol absent at this ts
+        preBarStages(env, t);
+        const ctx = env.builder.build(t, stateAt(env.portfolio, env.candles[t].close));
+        const base = firstDecision(await env.strategyExec.executeStrategyHook(env.module, 'onBarClose', ctx));
+        await processBar(env, t, base);
+        cursor[s] += 1;
+      }
+    }
+
+    // Phase 3 — teardown per symbol in request.symbols order.
+    let barsProcessed = 0;
+    for (const env of envs) {
+      await finalizeSymbol(env);
+      finalized.add(env);
+      barsProcessed += env.candles.length;
+    }
+
+    // Phase 4 — aggregate N per-symbol accs into the outer acc.
+    const merged = mergeAccumulators(perAcc);
+    acc.decisionRecords.push(...merged.decisionRecords);
+    acc.orders.push(...merged.orders);
+    acc.fills.push(...merged.fills);
+    acc.riskDecisions.push(...merged.riskDecisions);
+    acc.trades.push(...merged.trades);
+    acc.equityCurve.push(...merged.equityCurve);
+    acc.fundingLedger.push(...merged.fundingLedger);
+    acc.validationIssues.push(...merged.validationIssues);
+    return barsProcessed;
+  } finally {
+    // Best-effort teardown of any env built but not finalized (setup/loop threw mid-way): bar-major
+    // holds N live module instances at once, so a partial failure must not leak per-symbol resources.
+    // Sandbox container sessions are also closed by runBacktest's `finally { router.closeAll(); }`;
+    // this covers the trusted `module.dispose` seam and is idempotent-safe via the `finalized` guard.
+    for (const env of envs) {
+      if (finalized.has(env)) continue;
+      try {
+        await env.strategyExec.disposeStrategy?.(
+          env.module,
+          env.builder.build(env.candles.length - 1, stateAt(env.portfolio, env.candles[env.candles.length - 1].close)),
+        );
+      } catch {
+        /* best-effort cleanup — swallow so the original error propagates */
+      }
     }
   }
-
-  // Phase 3 — teardown per symbol in request.symbols order.
-  let barsProcessed = 0;
-  for (const env of envs) {
-    await finalizeSymbol(env);
-    barsProcessed += env.candles.length;
-  }
-
-  // Phase 4 — aggregate N per-symbol accs into the outer acc.
-  const merged = mergeAccumulators(perAcc);
-  acc.decisionRecords.push(...merged.decisionRecords);
-  acc.orders.push(...merged.orders);
-  acc.fills.push(...merged.fills);
-  acc.riskDecisions.push(...merged.riskDecisions);
-  acc.trades.push(...merged.trades);
-  acc.equityCurve.push(...merged.equityCurve);
-  acc.fundingLedger.push(...merged.fundingLedger);
-  acc.validationIssues.push(...merged.validationIssues);
-  return barsProcessed;
 }
 ```
 
@@ -605,6 +647,10 @@ git commit -m "feat(engine): emit capitalModel metadata on bar-major results (ba
 ---
 
 ### Task 6: Freeze N>1 golden + twin-equivalence (Docker-gated)
+
+> **Ordering constraint:** this task MUST run **after Task 5**. The `capitalModel` evidence field
+> (Task 5) is part of the bar-major result, so the frozen golden hash below must be captured with that
+> field present. Do not freeze the golden before Task 5 lands.
 
 **Files:**
 - Test: `apps/backtester/test/bar-major-golden.test.ts`
