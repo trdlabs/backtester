@@ -151,7 +151,8 @@ describe('SandboxSession universe mode — bar-major interleaved call order', ()
     expect(inits).toHaveLength(2);
 
     const hooks = driver.sent.filter(
-      (m): m is { t: string; snapshot: { symbol: string; barIndex: number } } => (m as { t?: string }).t === 'hook',
+      (m): m is { t: string; snapshot: { symbol: string; barIndex: number }; newBar: unknown } =>
+        (m as { t?: string }).t === 'hook',
     );
     expect(hooks).toHaveLength(4);
 
@@ -171,5 +172,19 @@ describe('SandboxSession universe mode — bar-major interleaved call order', ()
     }
     expect(barIndexBySymbol.get('A')).toEqual([0, 1]);
     expect(barIndexBySymbol.get('B')).toEqual([0, 1]);
+
+    // 3. NON-VACUOUS interleave check: every one of the 4 hooks carries a real (non-null) `newBar`.
+    // Both symbols share the SAME bar timestamp per logical bar (ts=0 for bar0, ts=BAR_MS for bar1),
+    // so `barIndex` alone is IDENTICAL under a correct per-symbol implementation and under a
+    // hypothetical shared-scalar (cross-symbol) `lastBarTs` bug — both would produce A->[0,1],
+    // B->[0,1]. `newBar` is what actually diverges: buildHookPayload only stamps a real `newBar`
+    // when `ctx.bar.ts !== st.lastBarTs` for THAT symbol's bookkeeping slot. Under a shared-scalar
+    // bug, B@bar0 (and B@bar1) would see `lastBarTs` already stamped by A's just-prior call at the
+    // same ts and get `newBar === null` — a false "no new bar" for B's own first bar. Correct
+    // per-symbol bookkeeping (`this.perSymbol` keyed by ctx.symbol) sends a real newBar for every
+    // symbol's own bar, regardless of what any other symbol just did.
+    for (const h of hooks) {
+      expect(h.newBar).not.toBeNull();
+    }
   });
 });
