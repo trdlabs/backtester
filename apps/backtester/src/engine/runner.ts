@@ -135,7 +135,7 @@ export interface FundingLedgerEntry {
 }
 
 /** Аккумуляторы артефактов одного таргета. */
-interface RunAccumulators {
+export interface RunAccumulators {
   readonly decisionRecords: DecisionRecord[];
   readonly orders: MutableOrder[];
   readonly fills: SimulatedFill[];
