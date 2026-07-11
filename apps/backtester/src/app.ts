@@ -154,6 +154,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     ...(computeLock ? { computeLock } : {}),
     coalesceEnabled: config.coalesceEnabled,
     barBatching: config.barBatching,
+    barMajor: config.barMajor,
     batchBars: config.batchBars,
     ...(config.universeSession
       ? {

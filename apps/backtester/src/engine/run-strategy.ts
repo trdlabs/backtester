@@ -11,6 +11,8 @@ export interface StrategyRunDeps {
   readonly router?: ExecutorRouter;
   /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Absent ⇒ lockstep. */
   readonly barBatching?: { readonly maxBars: number };
+  /** 17d: bar-major execution mode — one bar across all symbols before advancing. Absent/false ⇒ symbol-major (byte-identical). */
+  readonly barMajor?: boolean;
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap (byte-identical). */
   readonly universe?: { readonly enabled: boolean; readonly maxN: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
 }
@@ -31,6 +33,7 @@ export async function runStrategyBacktest(
     marketTape: deps.marketTape,
     ...(deps.router ? { router: deps.router } : {}),
     ...(deps.barBatching ? { barBatching: deps.barBatching } : {}),
+    ...(deps.barMajor ? { barMajor: true } : {}),
     ...(deps.universe ? { universe: deps.universe } : {}),
   });
 }
