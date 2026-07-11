@@ -9,7 +9,7 @@ export const CONTRACT_VERSION = '017.2';
 export { CONTRACT_VERSION as PLATFORM_CONTRACT_VERSION } from './research/catalogs.js';
 
 /** 022 artifact-set contract version. */
-export const ARTIFACT_CONTRACT_VERSION = '022.1';
+export const ARTIFACT_CONTRACT_VERSION = '022.2';
 
 /** Module-bundle/registry metadata version (Slice 3 — submitted-bundle sandbox execution). */
 export const BUNDLE_CONTRACT_VERSION = '019.1';

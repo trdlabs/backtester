@@ -17,6 +17,9 @@ interface ArtifactSpec {
   readonly itemCount?: number;
 }
 
+/** Artifact type for the baseline leg's per-trade records on a comparison run (slice 1b). */
+export const BASELINE_TRADES = 'baseline-trades' as const;
+
 /** Build, write, and describe the per-run artifacts for a completed overlay RunOutcome. */
 export async function persistOverlayArtifacts(
   store: ArtifactStore,
@@ -45,7 +48,14 @@ export async function persistOverlayArtifacts(
       itemCount: headline.decisionRecords.length,
     },
     ...(outcome.comparison != null
-      ? [{ artifactType: 'comparison', payload: outcome.comparison } satisfies ArtifactSpec]
+      ? [
+          { artifactType: 'comparison', payload: outcome.comparison } satisfies ArtifactSpec,
+          {
+            artifactType: BASELINE_TRADES,
+            payload: outcome.baseline.trades,
+            itemCount: outcome.baseline.trades.length,
+          } satisfies ArtifactSpec,
+        ]
       : []),
   ];
 

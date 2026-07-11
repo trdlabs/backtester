@@ -70,4 +70,25 @@ describe('overlay parity — platform-derived result_hash goldens (Slice 6a CP3)
     const b = await runOverlayBacktest(req, await overlayDeps(req));
     expect(contentRef(a)).toBe(contentRef(b));
   });
+
+  // Grounds the variant/comparison equivalence invariant (overlay-store.test.ts) on the REAL
+  // producer: baseline.json carries no overlayRefs (variant/comparison both null), variant.json
+  // carries one (variant/comparison both set) — runBacktest sets them together in one branch.
+  it('variant != null iff comparison != null on real runOverlayBacktest output (baseline + variant)', async () => {
+    const baseReq = loadRequest('baseline.json');
+    const baseOut = await runOverlayBacktest(baseReq, await overlayDeps(baseReq));
+    expect(baseOut.status).toBe('completed');
+    if (baseOut.status === 'completed') {
+      expect(baseOut.variant).toBeNull();
+      expect(baseOut.variant != null).toBe(baseOut.comparison != null);
+    }
+
+    const varReq = loadRequest('variant.json');
+    const varOut = await runOverlayBacktest(varReq, await overlayDeps(varReq));
+    expect(varOut.status).toBe('completed');
+    if (varOut.status === 'completed') {
+      expect(varOut.variant).not.toBeNull();
+      expect(varOut.variant != null).toBe(varOut.comparison != null);
+    }
+  });
 });
