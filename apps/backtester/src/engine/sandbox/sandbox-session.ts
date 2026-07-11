@@ -90,6 +90,10 @@ export class SandboxSession {
   private profOpenMs = 0;
   private profIpcWaitMs = 0;
   private profHookCalls = 0;
+  // Universe mode only: per-symbol `init` handshakes (ensureSymbolInit). Their blocking receive is
+  // credited to profOpenMs (an init/startup cost, symmetric with the non-universe init inside
+  // openInner); this counts them so the profile surfaces them instead of dropping them silently.
+  private profInitCalls = 0;
   private profClosed = false;
 
   constructor(
@@ -194,7 +198,12 @@ export class SandboxSession {
       entryPoint: descriptor.entryPoint,
       universe: true,
     });
+    const profT0 = SandboxSession.profileEnabled ? performance.now() : 0;
     const outcome = await this.channel!.receive(Date.now() + CONTAINER_STARTUP_GRACE_MS);
+    if (SandboxSession.profileEnabled) {
+      this.profOpenMs += performance.now() - profT0;
+      this.profInitCalls += 1;
+    }
     if (outcome.kind !== 'ok') return this.fail(this.mapFailure(outcome, 'init', 'bundle_load_failed'));
     this.initializedSymbols.add(ctx.symbol);
     return undefined;
@@ -465,6 +474,7 @@ export class SandboxSession {
         kind: this.cfg.kind,
         symbol: this.cfg.symbol,
         hookCalls: this.profHookCalls,
+        symbolInits: this.profInitCalls,
         ipcWaitMs: Math.round(this.profIpcWaitMs),
         openMs: Math.round(this.profOpenMs),
         avgIpcWaitMsPerHook: Number((this.profIpcWaitMs / this.profHookCalls).toFixed(3)),
