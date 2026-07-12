@@ -52,6 +52,11 @@ describe('splitWalkForward', () => {
       WalkForwardConfigError,
     );
   });
+  it('fail-fast on an unknown mode (must not silently default to rolling)', () => {
+    expect(() =>
+      splitWalkForward(PERIOD, { folds: 6, mode: 'bogus' as unknown as 'rolling' }),
+    ).toThrow(WalkForwardConfigError);
+  });
 });
 
 describe('aggregateFolds', () => {
