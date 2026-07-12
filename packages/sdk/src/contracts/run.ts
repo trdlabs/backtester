@@ -16,6 +16,35 @@ export interface RunPeriod {
   readonly to: string;
 }
 
+// E3a — walk-forward substrate types. Exported as the shared contract; NOT yet wired into any
+// request/result (server-side per-fold execution is E3b). Fold windows reuse RunPeriod.
+export interface WalkForwardScheme {
+  readonly folds: number;
+  readonly mode: 'rolling' | 'expanding';
+}
+export interface FoldWindow {
+  readonly index: number;
+  readonly train: RunPeriod;
+  readonly test: RunPeriod;
+}
+export interface WalkForwardFoldMetrics {
+  readonly index: number;
+  readonly metrics: Record<string, number>;
+}
+export interface WalkForwardMetricStats {
+  readonly mean: number;
+  /** Population standard deviation (consistency with E1a; robust at small fold counts). */
+  readonly stddev: number;
+  readonly min: number;
+  readonly max: number;
+  /** Fraction of folds with value > 0. */
+  readonly positiveFraction: number;
+}
+export interface WalkForwardAggregate {
+  readonly foldCount: number;
+  readonly metrics: Record<string, WalkForwardMetricStats>;
+}
+
 export interface BacktestRunRequest {
   readonly runId: string;
   readonly mode: RunMode;
