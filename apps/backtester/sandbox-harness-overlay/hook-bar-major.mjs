@@ -12,7 +12,7 @@
 // runs. Mirrors hook-batch.mjs's runHookBatch async/await-per-entry shape (onBarClose is awaited,
 // so an async hook is supported) — but where runHookBatch iterates N bars for ONE symbol/slot, this
 // iterates N symbols (one store slot per entry) for ONE bar.
-export async function runHookBarMajor(bars, hook, store, { rehydrateContext, normalize, pickHook }) {
+export async function runHookBarMajor(bars, hook, store, { rehydrateContext, normalize, pickHook, classifyError }) {
   const results = [];
   for (let i = 0; i < bars.length; i += 1) {
     const entry = bars[i];
@@ -38,15 +38,13 @@ export async function runHookBarMajor(bars, hook, store, { rehydrateContext, nor
       const out = await fn.call(slot.instance, ctx);
       results.push({ ok: true, decisions: normalize(out) });
     } catch (e) {
-      results.push({ ok: false, error: { code: classifyOrCrashed(e), detail: e && e.message ? e.message : String(e) } });
+      // The harness (entry.mjs) passes its real classifyError via deps so a per-entry throw (e.g. a
+      // deny-shim trip: network/forbidden-import/host-write) is coded with the same fidelity as
+      // handleHook/handleHookBatch. Falls back to sandbox_crashed so this stays importable from the
+      // host test without the deny-shim/container modules.
+      const code = classifyError ? classifyError(e) : 'sandbox_crashed';
+      results.push({ ok: false, error: { code, detail: e && e.message ? e.message : String(e) } });
     }
   }
   return { results };
-}
-
-// The harness (entry.mjs) passes its real classifyError via deps if it wants deny-shim codes; this
-// pure helper falls back to sandbox_crashed so it stays importable from the host test without the
-// deny-shim/container modules.
-function classifyOrCrashed(_e) {
-  return 'sandbox_crashed';
 }

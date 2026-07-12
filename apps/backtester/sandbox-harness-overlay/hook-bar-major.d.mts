@@ -34,6 +34,7 @@ export interface HookBarMajorDeps {
   ) => unknown;
   readonly pickHook: (instance: unknown, hook: string) => ((this: unknown, ctx: unknown) => unknown) | undefined;
   readonly normalize: (out: unknown) => unknown[];
+  readonly classifyError?: (e: unknown) => string;
 }
 
 export type HookBarMajorResult =

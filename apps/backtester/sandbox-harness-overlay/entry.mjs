@@ -187,6 +187,7 @@ async function handleHookBarMajor(msg) {
       rehydrateContext,
       normalize,
       pickHook: (inst, h) => pickHookFor(inst, h),
+      classifyError,
     });
     okBarMajor(msg.seq, r.results);
   } catch (e) {

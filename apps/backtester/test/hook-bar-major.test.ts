@@ -62,6 +62,36 @@ describe('runHookBarMajor (sequential, index order, per-symbol fail-closed)', ()
     expect((r.results[1] as { error: { detail: string } }).error.detail).toContain('boom');
   });
 
+  it('uses an injected classifyError for a thrown entry, proving deny-shim codes carry through', async () => {
+    const store = fakeStore(
+      new Map<string, HookBarMajorSlot>([
+        [
+          'AAA',
+          {
+            instance: {
+              onBarClose: () => {
+                throw new Error('network access denied');
+              },
+            },
+            buffer: [],
+            oiBuffer: [],
+            liqBuffer: [],
+          },
+        ],
+      ]),
+    );
+    const bars = [{ snapshot: { symbol: 'AAA' }, newBar: null }];
+    const classifyError = (_e: unknown) => 'sandbox_forbidden_access';
+    const r = await runHookBarMajor(bars, 'onBarClose', store, {
+      rehydrateContext,
+      normalize,
+      pickHook,
+      classifyError,
+    });
+    expect(r.results[0].ok).toBe(false);
+    expect((r.results[0] as { error: { code: string } }).error.code).toBe('sandbox_forbidden_access');
+  });
+
   it('a missing slot for an entry yields a tagged error for that entry only', async () => {
     const store = fakeStore(
       new Map<string, HookBarMajorSlot>([['AAA', { instance: { onBarClose: () => [] }, buffer: [], oiBuffer: [], liqBuffer: [] }]]),
