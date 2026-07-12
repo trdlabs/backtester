@@ -45,6 +45,26 @@ export interface WalkForwardAggregate {
   readonly metrics: Record<string, WalkForwardMetricStats>;
 }
 
+// E4a — held-out OOS qualification marker (advisory; NOT part of the hashed result). A run's
+// `holdout` marker records whether the run touched the server-reserved OOS window, with provenance
+// (the window drifts as coverage grows). Present only when BACKTESTER_HOLDOUT_ENABLED.
+export interface HoldoutResolved {
+  readonly status: 'resolved';
+  readonly policy: 'coverage_fraction';
+  readonly fraction: number;
+  /** Coverage span the window was carved from (provenance — the window moves as coverage grows). */
+  readonly coverage: RunPeriod;
+  readonly window: RunPeriod;
+  readonly overlaps: boolean;
+  /** 'full' = run entirely INSIDE the holdout (run ⊆ holdout), NOT "run covered the whole holdout". */
+  readonly containment: 'none' | 'partial' | 'full';
+}
+export interface HoldoutUnknown {
+  readonly status: 'unknown';
+  readonly reason: 'coverage_not_found';
+}
+export type HoldoutMarker = HoldoutResolved | HoldoutUnknown;
+
 export interface BacktestRunRequest {
   readonly runId: string;
   readonly mode: RunMode;
@@ -183,6 +203,8 @@ export interface RunResultSummary {
   readonly evidenceRef?: ArtifactReference;
   /** E2: advisory trial count + Deflated Sharpe; NOT covered by `resultHash`. */
   readonly trialContext?: TrialContext;
+  /** E4a: advisory held-out OOS qualification marker; NOT covered by `resultHash`. */
+  readonly holdout?: HoldoutMarker;
 }
 
 export type CompletionEventType =

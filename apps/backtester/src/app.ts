@@ -180,6 +180,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     ...(trialLedger
       ? { trialLedger, trialLedgerEnabled: true, trialEmpiricalMinN: config.trialEmpiricalMinN }
       : {}),
+    ...(config.holdout ? { holdout: { enabled: true, fraction: config.holdoutFraction } } : {}),
     ...(overrides.evidenceSigningKey
       ? { evidenceSigningKey: overrides.evidenceSigningKey }
       : config.evidenceSigningKeyPem

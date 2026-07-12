@@ -7,6 +7,7 @@
 import type { ArtifactManifest, ArtifactReference, ContentHash } from '@trading-backtester/sdk/artifacts';
 import type {
   BacktestRunRequest,
+  HoldoutMarker,
   RunPeriod,
   RunResultSummary,
 } from '@trading-backtester/sdk/contracts';
@@ -60,6 +61,7 @@ import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.j
 import { ObsRegistry, type DedupClass, type JobObsSample } from './obs-registry.js';
 import type { TrialLedger } from './ledger/trial-ledger.js';
 import { recordTrialAndComputeContext } from './ledger/record-trial.js';
+import { buildHoldoutMarker } from '../engine/holdout.js';
 
 export { RunnerError };
 
@@ -109,6 +111,8 @@ export interface WorkerDeps extends CompletionDeps {
   trialLedgerEnabled?: boolean;
   /** E2: N at/above which V[SR] switches asymptotic→empirical (default 5). */
   trialEmpiricalMinN?: number;
+  /** E4a: held-out OOS marker. Absent/disabled ⇒ no `holdout` field (byte-identical). */
+  holdout?: { enabled: boolean; fraction: number };
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -246,7 +250,29 @@ async function finalizeResult(
     );
     if (trialContext) summary = { ...summary, trialContext };
   }
+  // E4a (advisory, flag-gated): mark whether this run touched the server-reserved held-out OOS window.
+  // Non-hashed (config-derived); flag-OFF ⇒ field absent ⇒ byte-identical.
+  const holdout = await resolveHoldoutMarker(deps, claimed);
+  if (holdout) summary = { ...summary, holdout };
   return { summary, manifest: persisted.manifest, resultHash };
+}
+
+/**
+ * E4a: resolve the held-out marker for a completed run. `undefined` when the feature is off (field
+ * omitted ⇒ byte-identical). When on but the dataset's coverage span can't be found, returns an
+ * explicit `unknown` marker (so a consumer distinguishes "feature off" from "coverage missing").
+ */
+async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
+  if (!deps.holdout?.enabled) return undefined;
+  let coverage: RunPeriod | undefined;
+  try {
+    const datasets = await deps.dataPort.listDatasets();
+    coverage = datasets.find((d) => d.datasetRef === claimed.datasetRef)?.period;
+  } catch {
+    coverage = undefined;
+  }
+  if (coverage === undefined) return { status: 'unknown', reason: 'coverage_not_found' };
+  return buildHoldoutMarker(coverage, deps.holdout.fraction, claimed.request.period);
 }
 
 function engineOf(claimed: JobRow): Engine {

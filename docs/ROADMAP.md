@@ -534,13 +534,24 @@ mechanism — unrequested ⇒ byte-identical results, INV preserved).
     does NOT feed a family's trial count N — WF's value is OOS stability; N stays the
     parameter-trial (same-window) axis. CPCV with purging+embargo (and PBO) is the follow-up after
     E3b (Arian et al. 2024: CPCV ≫ WF at false-discovery prevention; WF is still the industry floor).
-23. **E4 — held-out OOS qualification window (BRAIN-style admission).**
-    A server-declared qualification period the lab/LLM loop cannot iterate against — final
-    submission only, single-use or hard-budgeted. The only systemic defense against adaptive
-    overfitting *of the refine loop itself* (Agentic-Trading survey's top validity risk; E2/E3
-    alone are gameable by iteration). Qualification verdict lands in evidence. Lab-side twin:
-    Outcome Embargo on agent memory. Needs the E3 split machinery + a policy decision (window,
-    budget).
+23. **E4 — held-out OOS qualification window (BRAIN-style admission).** Split into **E4a (marker)
+    ✅ SHIPPED** + E4b (enforcement, open). **E4a**
+    (`specs/2026-07-12-e4a-holdout-oos-marker-design.md`): a server-reserved held-out window =
+    last `BACKTESTER_HOLDOUT_FRACTION` of the dataset's coverage span; every run whose `period`
+    structurally overlaps it (half-open) is marked with a provenance-bearing, NON-hashed
+    `RunResultSummary.holdout` (`{status:'resolved', policy, fraction, coverage, window, overlaps,
+    containment}` or `{status:'unknown', reason:'coverage_not_found'}`). Pure `holdout.ts`
+    (`computeHoldoutWindow`/`holdoutOverlap`/`buildHoldoutMarker`) + finalize wiring (coverage via
+    `dataPort.listDatasets`), flag-gated `BACKTESTER_HOLDOUT_ENABLED` default OFF (byte-identical),
+    `decideVerdict` untouched. Structural overlap = the un-evadable signal; **it is the defense
+    against period-shopping, which E2's family-N does NOT catch** (different period ⇒ different
+    family). Qualification-attempt NUMBER reuses E2 `trialContext.trialCount` (holdout runs of one
+    family share the fixed window ⇒ one family). **E4b (open):** enforcement (reject/budget the 2nd
+    qualification attempt = the gate flip) + qualification verdict into the signed
+    `backtest-evidence/v1` body (cross-repo) + explicit `mode:'promotion'` semantics; lab-side twin
+    = Outcome Embargo on agent memory. Only systemic defense against adaptive overfitting *of the
+    refine loop itself* (Agentic-Trading survey's top validity risk; E2/E3 alone are gameable by
+    iteration).
 24. **E5 — hypothesis novelty gate (PnL-correlation first, AST later).**
     Daily-PnL-delta correlation of a candidate vs the admitted-strategy pool (BRAIN: 2y window,
     escape hatch at Sharpe ≥ +10 %; AlphaMemo admission: |ρ| ≤ 0.70) — cheap post-processing over
