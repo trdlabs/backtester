@@ -162,6 +162,21 @@ export interface AppConfig {
   readonly evidenceSigningKeyPem?: string;
 }
 
+/**
+ * Parse a non-negative numeric env var, clamping to `[0, ∞)`. Falls back to `def` ONLY on
+ * undefined / blank / NaN — a valid, explicit `0` is preserved (unlike the `Math.max(0, …) || def`
+ * idiom used for floor-≥1 knobs, which silently coerces a clamped 0 back to the default). Used for
+ * the diagnostics thresholds where `0` is a legitimate operator policy (minTrades 0 = disable the
+ * underpowered flag; concentrationPct 0 = maximum single-trade-dominated sensitivity).
+ */
+function nonNegNumEnv(raw: string | undefined, def: number, opts?: { int?: boolean }): number {
+  if (raw === undefined || raw.trim() === '') return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return def;
+  const clamped = Math.max(0, n);
+  return opts?.int ? Math.floor(clamped) : clamped;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // OVERLAY sandbox (Slice-6b-A): default everything to the proven DEFAULT_SANDBOX policy,
   // overriding only image + optional resource limits from BACKTESTER_SANDBOX_OVERLAY_* env.
@@ -320,8 +335,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     holdout: env.BACKTESTER_HOLDOUT_ENABLED === 'true',
     holdoutFraction: Number(env.BACKTESTER_HOLDOUT_FRACTION) || 0.2,
     runDiagnostics: env.BACKTESTER_RUN_DIAGNOSTICS === 'true',
-    diagMinTrades: Math.max(0, Math.floor(Number(env.BACKTESTER_DIAG_MIN_TRADES ?? 30))) || 30,
-    diagConcentrationPct: Math.max(0, Number(env.BACKTESTER_DIAG_CONCENTRATION_PCT ?? 80)) || 80,
+    diagMinTrades: nonNegNumEnv(env.BACKTESTER_DIAG_MIN_TRADES, 30, { int: true }),
+    diagConcentrationPct: nonNegNumEnv(env.BACKTESTER_DIAG_CONCENTRATION_PCT, 80),
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),

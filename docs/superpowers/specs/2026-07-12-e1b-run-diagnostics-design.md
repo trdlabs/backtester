@@ -68,8 +68,12 @@ export interface RunDiagnostics {
 
 `BACKTESTER_RUN_DIAGNOSTICS` (bool) + `BACKTESTER_DIAG_MIN_TRADES` (default 30) +
 `BACKTESTER_DIAG_CONCENTRATION_PCT` (default 80). Thresholds are operator policy (mirrors E2's
-`empiricalMinN`); a numeric knob clamps to a sane floor, not fail-fast (unlike E4's fraction, an
-out-of-range trade count is still meaningful — 0 just means "everything is underpowered").
+`empiricalMinN`); a numeric knob clamps to a `[0, ∞)` floor, not fail-fast (unlike E4's fraction, an
+out-of-range trade count is still meaningful). Parsing preserves an explicit `0` (via `nonNegNumEnv`,
+which defaults only on undefined/blank/NaN) because `0` is a legitimate policy: since the flag fires
+on `tradeCount < minTrades`, `minTrades = 0` DISABLES `underpowered` (nothing is ever below 0), and
+`concentrationPct = 0` sets maximum `single_trade_dominated` sensitivity (any positive top
+contribution trips it).
 
 ## Wiring — worker finalize (overlay/strategy, flag-gated)
 
