@@ -26,6 +26,19 @@ The full user flow
 
 is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts` (hypothesis → preset-driven overlay run → `completed` with a real comparison → `evaluated`). The remaining gap is the **real `trading-platform`** production data path; today's E2E runs against `trading-mock-platform`.
 
+## Code Health & Audits
+
+- **2026-07-12 — full-repo code review** ([`CODE-REVIEW-2026-07-12.md`](../CODE-REVIEW-2026-07-12.md)):
+  read-only bug/недоработка/perf sweep across `apps/backtester/src/` + `packages/{sdk,research-contracts}`
+  (graph audit + 6 subsystem agents). Graph health is clean (0 cycles / 0 stale flags / 0 dead clones).
+  Open findings to triage: **1×P0** (sandbox crash finalizes as `completed` and poisons the dedup
+  cache — worker never checks `router.errors()`), **6×P1** (no `pool.on('error')`; outbox not
+  redelivered in multi-process; coalescing followers stranded on flag rollback; sandbox stdin/stdout
+  shared with untrusted code + no `seq` correlation; SDK↔server bundle-path-validation drift; SSRF via
+  `callbackUrl`), plus 27×P2 / 9×P3 / 8×P4. Cross-cutting: `curatedBaselineRef` missing from the request
+  fingerprint (found independently 3×). Top perf item: O(n²) per-bar market-API construction. Suggested
+  fix order lives at the bottom of the report. **None of these are fixed yet — code was not modified.**
+
 ## Feature 1: Client Contract Alignment ✅ DONE
 
 **Goal:** remove the contract gap between `trading-backtester` and `trading-lab`.
