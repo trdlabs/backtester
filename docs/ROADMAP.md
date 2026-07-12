@@ -545,11 +545,15 @@ mechanism — unrequested ⇒ byte-identical results, INV preserved).
     `dataPort.listDatasets`), flag-gated `BACKTESTER_HOLDOUT_ENABLED` default OFF (byte-identical),
     `decideVerdict` untouched. Structural overlap = the un-evadable signal; **it is the defense
     against period-shopping, which E2's family-N does NOT catch** (different period ⇒ different
-    family). Qualification-attempt NUMBER reuses E2 `trialContext.trialCount` (holdout runs of one
-    family share the fixed window ⇒ one family). **E4b (open):** enforcement (reject/budget the 2nd
-    qualification attempt = the gate flip) + qualification verdict into the signed
-    `backtest-evidence/v1` body (cross-repo) + explicit `mode:'promotion'` semantics; lab-side twin
-    = Outcome Embargo on agent memory. Only systemic defense against adaptive overfitting *of the
+    family). **CAVEAT for E4b (do NOT assume `trialContext.trialCount` is already the qualification-
+    attempt number):** the E2 family key includes `period`, and E4a `containment:'full'` means "run
+    ⊆ holdout", NOT "run == holdout window" — so different sub-periods inside the holdout are
+    DIFFERENT E2 families and the count does not accumulate. E4b must therefore either (a) require
+    `request.period === holdout.window` for a promotion/qualification run, or (b) introduce a
+    dedicated qualification-attempt ledger/key keyed on (family, holdout-window). **E4b (open):**
+    enforcement (reject/budget the 2nd qualification attempt = the gate flip) + qualification verdict
+    into the signed `backtest-evidence/v1` body (cross-repo) + explicit `mode:'promotion'` semantics;
+    lab-side twin = Outcome Embargo on agent memory. Only systemic defense against adaptive overfitting *of the
     refine loop itself* (Agentic-Trading survey's top validity risk; E2/E3 alone are gameable by
     iteration).
 24. **E5 — hypothesis novelty gate (PnL-correlation first, AST later).**
