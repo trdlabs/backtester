@@ -505,7 +505,10 @@ export class SandboxSession {
    * err-with-barOffset via early returns) statically still carries 'ok'/'okBatch' as possible
    * members — both are unreachable in practice (a 'hook' request never yields okBatch, a
    * 'hookBatch' request's ok-shaped success is always tagged okBatch, never ok) but are handled
-   * explicitly below so the exhaustiveness check stays sound.
+   * explicitly below so the exhaustiveness check stays sound. Slice B adds 'okBarMajor' to
+   * ReceiveOutcome (Task 1, transport-only); no call site sends hookBarMajor yet, so it is
+   * unreachable here too — handled the same way, for exhaustiveness, until a later Slice B task
+   * wires the real per-symbol success/failure mapping for hookBarMajor.
    */
   private mapFailure(
     outcome: Awaited<ReturnType<AsyncIpcChannel['receive']>>,
@@ -540,6 +543,7 @@ export class SandboxSession {
       // Unreachable in practice (see doc comment) — handled for exhaustiveness, not real dispatch.
       case 'ok':
       case 'okBatch':
+      case 'okBarMajor':
         return e('sandbox_crashed', `unexpected ${outcome.kind} outcome mapped as failure for hook "${hook}"`);
       default: {
         const exhaustive: never = outcome;

@@ -97,45 +97,78 @@ export class AsyncIpcChannel {
   }
 
   private parseLine(line: string): ReceiveOutcome {
-    let obj: unknown;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      return { kind: 'malformed', detail: 'response is not valid JSON' };
-    }
-    if (typeof obj !== 'object' || obj === null) {
-      return { kind: 'malformed', detail: 'response is not an object' };
-    }
-    const rec = obj as Record<string, unknown>;
-    if (rec.t === 'ok') {
-      const decisions = Array.isArray(rec.decisions) ? (rec.decisions as unknown[]) : [];
-      return { kind: 'ok', seq: typeof rec.seq === 'number' ? rec.seq : undefined, decisions };
-    }
-    if (rec.t === 'okBatch') {
-      // 17b — stoppedAt MUST be numeric (it drives host-side bar-bookkeeping rewind); anything else
-      // is malformed rather than silently coerced (a garbage stoppedAt would desync the resend
-      // boundary between host and harness).
-      if (typeof rec.stoppedAt !== 'number') {
-        return { kind: 'malformed', detail: 'okBatch response missing numeric stoppedAt' };
-      }
-      const decisions = Array.isArray(rec.decisions) ? (rec.decisions as unknown[]) : [];
-      return {
-        kind: 'okBatch',
-        seq: typeof rec.seq === 'number' ? rec.seq : undefined,
-        stoppedAt: rec.stoppedAt,
-        decisions,
-      };
-    }
-    if (rec.t === 'err') {
-      return {
-        kind: 'err',
-        seq: typeof rec.seq === 'number' ? rec.seq : undefined,
-        hook: typeof rec.hook === 'string' ? rec.hook : undefined,
-        code: typeof rec.code === 'string' ? rec.code : 'sandbox_crashed',
-        detail: typeof rec.detail === 'string' ? rec.detail : '',
-        barOffset: typeof rec.barOffset === 'number' ? rec.barOffset : undefined,
-      };
-    }
-    return { kind: 'malformed', detail: `unknown response envelope t=${String(rec.t)}` };
+    return parseResponseLine(line);
   }
+}
+
+/** Parses one NDJSON response line (harness → host) into a `ReceiveOutcome`. Exported (rather than
+ *  kept as a private method) so the tagged-envelope parsing — including the strict okBarMajor
+ *  per-entry validation below — is directly unit-testable without standing up a channel. */
+export function parseResponseLine(line: string): ReceiveOutcome {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return { kind: 'malformed', detail: 'response is not valid JSON' };
+  }
+  if (typeof obj !== 'object' || obj === null) {
+    return { kind: 'malformed', detail: 'response is not an object' };
+  }
+  const rec = obj as Record<string, unknown>;
+  if (rec.t === 'ok') {
+    const decisions = Array.isArray(rec.decisions) ? (rec.decisions as unknown[]) : [];
+    return { kind: 'ok', seq: typeof rec.seq === 'number' ? rec.seq : undefined, decisions };
+  }
+  if (rec.t === 'okBatch') {
+    // 17b — stoppedAt MUST be numeric (it drives host-side bar-bookkeeping rewind); anything else
+    // is malformed rather than silently coerced (a garbage stoppedAt would desync the resend
+    // boundary between host and harness).
+    if (typeof rec.stoppedAt !== 'number') {
+      return { kind: 'malformed', detail: 'okBatch response missing numeric stoppedAt' };
+    }
+    const decisions = Array.isArray(rec.decisions) ? (rec.decisions as unknown[]) : [];
+    return {
+      kind: 'okBatch',
+      seq: typeof rec.seq === 'number' ? rec.seq : undefined,
+      stoppedAt: rec.stoppedAt,
+      decisions,
+    };
+  }
+  if (rec.t === 'okBarMajor') {
+    if (!Array.isArray(rec.results)) {
+      return { kind: 'malformed', detail: 'okBarMajor response missing results array' };
+    }
+    const results: ({ ok: true; decisions: unknown[] } | { ok: false; error: { code: string; detail: string } })[] = [];
+    for (const raw of rec.results as unknown[]) {
+      if (typeof raw !== 'object' || raw === null) {
+        return { kind: 'malformed', detail: 'okBarMajor result entry is not an object' };
+      }
+      const e = raw as Record<string, unknown>;
+      const err = e.error as Record<string, unknown> | undefined;
+      if (e.ok === true && Array.isArray(e.decisions)) {
+        results.push({ ok: true, decisions: e.decisions as unknown[] });
+      } else if (
+        e.ok === false && typeof e.error === 'object' && e.error !== null &&
+        typeof err!.code === 'string' && typeof err!.detail === 'string'
+      ) {
+        // STRICT: a false entry is valid ONLY with string code AND string detail — no defaulting, so a
+        // harness/protocol bug can't be silently laundered into a normal per-symbol error.
+        results.push({ ok: false, error: { code: err!.code as string, detail: err!.detail as string } });
+      } else {
+        return { kind: 'malformed', detail: 'okBarMajor result entry is not a valid tagged ok/err variant' };
+      }
+    }
+    return { kind: 'okBarMajor', seq: typeof rec.seq === 'number' ? rec.seq : undefined, results };
+  }
+  if (rec.t === 'err') {
+    return {
+      kind: 'err',
+      seq: typeof rec.seq === 'number' ? rec.seq : undefined,
+      hook: typeof rec.hook === 'string' ? rec.hook : undefined,
+      code: typeof rec.code === 'string' ? rec.code : 'sandbox_crashed',
+      detail: typeof rec.detail === 'string' ? rec.detail : '',
+      barOffset: typeof rec.barOffset === 'number' ? rec.barOffset : undefined,
+    };
+  }
+  return { kind: 'malformed', detail: `unknown response envelope t=${String(rec.t)}` };
 }
