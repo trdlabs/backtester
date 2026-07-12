@@ -51,6 +51,11 @@ export function defaultHarnessDir(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), '..', 'sandbox-harness');
 }
 
+/** Same "first or idle" reduction as `runner.ts`'s (unexported) `firstDecision`; kept in sync by inspection. */
+function firstDecisionOf(decisions: readonly StrategyDecision[]): StrategyDecision {
+  return decisions.length > 0 ? decisions[0]! : { kind: 'idle' };
+}
+
 /** Исполнитель хуков bundle в sandbox-контейнере; реализует 018 ModuleExecutor seam. */
 export class SandboxModuleExecutor implements ModuleExecutor {
   private readonly sessions = new Map<string, SandboxSession>();
@@ -186,6 +191,44 @@ export class SandboxModuleExecutor implements ModuleExecutor {
       return { stoppedAt: r.stoppedAt, decisions: [] };
     }
     return { stoppedAt: r.stoppedAt, decisions: rv.decisions };
+  }
+
+  /**
+   * Slice B: bar-major transport collapse. Universe mode → ONE shared session, ONE `callHookBarMajor`
+   * round-trip covering every item (the real collapse); results come back index-aligned with `items`
+   * (incl. latched-symbol remap, done inside `callHookBarMajor` — do NOT re-partition here). Each
+   * per-item error/invalid-schema result is recorded + degrades to `{ kind: 'idle' }` for THAT item
+   * only, mirroring `executeStrategyHookBatch`'s revalidate/record shape.
+   *
+   * Non-universe sandbox: per-symbol sessions mean no batch collapse is possible — fall back to the
+   * same lockstep loop as the trusted executor (byte-identical decisions, just no IPC savings).
+   */
+  async executeStrategyHookBarMajor(
+    items: readonly { module: StrategyModule; ctx: StrategyContext }[],
+  ): Promise<readonly StrategyDecision[]> {
+    if (items.length === 0) return [];
+    if (this.universe?.enabled === true) {
+      const session = this.sessionFor(items[0]!.ctx); // universe → one shared session
+      const results = await session.callHookBarMajor(items.map((it) => it.ctx));
+      return results.map((r, i) => {
+        if (!r.ok) {
+          if (r.error !== undefined) this.record(r.error, items[i]!.ctx);
+          return { kind: 'idle' } as StrategyDecision; // fail-closed base (== firstDecision([]))
+        }
+        const rv = this.revalidator.revalidateStrategy(r.decisions);
+        if (!rv.ok) {
+          this.record({ code: 'decision_schema_invalid', detail: rv.message, hook: 'onBarClose' }, items[i]!.ctx);
+          return { kind: 'idle' } as StrategyDecision;
+        }
+        return firstDecisionOf(rv.decisions);
+      });
+    }
+    // non-universe sandbox → no batch collapse possible (per-symbol sessions); loop lockstep.
+    const out: StrategyDecision[] = [];
+    for (const it of items) {
+      out.push(firstDecisionOf(await this.executeStrategyHook(it.module, 'onBarClose', it.ctx)));
+    }
+    return out;
   }
 
   async executeOverlayApply(_overlay: HypothesisOverlayModule, ctx: StrategyContext): Promise<readonly OverlayDecision[]> {

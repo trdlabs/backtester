@@ -97,6 +97,16 @@ function makeLockstepOnlyExecutor(
     async executeOverlayApply(_overlay: HypothesisOverlayModule, _ctx: StrategyContext): Promise<readonly OverlayDecision[]> {
       return [];
     },
+    async executeStrategyHookBarMajor(
+      items: readonly { module: StrategyModule; ctx: StrategyContext }[],
+    ): Promise<readonly StrategyDecision[]> {
+      const out: StrategyDecision[] = [];
+      for (const it of items) {
+        const ds = await this.executeStrategyHook(it.module, 'onBarClose', it.ctx);
+        out.push(ds.length > 0 ? ds[0]! : { kind: 'idle' });
+      }
+      return out;
+    },
   };
 }
 
@@ -133,6 +143,16 @@ function makeBatchExecutor(
       const next = script.shift();
       if (next !== undefined) return next;
       return { stoppedAt: ctxs.length - 1, decisions: [] };
+    },
+    async executeStrategyHookBarMajor(
+      items: readonly { module: StrategyModule; ctx: StrategyContext }[],
+    ): Promise<readonly StrategyDecision[]> {
+      const out: StrategyDecision[] = [];
+      for (const it of items) {
+        const ds = await this.executeStrategyHook(it.module, 'onBarClose', it.ctx);
+        out.push(ds.length > 0 ? ds[0]! : { kind: 'idle' });
+      }
+      return out;
     },
   };
 }

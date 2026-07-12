@@ -50,6 +50,14 @@ describe('async overlap — runs interleave through the pool', () => {
       return {
         async executeStrategyHook() { if (!gated) { gated = true; await barrier.wait(); } return []; },
         async executeOverlayApply() { return []; },
+        async executeStrategyHookBarMajor(items) {
+          const out = [];
+          for (const it of items) {
+            const ds = await this.executeStrategyHook(it.module, 'onBarClose', it.ctx);
+            out.push(ds.length > 0 ? ds[0]! : { kind: 'idle' as const });
+          }
+          return out;
+        },
         async initStrategy() {},
         async disposeStrategy() {},
         close() {},
