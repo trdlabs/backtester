@@ -112,6 +112,9 @@ per item, index-aligned):
   downstream terminal / evidence behavior (this reuses the existing lockstep failure adapter; the exact
   post-latch bookkeeping is whatever `callHook` + the executor already do, NOT re-specified here). Other
   symbols in the batch continue.
+- **Already-latched symbol** (failed on a prior bar): `callHookBarMajor` must NOT re-send it to the
+  harness — it resolves that symbol's `HookResult` locally from the stored prior error and sends only the
+  healthy symbols (index-remapping results back), mirroring `callHook`'s early fail-closed-without-send.
 - **Channel-level failure** on the `hookBarMajor` envelope (malformed line, EOF, timeout, output
   overflow, contract-version mismatch): **whole-session fatal** — `this.fail(...)`, identical to how the
   lockstep `hook`/`hookBatch` paths treat channel death. This is explicitly distinct from a per-symbol
@@ -120,10 +123,13 @@ per item, index-aligned):
 ## Observability (`ipc_profile`)
 
 The existing `hookCalls` counts **logical** per-`(symbol, bar)` hook executions; `callHookBarMajor`
-credits `hookCalls += bars.length` so that number is unchanged vs lockstep (N logical hooks still ran).
-Add a distinct counter for the transport collapse:
+credits `hookCalls += <healthy symbol count>` (latched symbols are resolved locally without a send, so
+they don't count — parity with lockstep `callHook`'s early fail-closed) so that number is unchanged vs
+lockstep. Add a distinct counter for the transport collapse:
 
-- `ipcMessages` (or `barMajorBatches`) — the number of `hookBarMajor` IPC round-trips (one per bar).
+- `barMajorBatches` — the number of `hookBarMajor` round-trips (one per bar). Named `barMajorBatches`,
+  not `ipcMessages`: it increments ONLY in `callHookBarMajor`, so it counts hookBarMajor round-trips, not
+  all IPC receives across every path.
 
 The spec claim is precise: **IPC round-trips** collapse from `N/bar` to `1/bar`; logical hook executions
 do **not** change. `ipcWaitMs` becomes fewer, larger waits (one receive per bar instead of N).
@@ -143,7 +149,7 @@ do **not** change. `ipcWaitMs` becomes fewer, larger waits (one receive per bar 
   symbols' results still apply. Result equals the lockstep-failure result for the same scenario.
 - **Channel-fatal:** a malformed/short `okBarMajor` response → whole session fails (not a per-symbol
   latch).
-- **ipc_profile:** with the batch ON, `ipcMessages` == bar count while `hookCalls` == N × bar count
+- **ipc_profile:** with the batch ON, `barMajorBatches` == bar count while `hookCalls` == N × bar count
   (logical unchanged) — proves the collapse is in round-trips, not logical executions.
 
 ## Non-goals (out of Slice B)

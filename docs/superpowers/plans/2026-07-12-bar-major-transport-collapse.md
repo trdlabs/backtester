@@ -17,7 +17,7 @@
 - Per-symbol strategy exception (harness caught it, container alive) → that entry is `{ok:false,error}` → maps to the **same HookResult/SessionError path as `callHook`'s harness-level `err` for that symbol** (same `failedSymbols` latch, same downstream). Other symbols continue.
 - Channel-level failure on the `hookBarMajor` round-trip (malformed / eof / timeout / overflow) → **whole-session fatal** (`this.fail(...)`), same as the lockstep `hook`/`hookBatch` paths.
 - Harness dispatch is **sequential `for`, NEVER `Promise.all`** — deterministic index-order side effects; the perf win is the IPC round-trip, not parallel JS.
-- `ipc_profile`: `hookCalls` stays **logical** (credited `+= bars.length`); add a distinct `ipcMessages` counter for round-trips. The collapse is in IPC round-trips, not logical hook executions.
+- `ipc_profile`: `hookCalls` stays **logical** (credited `+= healthy count`); add a distinct `barMajorBatches` counter (increments ONLY in `callHookBarMajor`, one per round-trip — NOT `ipcMessages`, which would imply all IPC receive paths count it). The collapse is in IPC round-trips, not logical hook executions.
 
 Spec: `docs/superpowers/specs/2026-07-12-bar-major-transport-collapse-design.md`.
 
@@ -100,6 +100,12 @@ describe('okBarMajor response parse', () => {
     expect(parseResponseLine(JSON.stringify({ t: 'okBarMajor', seq: 1, results: [{ ok: true }] })).kind).toBe('malformed');
     expect(parseResponseLine(JSON.stringify({ t: 'okBarMajor', seq: 1, results: [{ nope: 1 }] })).kind).toBe('malformed');
   });
+
+  it('rejects a false entry whose error lacks string code/detail → malformed (no defaulting)', () => {
+    expect(parseResponseLine(JSON.stringify({ t: 'okBarMajor', seq: 1, results: [{ ok: false, error: { code: 'x' } }] })).kind).toBe('malformed');
+    expect(parseResponseLine(JSON.stringify({ t: 'okBarMajor', seq: 1, results: [{ ok: false, error: {} }] })).kind).toBe('malformed');
+    expect(parseResponseLine(JSON.stringify({ t: 'okBarMajor', seq: 1, results: [{ ok: false }] })).kind).toBe('malformed');
+  });
 });
 ```
 
@@ -125,14 +131,16 @@ In `async-ipc-channel.ts`, after the `rec.t === 'okBatch'` branch, add (mirror i
           return { kind: 'malformed', detail: 'okBarMajor result entry is not an object' };
         }
         const e = raw as Record<string, unknown>;
+        const err = e.error as Record<string, unknown> | undefined;
         if (e.ok === true && Array.isArray(e.decisions)) {
           results.push({ ok: true, decisions: e.decisions as unknown[] });
-        } else if (e.ok === false && typeof e.error === 'object' && e.error !== null) {
-          const err = e.error as Record<string, unknown>;
-          results.push({ ok: false, error: {
-            code: typeof err.code === 'string' ? err.code : 'sandbox_crashed',
-            detail: typeof err.detail === 'string' ? err.detail : '',
-          }});
+        } else if (
+          e.ok === false && typeof e.error === 'object' && e.error !== null &&
+          typeof err!.code === 'string' && typeof err!.detail === 'string'
+        ) {
+          // STRICT: a false entry is valid ONLY with string code AND string detail — no defaulting, so a
+          // harness/protocol bug can't be silently laundered into a normal per-symbol error.
+          results.push({ ok: false, error: { code: err!.code as string, detail: err!.detail as string } });
         } else {
           return { kind: 'malformed', detail: 'okBarMajor result entry is not a valid tagged ok/err variant' };
         }
@@ -191,6 +199,15 @@ describe('SandboxSession.callHookBarMajor', () => {
     // Assert driver.sent has exactly one {t:'hookBarMajor'} with bars.length===2 for a 2-ctx call
     // (after the per-symbol init handshakes).
   });
+
+  it('a latched symbol is NOT re-sent; only the healthy symbol appears in bars (index remap)', async () => {
+    // 1) First call: script BBB's result as {ok:false,error} → BBB is latched.
+    // 2) Second callHookBarMajor([ctxAAA, ctxBBB]): assert the SECOND {t:'hookBarMajor'} envelope's
+    //    bars has length 1 and its only entry's snapshot.symbol === 'AAA' (BBB not re-sent);
+    //    the returned HookResult[] is length 2 with out[1] = BBB's prior fail-closed error (remapped
+    //    to its original index) and out[0] = AAA's ok result. Mirrors lockstep callHook's
+    //    fail-closed-without-send for a latched symbol.
+  });
 });
 ```
 
@@ -214,19 +231,35 @@ Model on `callHookBatch` (same open/ensureSymbolInit guards, same profiling shap
    */
   async callHookBarMajor(ctxs: readonly StrategyContext[]): Promise<readonly HookResult[]> {
     if (this.failed) return ctxs.map(() => ({ ok: false, decisions: [], error: this.lastError }));
+    // Latched symbols (universe per-symbol fail-closed) must NOT be re-sent — mirror callHook's early
+    // fail-closed-WITHOUT-send. Partition into healthy (sent) and latched (resolved locally from the
+    // prior error), send only healthy, then remap results back to the original ctx indices.
+    const out: HookResult[] = new Array(ctxs.length);
+    const healthy: { ctx: StrategyContext; idx: number }[] = [];
+    for (let i = 0; i < ctxs.length; i += 1) {
+      const prior = this.failedSymbols.get(ctxs[i]!.symbol);
+      if (prior !== undefined) out[i] = { ok: false, decisions: [], error: prior };
+      else healthy.push({ ctx: ctxs[i]!, idx: i });
+    }
+    if (healthy.length === 0) return out; // all latched → no IPC send, no counter increments
+
+    const failHealthy = (error: SessionError | undefined): readonly HookResult[] => {
+      for (const h of healthy) out[h.idx] = { ok: false, decisions: [], error };
+      return out;
+    };
     if (this.channel === undefined) {
       const opened = await this.open();
-      if (!opened.ok) return ctxs.map(() => ({ ok: false, decisions: [], error: this.lastError }));
+      if (!opened.ok) return failHealthy(this.lastError);
     }
-    // Per-symbol lazy init handshakes (universe): one per not-yet-initialized symbol, in order.
-    for (const ctx of ctxs) {
-      const f = await this.ensureSymbolInit(ctx);
-      if (f !== undefined) return ctxs.map(() => ({ ok: false, decisions: [], error: this.lastError }));
+    // Per-symbol lazy init handshakes (universe): one per not-yet-initialized HEALTHY symbol, in order.
+    for (const h of healthy) {
+      const f = await this.ensureSymbolInit(h.ctx);
+      if (f !== undefined) return failHealthy(this.lastError);
     }
     const channel = this.channel;
-    if (channel === undefined) return ctxs.map(() => ({ ok: false, decisions: [], error: this.lastError }));
+    if (channel === undefined) return failHealthy(this.lastError);
 
-    const bars = ctxs.map((ctx) => this.buildHookPayload(ctx)); // advances each symbol's bookkeeping slot
+    const bars = healthy.map((h) => this.buildHookPayload(h.ctx)); // only healthy symbols' bookkeeping advances
     this.seq += 1;
     channel.send({ t: 'hookBarMajor', seq: this.seq, hook: 'onBarClose', bars });
 
@@ -234,35 +267,38 @@ Model on `callHookBatch` (same open/ensureSymbolInit guards, same profiling shap
     const outcome = await channel.receive(this.callDeadline());
     if (SandboxSession.profileEnabled) {
       this.profIpcWaitMs += performance.now() - profT0;
-      this.profHookCalls += ctxs.length;   // logical hooks (unchanged vs lockstep)
-      this.profIpcMessages += 1;           // one round-trip for the whole bar (the collapse)
+      this.profHookCalls += healthy.length;   // logical hooks actually executed (latched excluded → parity with lockstep)
+      this.profBarMajorBatches += 1;          // one hookBarMajor round-trip (the collapse)
     }
 
     if (outcome.kind !== 'okBarMajor') {
       // channel death (eof/timeout/overflow/malformed/wrong-kind) → session-fatal
       const error = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
       this.fail(error);
-      return ctxs.map(() => ({ ok: false, decisions: [], error }));
+      return failHealthy(error);
     }
-    if (outcome.results.length !== ctxs.length) {
+    if (outcome.results.length !== healthy.length) {
       const error = this.mapFailure(
-        { kind: 'malformed', detail: `okBarMajor results length ${outcome.results.length} != ${ctxs.length}` },
+        { kind: 'malformed', detail: `okBarMajor results length ${outcome.results.length} != ${healthy.length}` },
         'onBarClose', 'sandbox_crashed',
       );
       this.fail(error);
-      return ctxs.map(() => ({ ok: false, decisions: [], error }));
+      return failHealthy(error);
     }
-    return outcome.results.map((r, i) => {
-      if (r.ok) return { ok: true, decisions: r.decisions };
+    for (let j = 0; j < healthy.length; j += 1) {
+      const r = outcome.results[j]!;
+      const h = healthy[j]!;
+      if (r.ok) { out[h.idx] = { ok: true, decisions: r.decisions }; continue; }
       // per-symbol soft failure: latch THIS symbol (mirror callHook's universe err branch), keep session.
       const error = this.mapFailure({ kind: 'err', code: r.error.code, detail: r.error.detail }, 'onBarClose', 'sandbox_crashed');
-      this.failedSymbols.set(ctxs[i]!.symbol, error);
-      return { ok: false, decisions: [], error };
-    });
+      this.failedSymbols.set(h.ctx.symbol, error);
+      out[h.idx] = { ok: false, decisions: [], error };
+    }
+    return out;
   }
 ```
 
-Add the profile field near `profInitCalls`: `private profInitCalls = 0;` → add `private profIpcMessages = 0;`. In `close()`'s emitted object add `ipcMessages: this.profIpcMessages,`.
+Add the profile field near `profInitCalls`: `private profInitCalls = 0;` → add `private profBarMajorBatches = 0;`. In `close()`'s emitted object add `barMajorBatches: this.profBarMajorBatches,`. (Named `barMajorBatches`, NOT `ipcMessages`: it increments ONLY in `callHookBarMajor`, so it counts hookBarMajor round-trips, not all IPC receives — `hookCalls` stays the logical count.)
 
 Note: confirm `mapFailure`'s accepted `outcome` shapes — reuse exactly the shapes `callHook`/`callHookBatch` pass it; if `mapFailure` needs a specific `err` object shape, match it (the `{ kind:'err', code, detail }` above must match what `mapFailure` reads — adjust to the real signature while implementing).
 
@@ -694,7 +730,7 @@ Add to the session test file:
 
 - [ ] **Step 4: ipc_profile assertion**
 
-With `BACKTESTER_IPC_PROFILE=true` (dynamic-import pattern from `sandbox-session-universe-profile.test.ts`), after a batched multi-bar run the emitted `ipc_profile` line has `ipcMessages` == bar count and `hookCalls` == N × bar count (logical unchanged) — proving the collapse is in round-trips, not logical executions.
+With `BACKTESTER_IPC_PROFILE=true` (dynamic-import pattern from `sandbox-session-universe-profile.test.ts`), after a batched multi-bar run the emitted `ipc_profile` line has `barMajorBatches` == bar count and `hookCalls` == N × bar count (logical unchanged) — proving the collapse is in round-trips, not logical executions.
 
 - [ ] **Step 5: Run + commit**
 
