@@ -8,6 +8,7 @@ import type { ArtifactManifest, ArtifactReference, ContentHash } from '@trading-
 import type {
   BacktestRunRequest,
   HoldoutMarker,
+  RunDiagnostics,
   RunPeriod,
   RunResultSummary,
 } from '@trading-backtester/sdk/contracts';
@@ -62,6 +63,7 @@ import { ObsRegistry, type DedupClass, type JobObsSample } from './obs-registry.
 import type { TrialLedger } from './ledger/trial-ledger.js';
 import { recordTrialAndComputeContext } from './ledger/record-trial.js';
 import { buildHoldoutMarker } from '../engine/holdout.js';
+import { computeRunDiagnostics } from '../engine/diagnostics.js';
 
 export { RunnerError };
 
@@ -113,6 +115,8 @@ export interface WorkerDeps extends CompletionDeps {
   trialEmpiricalMinN?: number;
   /** E4a: held-out OOS marker. Absent/disabled ⇒ no `holdout` field (byte-identical). */
   holdout?: { enabled: boolean; fraction: number };
+  /** E1b: structured run diagnostics. Absent/disabled ⇒ no `diagnostics` field (byte-identical). */
+  diagnostics?: { enabled: boolean; minTrades: number; concentrationPct: number };
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -254,6 +258,10 @@ async function finalizeResult(
   // Non-hashed (config-derived); flag-OFF ⇒ field absent ⇒ byte-identical.
   const holdout = await resolveHoldoutMarker(deps, claimed);
   if (holdout) summary = { ...summary, holdout };
+  // E1b (advisory, flag-gated): structured run diagnostics (facts + engine-derivable flags).
+  // Non-hashed; flag-OFF ⇒ field absent ⇒ byte-identical.
+  const diagnostics = resolveRunDiagnostics(deps, outcome);
+  if (diagnostics) summary = { ...summary, diagnostics };
   return { summary, manifest: persisted.manifest, resultHash };
 }
 
@@ -262,6 +270,25 @@ async function finalizeResult(
  * omitted ⇒ byte-identical). When on but the dataset's coverage span can't be found, returns an
  * explicit `unknown` marker (so a consumer distinguishes "feature off" from "coverage missing").
  */
+/**
+ * E1b: compute the advisory run diagnostics for a completed overlay/strategy run. `undefined` when
+ * the feature is off (field omitted ⇒ byte-identical). Pure over the run's trades/equity + the
+ * operator policy; the returned diagnostics ride the summary projection only.
+ */
+export function resolveRunDiagnostics(
+  deps: WorkerDeps,
+  outcome: Extract<RunOutcome, { status: 'completed' }>,
+): RunDiagnostics | undefined {
+  if (!deps.diagnostics?.enabled) return undefined;
+  return computeRunDiagnostics({
+    trades: outcome.baseline.trades,
+    equity: outcome.baseline.evidence.equityCurve,
+    barsProcessed: outcome.baseline.summary.barsProcessed,
+    orderCount: outcome.baseline.summary.ordersCount,
+    policy: { minTrades: deps.diagnostics.minTrades, concentrationPct: deps.diagnostics.concentrationPct },
+  });
+}
+
 export async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
   if (!deps.holdout?.enabled) return undefined;
   let coverage: RunPeriod | undefined;

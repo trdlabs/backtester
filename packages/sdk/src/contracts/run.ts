@@ -65,6 +65,32 @@ export interface HoldoutUnknown {
 }
 export type HoldoutMarker = HoldoutResolved | HoldoutUnknown;
 
+// E1b — structured run diagnostics (advisory; NOT part of the hashed result). Machine-readable facts
+// the engine can fully see + flags DERIVABLE from those facts + operator thresholds. Lab-only
+// judgments (suspected_overfit / hypothesis_mismatch) are NOT emitted here.
+export type RunDiagnosticFlag =
+  | 'no_entries'
+  | 'underpowered'
+  | 'single_trade_dominated'
+  | 'zero_exposure'
+  | 'all_losing';
+export interface RunDiagnostics {
+  readonly facts: {
+    readonly tradeCount: number;
+    readonly orderCount: number;
+    readonly barsProcessed: number;
+    /** Position-bars / total bars; MAY exceed 1 with concurrent positions. */
+    readonly exposureFraction: number;
+    readonly winningTrades: number;
+    readonly losingTrades: number;
+    readonly topTradeContributionPct: number;
+    readonly returnsCount: number;
+  };
+  readonly flags: readonly RunDiagnosticFlag[];
+  /** Operator thresholds that produced the flags (provenance). */
+  readonly policy: { readonly minTrades: number; readonly concentrationPct: number };
+}
+
 export interface BacktestRunRequest {
   readonly runId: string;
   readonly mode: RunMode;
@@ -205,6 +231,8 @@ export interface RunResultSummary {
   readonly trialContext?: TrialContext;
   /** E4a: advisory held-out OOS qualification marker; NOT covered by `resultHash`. */
   readonly holdout?: HoldoutMarker;
+  /** E1b: advisory structured run diagnostics (facts + flags); NOT covered by `resultHash`. */
+  readonly diagnostics?: RunDiagnostics;
 }
 
 export type CompletionEventType =
