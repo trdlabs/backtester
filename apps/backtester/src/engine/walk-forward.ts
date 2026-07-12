@@ -38,6 +38,9 @@ export function splitWalkForward(period: RunPeriod, scheme: WalkForwardScheme): 
   if (!Number.isSafeInteger(scheme.folds) || scheme.folds < 1) {
     throw new WalkForwardConfigError('walk-forward: `folds` must be a positive integer');
   }
+  if (scheme.mode !== 'rolling' && scheme.mode !== 'expanding') {
+    throw new WalkForwardConfigError('walk-forward: `mode` must be "rolling" or "expanding"');
+  }
 
   const segments = scheme.folds + 1;
   const total = toMs - fromMs;
