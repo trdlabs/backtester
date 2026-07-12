@@ -127,6 +127,10 @@ export interface AppConfig {
   readonly universeMemPerSymbolMb: number;
   /** Queue-wake LISTEN/NOTIFY enabled (Phase D item 16). Default off. */
   readonly queueNotify: boolean;
+  /** E2: trial ledger + advisory Deflated Sharpe enabled. Default off (dark launch). */
+  readonly trialLedger: boolean;
+  /** E2: N at/above which V[SR] switches asymptotic→empirical. Default 5. */
+  readonly trialEmpiricalMinN: number;
   /** Compute-lock TTL (ms). Default = workerLeaseTtlMs. */
   readonly computeLockTtlMs: number;
   /** compute_wait_attempts poison cap. Default 3. */
@@ -291,6 +295,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     universeMemBaseMb: Math.max(1, Math.floor(Number(env.BACKTESTER_UNIVERSE_MEM_BASE_MB ?? 128))) || 128,
     universeMemPerSymbolMb: Math.max(1, Math.floor(Number(env.BACKTESTER_UNIVERSE_MEM_PER_SYMBOL_MB ?? 8))) || 8,
     queueNotify: env.BACKTESTER_QUEUE_NOTIFY === 'true',
+    trialLedger: env.BACKTESTER_TRIAL_LEDGER === 'true',
+    trialEmpiricalMinN: Math.max(2, Math.floor(Number(env.BACKTESTER_TRIAL_EMPIRICAL_MIN_N ?? 5))) || 5,
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),

@@ -58,6 +58,8 @@ import { wakeComputeWaiters } from './coalesce/wake.js';
 import type { ResultCache } from './dedup/result-cache.js';
 import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.js';
 import { ObsRegistry, type DedupClass, type JobObsSample } from './obs-registry.js';
+import type { TrialLedger } from './ledger/trial-ledger.js';
+import { recordTrialAndComputeContext } from './ledger/record-trial.js';
 
 export { RunnerError };
 
@@ -101,6 +103,12 @@ export interface WorkerDeps extends CompletionDeps {
   batchBars?: number;
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap, no scaled policy (byte-identical). */
   universe?: { enabled: boolean; maxN: number; memBaseMb: number; memPerSymbolMb: number };
+  /** E2: per-hypothesis-family trial ledger. Absent ⇒ trial ledger + DSR OFF (kill-switch). */
+  trialLedger?: TrialLedger;
+  /** E2 master kill-switch: DSR/trialContext engages only when true AND trialLedger present. */
+  trialLedgerEnabled?: boolean;
+  /** E2: N at/above which V[SR] switches asymptotic→empirical (default 5). */
+  trialEmpiricalMinN?: number;
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -213,7 +221,7 @@ async function finalizeResult(
   }
   const outcome = payload as Extract<RunOutcome, { status: 'completed' }>;
   const persisted = await persistOverlayArtifacts(deps.artifactStore, outcome, datasetFingerprint);
-  const summary = toOverlaySummary(
+  let summary = toOverlaySummary(
     outcome,
     claimed.runId,
     persisted.artifactRefs,
@@ -222,6 +230,22 @@ async function finalizeResult(
     claimed.bundleHash,
     evidenceRef,
   );
+  // E2 (advisory, flag-gated): record this run as a trial and attach the Deflated Sharpe / N context.
+  // Runs AFTER resultHash is fixed; trialContext lives on the summary projection ONLY (never hashed),
+  // so flag-OFF is byte-identical. Momentum has no equity curve → not laddered.
+  if (deps.trialLedger && deps.trialLedgerEnabled) {
+    const trialContext = await recordTrialAndComputeContext(
+      { ledger: deps.trialLedger, empiricalMinN: deps.trialEmpiricalMinN ?? 5, clock: deps.clock },
+      {
+        request: claimed.request,
+        requestFingerprint: claimed.requestFingerprint,
+        runId: claimed.runId,
+        resultHash,
+        equity: outcome.baseline.evidence.equityCurve,
+      },
+    );
+    if (trialContext) summary = { ...summary, trialContext };
+  }
   return { summary, manifest: persisted.manifest, resultHash };
 }
 

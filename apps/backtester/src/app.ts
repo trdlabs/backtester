@@ -24,6 +24,8 @@ import { PgJobStore } from './jobs/pg-job-store';
 import { drainQueue, type WorkerDeps } from './jobs/worker';
 import { InMemoryResultCache } from './jobs/dedup/result-cache';
 import { PgResultCache } from './jobs/dedup/pg-result-cache';
+import { InMemoryTrialLedger } from './jobs/ledger/trial-ledger';
+import { PgTrialLedger } from './jobs/ledger/pg-trial-ledger';
 import { InMemoryComputeLockStore } from './jobs/coalesce/compute-lock.js';
 import { PgComputeLockStore } from './jobs/coalesce/pg-compute-lock.js';
 import { wakeComputeWaiters } from './jobs/coalesce/wake.js';
@@ -89,6 +91,12 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     }
   }
   const resultCache = ownedPool ? new PgResultCache(ownedPool) : new InMemoryResultCache();
+  // E2: construct the trial ledger only when enabled — flag-OFF stays fully inert (no Pg table dep).
+  const trialLedger = config.trialLedger
+    ? ownedPool
+      ? new PgTrialLedger(ownedPool)
+      : new InMemoryTrialLedger()
+    : undefined;
   const computeLock = config.coalesceEnabled
     ? (ownedPool ? new PgComputeLockStore(ownedPool) : new InMemoryComputeLockStore())
     : undefined;
@@ -169,6 +177,9 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     computeLockTtlMs: config.computeLockTtlMs,
     computeWaitMaxAttempts: config.computeWaitMaxAttempts,
     ...(obs ? { obs } : {}),
+    ...(trialLedger
+      ? { trialLedger, trialLedgerEnabled: true, trialEmpiricalMinN: config.trialEmpiricalMinN }
+      : {}),
     ...(overrides.evidenceSigningKey
       ? { evidenceSigningKey: overrides.evidenceSigningKey }
       : config.evidenceSigningKeyPem
