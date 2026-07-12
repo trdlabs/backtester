@@ -520,12 +520,20 @@ mechanism — unrequested ⇒ byte-identical results, INV preserved).
     generation (AlphaMemo pattern — «here are 3 similar hypotheses and why they failed»), it must
     never expose held-out/qualification-period (E4) outcomes, or the RAG layer itself becomes the
     test-leak channel.
-22. **E3 — walk-forward split runs (CPCV later).**
-    Split scheme as a first-class request parameter (rolling/expanding WF first); folds are
-    deterministic sub-runs riding the existing queue — dedup/coalescing/horizontal workers apply
-    per fold for free. Aggregated result carries per-fold metrics (E1) + fold-stability signal;
-    CPCV with purging+embargo (and PBO) is the follow-up slice (Arian et al. 2024: CPCV ≫ WF at
-    false-discovery prevention; WF is still the industry-standard floor).
+22. **E3 — walk-forward split runs (CPCV later).** Split into **E3a (substrate) ✅ SHIPPED** +
+    E3b (execution, open). **E3a** (`specs/2026-07-12-e3a-walk-forward-substrate-design.md`): pure
+    deterministic `splitWalkForward(period, {folds, mode})` → ordered train/test `FoldWindow[]`
+    (N+1 equal segments, expanding/rolling train, fail-fast typed error) + `aggregateFolds` →
+    transparent per-metric `{mean, population-stddev, min, max, positiveFraction}` surface;
+    contract types in the SDK. **Executes nothing — no submit/result wiring** (so no "silent WF"
+    impression); goldens byte-identical. **E3b (open):** server-side per-fold execution — the
+    invasive part (marketTape is materialized for the whole period, so folds need tape/period
+    slicing + a worker loop), `walkForward` request field + `RunResultSummary.walkForward` result,
+    `result_hash` over ordered fold payloads. NOTE (family-identity interaction): WF folds of one
+    hypothesis span DIFFERENT windows ⇒ DIFFERENT E2 families (period is in the family key), so WF
+    does NOT feed a family's trial count N — WF's value is OOS stability; N stays the
+    parameter-trial (same-window) axis. CPCV with purging+embargo (and PBO) is the follow-up after
+    E3b (Arian et al. 2024: CPCV ≫ WF at false-discovery prevention; WF is still the industry floor).
 23. **E4 — held-out OOS qualification window (BRAIN-style admission).**
     A server-declared qualification period the lab/LLM loop cannot iterate against — final
     submission only, single-use or hard-budgeted. The only systemic defense against adaptive
