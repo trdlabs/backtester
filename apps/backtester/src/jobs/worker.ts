@@ -101,6 +101,8 @@ export interface WorkerDeps extends CompletionDeps {
   barBatching?: boolean;
   /** 17d: bar-major execution mode — one bar across all symbols before advancing. Default off (dark launch). */
   barMajor?: boolean;
+  /** Slice B: collapse bar-major per-bar IPC into 3-phase batched transport. Pure sub-mode of barMajor — inert unless barMajor is also on. Default off (dark launch). */
+  barMajorBatch?: boolean;
   /** 17b: max bars per hookBatch (clamped >= 2 by config). */
   batchBars?: number;
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap, no scaled policy (byte-identical). */
@@ -608,6 +610,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         ...(sandboxRouter ? { router: sandboxRouter } : {}),
         ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
         ...(deps.barMajor === true ? { barMajor: true } : {}),
+        ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
         ...(deps.universe ? { universe: deps.universe } : {}),
       });
       if (outcome.status !== 'completed') {

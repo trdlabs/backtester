@@ -24,6 +24,17 @@ export interface ModuleExecutor {
     ctx: StrategyContext,
   ): Promise<readonly OverlayDecision[]>;
   /**
+   * Slice B (bar-major transport collapse). Один base-decision на item, index-aligned с `items`.
+   * trusted: byte-identical деградация — цикл `executeStrategyHook` по одному item. sandbox +
+   * universe: один `callHookBarMajor` round-trip на ВЕСЬ батч (реальный collapse); sandbox без
+   * universe: collapse невозможен (per-symbol сессии) — тот же lockstep-цикл, что и trusted.
+   * Fail-closed: ошибка/невалидное решение для item → `{ kind: 'idle' }` для ЭТОГО item (== то, что
+   * дал бы `firstDecision([])` в раннере), без влияния на другие items.
+   */
+  executeStrategyHookBarMajor(
+    items: readonly { module: StrategyModule; ctx: StrategyContext }[],
+  ): Promise<readonly StrategyDecision[]>;
+  /**
    * Session-lifecycle (НОВОЕ, опционально; 019). trusted: делегирует `module.init?`; sandbox: открыть
    * сессию + init-хук. Поведение 018 неизменно (InProcess делегирует ⇒ `check:018` зелёный).
    */
@@ -62,6 +73,18 @@ function normalizeOverlay(
 }
 
 /**
+ * Canonical "one base decision per item, else idle" reduction (Slice B review finding: this used to
+ * exist as three independent copies — `runner.ts`, `module-executor.ts`, `sandbox-executor.ts` — with
+ * nothing enforcing agreement). Single source of truth shared by all three; `runner.ts` and
+ * `sandbox-executor.ts` import this instead of defining their own. MUST stay byte-identical to the
+ * `{ kind: 'idle' }` fallback below — bar-major's result_hash parity with the lockstep runner depends
+ * on it.
+ */
+export function firstDecision(decisions: readonly StrategyDecision[]): StrategyDecision {
+  return decisions.length > 0 ? decisions[0]! : { kind: 'idle' };
+}
+
+/**
  * Прямой in-process trusted-исполнитель. Нормализует `decision | decision[] | null` → массив.
  * `init`/`dispose` (void) вызываются runner'ом напрямую — они не producing-decision хуки.
  */
@@ -88,6 +111,20 @@ export class InProcessTrustedModuleExecutor implements ModuleExecutor {
     ctx: StrategyContext,
   ): Promise<readonly OverlayDecision[]> {
     return normalizeOverlay(overlay.apply(ctx));
+  }
+
+  /**
+   * trusted: no batch collapse available (nothing to collapse over — direct in-process calls) —
+   * loop `executeStrategyHook` per item, byte-identical to calling it individually.
+   */
+  async executeStrategyHookBarMajor(
+    items: readonly { module: StrategyModule; ctx: StrategyContext }[],
+  ): Promise<readonly StrategyDecision[]> {
+    const out: StrategyDecision[] = [];
+    for (const it of items) {
+      out.push(firstDecision(await this.executeStrategyHook(it.module, 'onBarClose', it.ctx)));
+    }
+    return out;
   }
 
   /** trusted: прямой вызов `module.init?` (поведение 018 неизменно). */

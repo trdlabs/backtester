@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { BacktestRunRequest } from '@trading/research-contracts';
 import { runBoundedPool } from '../src/jobs/pool.js';
 import { runOverlayBacktest } from '../src/engine/run-overlay.js';
-import { createTrustedRouter, type ModuleExecutor } from '../src/engine/module-executor.js';
+import { createTrustedRouter, firstDecision, type ModuleExecutor } from '../src/engine/module-executor.js';
 import { buildTrustedRegistry } from '../src/engine/trusted-registry.js';
 import { buildOverlayDataset } from '../src/engine/data-adapter.js';
 import { FixtureDataPort } from '../src/data/reader.js';
@@ -50,6 +50,14 @@ describe('async overlap — runs interleave through the pool', () => {
       return {
         async executeStrategyHook() { if (!gated) { gated = true; await barrier.wait(); } return []; },
         async executeOverlayApply() { return []; },
+        async executeStrategyHookBarMajor(items) {
+          const out = [];
+          for (const it of items) {
+            const ds = await this.executeStrategyHook(it.module, 'onBarClose', it.ctx);
+            out.push(firstDecision(ds));
+          }
+          return out;
+        },
         async initStrategy() {},
         async disposeStrategy() {},
         close() {},

@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
 import { installDenyShims, classifyError } from './deny-shims.mjs';
 import { runHookBatch } from './hook-batch.mjs';
+import { runHookBarMajor } from './hook-bar-major.mjs';
 import { makeInstanceStore, symbolOf, resolveInstance } from './universe-instances.mjs';
 
 // Defense-in-depth: запрет спавна/shell + секрет-env (FR-006/019). Ставится ДО загрузки bundle —
@@ -39,6 +40,9 @@ const okBatch = (seq, stoppedAt, decisions) =>
   process.stdout.write(`${JSON.stringify({ t: 'okBatch', seq, stoppedAt, decisions })}\n`);
 const errBatch = (seq, hook, code, detail, barOffset) =>
   process.stdout.write(`${JSON.stringify({ t: 'err', seq, hook, code, detail: String(detail ?? '').slice(0, 4096), barOffset })}\n`);
+// Slice B — bar-major protocol line builder (see runHookBarMajor / handleHookBarMajor below).
+const okBarMajor = (seq, results) =>
+  process.stdout.write(`${JSON.stringify({ t: 'okBarMajor', seq, results })}\n`);
 
 /** Нормализовать вывод хука `decision | decision[] | null` → массив. */
 function normalize(out) {
@@ -171,6 +175,27 @@ async function handleHookBatch(msg) {
   }
 }
 
+// Slice B — thin wrapper: delegates the actual per-symbol dispatch to the sibling pure helper
+// (hook-bar-major.mjs) so the logic is importable/testable from the host (this file cannot run
+// there — it imports the untrusted bundle from a container-absolute path). `msg.bars[i]` is a
+// per-symbol entry for the SAME bar; each entry's own `snapshot.symbol` routes into `store`, so
+// (unlike handleHookBatch/handleHook) there is no single `symbolOf(msg)` slot guard here — a
+// missing slot for one entry is handled per-entry, inside runHookBarMajor.
+async function handleHookBarMajor(msg) {
+  try {
+    const r = await runHookBarMajor(msg.bars, msg.hook, store, {
+      rehydrateContext,
+      normalize,
+      pickHook: (inst, h) => pickHookFor(inst, h),
+      classifyError,
+    });
+    okBarMajor(msg.seq, r.results);
+  } catch (e) {
+    // A total escape (not a per-entry throw, which runHookBarMajor already caught) → coded error line.
+    err(msg.seq, msg.hook, classifyError(e), e && e.message ? e.message : e);
+  }
+}
+
 async function main() {
   const rl = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
   for await (const line of rl) {
@@ -189,6 +214,8 @@ async function main() {
       await handleHook(msg);
     } else if (msg.t === 'hookBatch') {
       await handleHookBatch(msg);
+    } else if (msg.t === 'hookBarMajor') {
+      await handleHookBarMajor(msg);
     } else {
       err(msg.seq, undefined, 'sandbox_output_malformed', `unknown request t=${String(msg.t)}`);
     }

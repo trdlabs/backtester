@@ -33,7 +33,7 @@ import { type CandleDataset, loadCandleDataset } from './dataset.js';
 import { ExecutionSimulator } from './execution.js';
 import { computeBarFunding } from './funding.js';
 import { computeComparison, computeMetrics, INITIAL_EQUITY } from './metrics.js';
-import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter } from './module-executor.js';
+import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter, firstDecision } from './module-executor.js';
 // Type-only (erased at runtime ⇒ 018 НЕ зависит от 019 в рантайме): форма реестра sandbox-политик
 // для additive-полей RunDeps. Sandbox-aware router передаётся явно через `deps.router` (строит 019).
 import type { SandboxPolicyRegistry } from './sandbox-policy.js';
@@ -64,6 +64,8 @@ export interface RunDeps {
   readonly universe?: { readonly enabled: boolean; readonly maxN: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
   /** Bar-major execution flip: N>1-symbol runs get per-symbol independent portfolios interleaved by union timestamp. Absent/false ⇒ symbol-major (default, byte-identical). N=1 unaffected either way. */
   readonly barMajor?: boolean;
+  /** Slice B: collapse the bar-major inner loop into a 3-phase batched form (one executeStrategyHookBarMajor call per union-ts instead of per-symbol onBarClose calls). Absent/false ⇒ Slice A interleave (default, byte-identical). Only meaningful when barMajor is on. */
+  readonly barMajorBatch?: boolean;
 }
 
 /** Поддерживаемые точки перехвата overlay (MVP). */
@@ -172,10 +174,6 @@ function stateAt(portfolio: Portfolio, mark: number): PerBarState {
     pendingIntent: null,
     portfolio: { equity: portfolio.equityAt(mark), openPositions: portfolio.openPositions },
   };
-}
-
-function firstDecision(decisions: readonly StrategyDecision[]): StrategyDecision {
-  return decisions.length > 0 ? decisions[0] : { kind: 'idle' };
 }
 
 /** Разбиение overlay'ев таргета по точкам перехвата. */
@@ -621,6 +619,7 @@ async function simulateTarget(
   marketTape: MarketTapeDataset | undefined,
   barBatching: { readonly maxBars: number } | undefined,
   barMajor: boolean,
+  barMajorBatch: boolean,
 ): Promise<BacktestRunResult> {
   const acc: RunAccumulators = {
     decisionRecords: [],
@@ -642,7 +641,7 @@ async function simulateTarget(
 
   let barsProcessed = 0;
   if (barMajor && request.symbols.length > 1) {
-    barsProcessed = await runBarMajor(target, request, dataset, engine, acc, params, overlays, marketTape);
+    barsProcessed = await runBarMajor(target, request, dataset, engine, acc, params, overlays, marketTape, barMajorBatch);
   } else {
     for (const symbol of request.symbols) {
       const candles = dataset.candles(symbol);
@@ -696,6 +695,7 @@ async function runBarMajor(
   params: Record<string, unknown>,
   overlays: OverlaySplit,
   marketTape: MarketTapeDataset | undefined,
+  barMajorBatch: boolean,
 ): Promise<number> {
   const envs: BarEnv[] = [];
   const perAcc: RunAccumulators[] = [];
@@ -730,15 +730,35 @@ async function runBarMajor(
     for (const env of envs) for (const c of env.candles) tsSet.add(c.ts);
     const unionTs = [...tsSet].sort((a, b) => a - b);
     for (const ts of unionTs) {
-      for (let s = 0; s < envs.length; s += 1) {   // request.symbols order (envs built in that order)
-        const env = envs[s];
-        const t = cursor[s];
-        if (env.candles[t]?.ts !== ts) continue;   // symbol absent at this ts
-        preBarStages(env, t);
-        const ctx = env.builder.build(t, stateAt(env.portfolio, env.candles[t].close));
-        const base = firstDecision(await env.strategyExec.executeStrategyHook(env.module, 'onBarClose', ctx));
-        await processBar(env, t, base);
-        cursor[s] += 1;
+      if (barMajorBatch) {
+        // 3-phase: preBarStages+build for all present symbols → ONE batched onBarClose → processBar all.
+        // Byte-identical to the interleave below: per-symbol portfolios/accs are independent, so the
+        // cross-symbol reorder within a bar cannot change any symbol's result.
+        const active: Array<{ env: BarEnv; t: number; ctx: StrategyContext }> = [];
+        for (let s = 0; s < envs.length; s += 1) {
+          const env = envs[s];
+          const t = cursor[s];
+          if (env.candles[t]?.ts !== ts) continue;
+          preBarStages(env, t);
+          active.push({ env, t, ctx: env.builder.build(t, stateAt(env.portfolio, env.candles[t].close)) });
+          cursor[s] += 1;
+        }
+        if (active.length === 0) continue;
+        const bases = await active[0]!.env.strategyExec.executeStrategyHookBarMajor(
+          active.map((a) => ({ module: a.env.module, ctx: a.ctx })),
+        );
+        for (let i = 0; i < active.length; i += 1) await processBar(active[i]!.env, active[i]!.t, bases[i]!);
+      } else {
+        for (let s = 0; s < envs.length; s += 1) {   // Slice A interleave — unchanged
+          const env = envs[s];
+          const t = cursor[s];
+          if (env.candles[t]?.ts !== ts) continue;   // symbol absent at this ts
+          preBarStages(env, t);
+          const ctx = env.builder.build(t, stateAt(env.portfolio, env.candles[t].close));
+          const base = firstDecision(await env.strategyExec.executeStrategyHook(env.module, 'onBarClose', ctx));
+          await processBar(env, t, base);
+          cursor[s] += 1;
+        }
       }
     }
 
@@ -976,6 +996,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
       marketTape,
       deps.barBatching,
       deps.barMajor === true,
+      deps.barMajorBatch === true,
     );
 
     let variant: BacktestRunResult | null = null;
@@ -991,6 +1012,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
         marketTape,
         deps.barBatching,
         deps.barMajor === true,
+        deps.barMajorBatch === true,
       );
       comparison = computeComparison(baseline, variant);
     }

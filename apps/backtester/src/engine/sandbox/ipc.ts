@@ -54,7 +54,16 @@ export interface HookBatchRequest {
   readonly bars: readonly HookBatchEntry[];
 }
 
-export type Request = InitRequest | HookRequest | HookBatchRequest;
+/** hookBarMajor-конверт (host → harness; Slice B): один конверт на бар, по одному entry на КАЖДЫЙ
+ *  символ того же бара (bars[i] = HookBatchEntry для символа i в порядке request.symbols). */
+export interface HookBarMajorRequest {
+  readonly t: 'hookBarMajor';
+  readonly seq: number;
+  readonly hook: 'onBarClose';
+  readonly bars: readonly HookBatchEntry[];
+}
+
+export type Request = InitRequest | HookRequest | HookBatchRequest | HookBarMajorRequest;
 
 /** Исход одного round-trip'а (harness → host) либо нарушение, детектированное host-стороной. */
 export type ReceiveOutcome =
@@ -64,6 +73,14 @@ export type ReceiveOutcome =
       readonly seq?: number;
       readonly stoppedAt: number;
       readonly decisions: readonly unknown[];
+    }
+  | {
+      readonly kind: 'okBarMajor';
+      readonly seq?: number;
+      readonly results: readonly (
+        | { readonly ok: true; readonly decisions: readonly unknown[] }
+        | { readonly ok: false; readonly error: { readonly code: string; readonly detail: string } }
+      )[];
     }
   | {
       readonly kind: 'err';

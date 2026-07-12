@@ -13,6 +13,8 @@ export interface StrategyRunDeps {
   readonly barBatching?: { readonly maxBars: number };
   /** 17d: bar-major execution mode — one bar across all symbols before advancing. Absent/false ⇒ symbol-major (byte-identical). */
   readonly barMajor?: boolean;
+  /** Slice B: collapse bar-major per-bar IPC into 3-phase batched transport. Pure sub-mode of barMajor — inert unless barMajor is also on. Absent/false ⇒ no batching (byte-identical). */
+  readonly barMajorBatch?: boolean;
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap (byte-identical). */
   readonly universe?: { readonly enabled: boolean; readonly maxN: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
 }
@@ -34,6 +36,7 @@ export async function runStrategyBacktest(
     ...(deps.router ? { router: deps.router } : {}),
     ...(deps.barBatching ? { barBatching: deps.barBatching } : {}),
     ...(deps.barMajor ? { barMajor: true } : {}),
+    ...(deps.barMajorBatch ? { barMajorBatch: true } : {}),
     ...(deps.universe ? { universe: deps.universe } : {}),
   });
 }
