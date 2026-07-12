@@ -131,6 +131,10 @@ export interface AppConfig {
   readonly trialLedger: boolean;
   /** E2: N at/above which V[SR] switches asymptotic→empirical. Default 5. */
   readonly trialEmpiricalMinN: number;
+  /** E4a: held-out OOS qualification marker enabled. Default off (dark launch). */
+  readonly holdout: boolean;
+  /** E4a: held-out window = last `holdoutFraction` of coverage. Only read when `holdout` is on. */
+  readonly holdoutFraction: number;
   /** Compute-lock TTL (ms). Default = workerLeaseTtlMs. */
   readonly computeLockTtlMs: number;
   /** compute_wait_attempts poison cap. Default 3. */
@@ -186,6 +190,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // Fail-fast: bar-major and bar-batching are mutually exclusive.
   if (env.BACKTESTER_BAR_MAJOR === 'true' && env.BACKTESTER_BAR_BATCHING === 'true') {
     throw new Error('BACKTESTER_BAR_MAJOR and BACKTESTER_BAR_BATCHING cannot both be enabled');
+  }
+  // Fail-fast (E4a): a bad holdout fraction must surface, not be silently clamped.
+  if (env.BACKTESTER_HOLDOUT_ENABLED === 'true') {
+    const f = Number(env.BACKTESTER_HOLDOUT_FRACTION);
+    if (!Number.isFinite(f) || f <= 0 || f >= 1) {
+      throw new Error('BACKTESTER_HOLDOUT_FRACTION must be a finite number in (0,1) when BACKTESTER_HOLDOUT_ENABLED');
+    }
   }
   const workerConcurrencyRaw = Number(env.WORKER_CONCURRENCY ?? 4);
   const workerConcurrency = Number.isFinite(workerConcurrencyRaw)
@@ -297,6 +308,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     queueNotify: env.BACKTESTER_QUEUE_NOTIFY === 'true',
     trialLedger: env.BACKTESTER_TRIAL_LEDGER === 'true',
     trialEmpiricalMinN: Math.max(2, Math.floor(Number(env.BACKTESTER_TRIAL_EMPIRICAL_MIN_N ?? 5))) || 5,
+    holdout: env.BACKTESTER_HOLDOUT_ENABLED === 'true',
+    holdoutFraction: Number(env.BACKTESTER_HOLDOUT_FRACTION) || 0.2,
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),

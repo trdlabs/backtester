@@ -49,6 +49,8 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     barMajor: false,
     trialLedger: false,
     trialEmpiricalMinN: 5,
+    holdout: false,
+    holdoutFraction: 0.2,
     batchBars: 64,
     universeSession: false,
     universeMaxN: 64,
