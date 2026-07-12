@@ -47,6 +47,7 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     coalesceEnabled: false,
     barBatching: false,
     barMajor: false,
+    barMajorBatch: false,
     batchBars: 64,
     universeSession: false,
     universeMaxN: 64,

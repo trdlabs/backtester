@@ -155,6 +155,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     coalesceEnabled: config.coalesceEnabled,
     barBatching: config.barBatching,
     barMajor: config.barMajor,
+    barMajorBatch: config.barMajorBatch,
     batchBars: config.batchBars,
     ...(config.universeSession
       ? {

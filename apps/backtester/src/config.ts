@@ -115,6 +115,8 @@ export interface AppConfig {
   readonly barBatching: boolean;
   /** 17d: bar-major execution mode — one bar across all symbols before advancing. Default off (dark launch). */
   readonly barMajor: boolean;
+  /** Slice B: collapse bar-major per-bar IPC into 3-phase batched transport. Pure sub-mode of barMajor — inert unless barMajor is also on. Default off (dark launch). */
+  readonly barMajorBatch: boolean;
   /** 17b: max bars per hookBatch (clamped >= 2). */
   readonly batchBars: number;
   /** 17c: run all symbols of a bundle in ONE container (N per-symbol instances). Default off (dark launch). */
@@ -283,6 +285,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     coalesceEnabled: env.BACKTESTER_COALESCE_ENABLED === 'true',
     barBatching: env.BACKTESTER_BAR_BATCHING === 'true',
     barMajor: env.BACKTESTER_BAR_MAJOR === 'true',
+    barMajorBatch: env.BACKTESTER_BAR_MAJOR_BATCH === 'true',
     // `|| 64` OUTSIDE the max: garbage → NaN → 64, while '0'/'1' clamp to the floor 2 (a falsy-zero
     // inside would silently resolve '0' to 64 — the master flag, not batchBars, is the off switch).
     batchBars: Math.max(2, Math.floor(Number(env.BACKTESTER_BATCH_BARS ?? 64))) || 64,
