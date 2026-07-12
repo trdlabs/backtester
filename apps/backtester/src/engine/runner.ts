@@ -33,7 +33,7 @@ import { type CandleDataset, loadCandleDataset } from './dataset.js';
 import { ExecutionSimulator } from './execution.js';
 import { computeBarFunding } from './funding.js';
 import { computeComparison, computeMetrics, INITIAL_EQUITY } from './metrics.js';
-import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter } from './module-executor.js';
+import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter, firstDecision } from './module-executor.js';
 // Type-only (erased at runtime ⇒ 018 НЕ зависит от 019 в рантайме): форма реестра sandbox-политик
 // для additive-полей RunDeps. Sandbox-aware router передаётся явно через `deps.router` (строит 019).
 import type { SandboxPolicyRegistry } from './sandbox-policy.js';
@@ -172,10 +172,6 @@ function stateAt(portfolio: Portfolio, mark: number): PerBarState {
     pendingIntent: null,
     portfolio: { equity: portfolio.equityAt(mark), openPositions: portfolio.openPositions },
   };
-}
-
-function firstDecision(decisions: readonly StrategyDecision[]): StrategyDecision {
-  return decisions.length > 0 ? decisions[0] : { kind: 'idle' };
 }
 
 /** Разбиение overlay'ев таргета по точкам перехвата. */

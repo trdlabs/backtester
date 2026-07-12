@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { runBacktest, type RunDeps } from '../src/engine/runner.js';
 import { createTrustedRegistry } from '../src/engine/registry.js';
-import { createTrustedRouter, type ModuleExecutor } from '../src/engine/module-executor.js';
+import { createTrustedRouter, firstDecision, type ModuleExecutor } from '../src/engine/module-executor.js';
 import type { CandleDataset } from '../src/engine/dataset.js';
 import { DEFAULT_RISK, DEFAULT_EXEC } from '../src/engine/profiles.js';
 import { shortAfterPump } from '../src/engine/examples/short-after-pump.strategy.js';
@@ -103,7 +103,7 @@ function makeLockstepOnlyExecutor(
       const out: StrategyDecision[] = [];
       for (const it of items) {
         const ds = await this.executeStrategyHook(it.module, 'onBarClose', it.ctx);
-        out.push(ds.length > 0 ? ds[0]! : { kind: 'idle' });
+        out.push(firstDecision(ds));
       }
       return out;
     },
@@ -150,7 +150,7 @@ function makeBatchExecutor(
       const out: StrategyDecision[] = [];
       for (const it of items) {
         const ds = await this.executeStrategyHook(it.module, 'onBarClose', it.ctx);
-        out.push(ds.length > 0 ? ds[0]! : { kind: 'idle' });
+        out.push(firstDecision(ds));
       }
       return out;
     },

@@ -15,7 +15,7 @@ import type {
   LifecycleHook,
   StrategyModule,
 } from '@trading/research-contracts/research';
-import type { ModuleExecutor } from '../module-executor.js';
+import { type ModuleExecutor, firstDecision } from '../module-executor.js';
 import type { ModuleBundle } from './bundle.js';
 import type { SandboxPolicy } from '../sandbox-policy.js';
 import { DockerDriver } from './docker-driver.js';
@@ -49,11 +49,6 @@ export interface SandboxExecutorDeps {
 /** Каталог собранного harness по умолчанию (dist/src/research/sandbox-harness). */
 export function defaultHarnessDir(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), '..', 'sandbox-harness');
-}
-
-/** Same "first or idle" reduction as `runner.ts`'s (unexported) `firstDecision`; kept in sync by inspection. */
-function firstDecisionOf(decisions: readonly StrategyDecision[]): StrategyDecision {
-  return decisions.length > 0 ? decisions[0]! : { kind: 'idle' };
 }
 
 /** Исполнитель хуков bundle в sandbox-контейнере; реализует 018 ModuleExecutor seam. */
@@ -220,13 +215,13 @@ export class SandboxModuleExecutor implements ModuleExecutor {
           this.record({ code: 'decision_schema_invalid', detail: rv.message, hook: 'onBarClose' }, items[i]!.ctx);
           return { kind: 'idle' } as StrategyDecision;
         }
-        return firstDecisionOf(rv.decisions);
+        return firstDecision(rv.decisions);
       });
     }
     // non-universe sandbox → no batch collapse possible (per-symbol sessions); loop lockstep.
     const out: StrategyDecision[] = [];
     for (const it of items) {
-      out.push(firstDecisionOf(await this.executeStrategyHook(it.module, 'onBarClose', it.ctx)));
+      out.push(firstDecision(await this.executeStrategyHook(it.module, 'onBarClose', it.ctx)));
     }
     return out;
   }

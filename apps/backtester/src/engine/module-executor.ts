@@ -72,8 +72,15 @@ function normalizeOverlay(
   return Array.isArray(out) ? (out as readonly OverlayDecision[]) : [out as OverlayDecision];
 }
 
-/** Same "first or idle" reduction as `runner.ts`'s (unexported) `firstDecision`; kept in sync by inspection. */
-function firstDecisionOf(decisions: readonly StrategyDecision[]): StrategyDecision {
+/**
+ * Canonical "one base decision per item, else idle" reduction (Slice B review finding: this used to
+ * exist as three independent copies — `runner.ts`, `module-executor.ts`, `sandbox-executor.ts` — with
+ * nothing enforcing agreement). Single source of truth shared by all three; `runner.ts` and
+ * `sandbox-executor.ts` import this instead of defining their own. MUST stay byte-identical to the
+ * `{ kind: 'idle' }` fallback below — bar-major's result_hash parity with the lockstep runner depends
+ * on it.
+ */
+export function firstDecision(decisions: readonly StrategyDecision[]): StrategyDecision {
   return decisions.length > 0 ? decisions[0]! : { kind: 'idle' };
 }
 
@@ -115,7 +122,7 @@ export class InProcessTrustedModuleExecutor implements ModuleExecutor {
   ): Promise<readonly StrategyDecision[]> {
     const out: StrategyDecision[] = [];
     for (const it of items) {
-      out.push(firstDecisionOf(await this.executeStrategyHook(it.module, 'onBarClose', it.ctx)));
+      out.push(firstDecision(await this.executeStrategyHook(it.module, 'onBarClose', it.ctx)));
     }
     return out;
   }
