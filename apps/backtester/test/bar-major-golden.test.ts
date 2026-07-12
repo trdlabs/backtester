@@ -41,12 +41,16 @@ import {
 } from './helpers-overlay-sandbox.js';
 import { DOCKER_AVAILABLE } from './store-factories.js';
 import { makeMultiSymbolDeps, makeRequest, resultHash } from './helpers/bar-major-fixture.js';
+import { BAR_MAJOR_GOLDEN } from './helpers/bar-major-golden-hash.js';
 
 // ---------------------------------------------------------------------------------------------
-// Golden freeze — Task 4's fixture, bar-major ON, N=2 (BTCUSDT/ETHUSDT).
+// Golden freeze — Task 4's fixture, bar-major ON, N=2 (BTCUSDT/ETHUSDT). The frozen hash itself
+// lives in `./helpers/bar-major-golden-hash.js` (a non-`.test.ts` module) so Task 7's
+// `bar-major-batch-golden.test.ts` can import it (do NOT retype the sha) without also re-running
+// this file's `describe`/`it` blocks as an import side effect — see that file's docstring for why
+// it does NOT compare the (unrelated fixture) short_after_pump/universe-multi Docker twin against
+// this constant.
 // ---------------------------------------------------------------------------------------------
-
-const BAR_MAJOR_GOLDEN = 'sha256:9da2192a459e6147bd4d5d52de6a327ed7b40b6520e107f93dabc3cff53ef977';
 
 describe('bar-major N>1 golden (new semantics)', () => {
   it('produces the committed bar-major result_hash on the fixture', async () => {

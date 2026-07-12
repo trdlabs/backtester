@@ -409,9 +409,26 @@ in flight" needs ~25–30 worker slots across several nodes (Docker daemon is a 
     (`sandbox-session-universe-interleave.test.ts`) asserting both the exact `A,B,A,B` hook-envelope
     order and each symbol's independently-monotonic `barIndex` sequence. Slice A only changes the
     HOST-side call order; it does **not** collapse the N-messages-per-bar transport (that stays 17c's
-    universe-session job) — **Slice B (sandbox transport collapse: batching bar-major's interleaved
-    calls into one message per bar across all symbols, composing with 17c's container collapse)
-    remains the outstanding perf win**, deferred as its own slice.
+    universe-session job) — Slice B closes that gap.
+
+    ✅ **Bar-major — Slice B (sandbox transport collapse) SHIPPED (branch
+    `feat/bar-major-slice-b-transport`, 2026-07-12)**: `BACKTESTER_BAR_MAJOR_BATCH`, default OFF
+    (only meaningful when `BACKTESTER_BAR_MAJOR` is also on), collapses the bar-major inner loop's
+    per-symbol `hook` calls into ONE `{t:'hookBarMajor'}` IPC round-trip per union-timestamp
+    carrying all N symbols' bars (`SandboxSession.callHookBarMajor`,
+    `executeStrategyHookBarMajor` on both the trusted and sandbox executors), preserving Slice A's
+    per-symbol fail-closed latch (one symbol's error doesn't kill the others) while making a
+    short/malformed/wrong-kind harness reply whole-session-fatal (not a per-symbol latch — a
+    transport-shape violation, unlike a strategy exception). Byte-identical OFF path; Docker-gated
+    golden (`bar-major-batch-golden.test.ts`) proves batch ON reproduces both the Slice A frozen
+    hash (trusted path, Task 4 fixture) and the fresh trusted-vs-sandbox twin (short_after_pump,
+    3-symbol `universe-multi.json`) byte-for-byte. `ipc_profile`'s `barMajorBatches` counter (one
+    per round-trip) confirms the collapse is in round-trips only — `hookCalls` (logical
+    (symbol,bar) executions) stays N×barCount, unchanged from the lockstep path. Composes with
+    17c's container collapse (this is the "1 container × 1 message per bar" endpoint the Slice A
+    note above pointed at). **Pending: VPS measurement before flipping the default on** — the win
+    is IPC round-trip count, and its real-world payoff (vs. Docker-daemon/network overhead on a
+    2c/4GB stand) needs the same live-profile treatment 17c got before its default flip.
 
     **Recommended order (2026-07-04):** Tier 0 hygiene slice (item 14) → Tier 2 lite (Pg pool knob +
     429 backpressure + SDK retry from item 16) → specs for 17b + 17c (writable now, perf-validated on

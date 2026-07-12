@@ -254,4 +254,78 @@ describe('SandboxSession.callHookBarMajor', () => {
     expect(r2[1]?.ok).toBe(false);
     expect(r2[1]?.error).toEqual(bbbError); // BBB's prior fail-closed error, remapped to its original index
   });
+
+  // Task 7 — wire proofs (flag OFF/ON round-trip collapse).
+
+  it('flag-OFF-equivalent: driving callHook per symbol (Slice A interleave) sends ZERO hookBarMajor envelopes', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const pA = session.callHook('onBarClose', makeCtx('AAA', 0));
+    writeOk(driver); // reply to init(AAA)
+    writeOk(driver); // reply to hook(AAA)
+    const rA = await pA;
+    expect(rA.ok).toBe(true);
+
+    const pB = session.callHook('onBarClose', makeCtx('BBB', 0));
+    writeOk(driver); // reply to init(BBB)
+    writeOk(driver); // reply to hook(BBB)
+    const rB = await pB;
+    expect(rB.ok).toBe(true);
+
+    const envelopes = driver.sent.filter((m) => (m as { t?: string }).t === 'hookBarMajor');
+    expect(envelopes).toHaveLength(0);
+    const hookEnvelopes = driver.sent.filter((m) => (m as { t?: string }).t === 'hook');
+    expect(hookEnvelopes).toHaveLength(2); // AAA + BBB, each its own round-trip
+  });
+
+  it('flag-ON: callHookBarMajor([ctxA,ctxB]) sends EXACTLY ONE hookBarMajor envelope with bars.length===2', async () => {
+    const { session, driver } = newUniverseSession();
+    const ctxAAA = makeCtx('AAA', 0);
+    const ctxBBB = makeCtx('BBB', 0);
+
+    const p = session.callHookBarMajor([ctxAAA, ctxBBB]);
+    writeOk(driver); // reply to init(AAA)
+    writeOk(driver); // reply to init(BBB)
+    driver.stdout.write(
+      `${JSON.stringify({
+        t: 'okBarMajor',
+        seq: 1,
+        results: [
+          { ok: true, decisions: [] },
+          { ok: true, decisions: [] },
+        ],
+      })}\n`,
+    );
+    await p;
+
+    const envelopes = driver.sent.filter((m): m is { t: string; bars: unknown[] } => (m as { t?: string }).t === 'hookBarMajor');
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0]?.bars).toHaveLength(2);
+  });
+
+  // Task 7 — channel-fatal guardrail 2, second shape: a non-okBarMajor reply (wrong response kind,
+  // not just a short results array) is session-fatal too, not a per-symbol latch.
+  it('a non-okBarMajor reply (wrong response kind) is session-fatal (fail), not a per-symbol latch', async () => {
+    const { session, driver } = newUniverseSession();
+    const ctxAAA = makeCtx('AAA', 0);
+    const ctxBBB = makeCtx('BBB', 0);
+
+    const p = session.callHookBarMajor([ctxAAA, ctxBBB]);
+    writeOk(driver); // reply to init(AAA)
+    writeOk(driver); // reply to init(BBB)
+    // Harness incorrectly replies with a plain `ok` (single-hook shape) instead of `okBarMajor`.
+    driver.stdout.write(`${JSON.stringify({ t: 'ok', decisions: [] })}\n`);
+    const results = await p;
+
+    expect(results).toHaveLength(2);
+    expect(results[0]?.ok).toBe(false);
+    expect(results[1]?.ok).toBe(false);
+    expect(driver.disposeCount).toBe(1); // session torn down — whole-session fatal, not a per-symbol latch
+
+    // A subsequent call on the now-dead session returns the session error, without a new spawn.
+    const r2 = await session.callHookBarMajor([makeCtx('AAA', 60_000)]);
+    expect(r2).toHaveLength(1);
+    expect(r2[0]?.ok).toBe(false);
+    expect(driver.spawnCount).toBe(1);
+  });
 });
