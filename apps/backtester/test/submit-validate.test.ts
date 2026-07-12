@@ -115,3 +115,38 @@ describe('submit validate — engine:strategy metric catalog (Gap 1 + Gap 2)', (
     ).resolves.toBeDefined();
   });
 });
+
+describe('submit validate — E1a expanded metric catalog', () => {
+  const E1A = [
+    'sortino',
+    'expectancy',
+    'sqn',
+    'cagr',
+    'calmar',
+    'returns_stddev',
+    'returns_skew',
+    'returns_kurtosis',
+    'returns_count',
+  ];
+
+  for (const metric of E1A) {
+    it(`engine:overlay + E1a metric (${metric}) is ACCEPTED`, async () => {
+      await expect(
+        submitRun(minimalDeps(), req({ engine: 'overlay', metrics: [metric] })),
+      ).resolves.toBeDefined();
+    });
+
+    it(`engine:strategy + E1a metric (${metric}) is ACCEPTED`, async () => {
+      await expect(
+        submitRun(
+          minimalDeps(),
+          req({
+            engine: 'strategy',
+            metrics: [metric],
+            curatedBaselineRef: { id: 'short_after_pump', version: '0.1.0' },
+          }),
+        ),
+      ).resolves.toBeDefined();
+    });
+  }
+});

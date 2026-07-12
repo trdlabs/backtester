@@ -4,6 +4,7 @@ import type { ContentHash } from '@trading-backtester/sdk/artifacts';
 import type { RunJobHandle, RunSubmitRequest } from '@trading-backtester/sdk/contracts';
 import { METRIC_CATALOG } from '@trading/research-contracts';
 import { METRIC_CATALOG as OVERLAY_METRIC_CATALOG } from '@trading/research-contracts/research';
+import { E1A_METRIC_CATALOG } from '../engine/metrics';
 import { validateBundle } from '../sandbox/bundle';
 import type { BundleStore } from '../sandbox/bundle-store';
 import { requestFingerprint, storedRequestFingerprint } from './fingerprint';
@@ -45,7 +46,7 @@ const VALID_MODES = new Set(['research', 'review', 'promotion']);
 const VALID_METRICS = new Set<string>(METRIC_CATALOG);
 // Overlay runs execute the lifted engine, whose metric vocabulary is the platform/research catalog
 // (sharpe, max_drawdown, …) rather than the momentum catalog. Gate accordingly.
-const VALID_OVERLAY_METRICS = new Set<string>(OVERLAY_METRIC_CATALOG);
+const VALID_OVERLAY_METRICS = new Set<string>([...OVERLAY_METRIC_CATALOG, ...E1A_METRIC_CATALOG]);
 
 function validate(req: RunSubmitRequest): void {
   if (!req || typeof req !== 'object') {

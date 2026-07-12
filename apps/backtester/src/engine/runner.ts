@@ -780,6 +780,16 @@ async function runBarMajor(
   }
 }
 
+const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000;
+
+/** Календарная длительность окна прогона в годах для cagr/calmar; `null` при непарсимом/непозитивном окне. */
+function elapsedYearsOf(period: BacktestRunRequest['period']): number | null {
+  const fromMs = Date.parse(period.from);
+  const toMs = Date.parse(period.to);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return null;
+  return (toMs - fromMs) / MS_PER_YEAR;
+}
+
 function assembleResult(
   target: RunTarget,
   request: BacktestRunRequest,
@@ -790,7 +800,8 @@ function assembleResult(
   coverage: CoverageModel | undefined,
   capitalModel?: RunEvidence['capitalModel'],
 ): BacktestRunResult {
-  const metrics = computeMetrics(request.metrics, acc.equityCurve, acc.trades);
+  const elapsedYears = elapsedYearsOf(request.period);
+  const metrics = computeMetrics(request.metrics, acc.equityCurve, acc.trades, { elapsedYears });
   const overlayRefs: readonly Ref[] = target.overlays.map((o) => refOf(o.manifest.id, o.manifest.version));
 
   const summary: RunSummary = {

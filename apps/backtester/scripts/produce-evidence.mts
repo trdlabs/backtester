@@ -101,7 +101,9 @@ export async function produceEvidence(opts: { fixturePath?: string }): Promise<P
   }
 
   // --- metrics → verdict ---
-  const metrics = computeMetrics(['sharpe', 'max_drawdown', 'win_rate', 'total_trades'], equity, trades);
+  const metrics = computeMetrics(['sharpe', 'max_drawdown', 'win_rate', 'total_trades'], equity, trades, {
+    elapsedYears: null,
+  });
   const verdict = decideVerdict(metrics);
 
   // --- bundleHash: raw-bytes sha256 of the self-contained bundle blob (Track B stand-in = fixture bytes) ---

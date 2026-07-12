@@ -1,5 +1,6 @@
 import { METRIC_CATALOG as MOMENTUM_METRIC_CATALOG } from '@trading/research-contracts';
 import { METRIC_CATALOG as OVERLAY_METRIC_CATALOG } from '@trading/research-contracts/research';
+import { E1A_METRIC_CATALOG } from './metrics.js';
 import { DEFAULT_RISK, DEFAULT_EXEC } from './profiles.js';
 import { shortAfterPump } from './examples/short-after-pump.strategy.js';
 import { earlyExitShortAfterPump } from './examples/early-exit-short-after-pump.overlay.js';
@@ -37,7 +38,10 @@ export const TRUSTED_REGISTRY_DEFINITION: RegistryDefinition = {
   riskProfiles: [DEFAULT_RISK],
   executionProfiles: [DEFAULT_EXEC],
   momentumMetricCatalog: MOMENTUM_METRIC_CATALOG,
-  overlayMetricCatalog: OVERLAY_METRIC_CATALOG,
+  // Advertised overlay vocabulary = external kernel catalog + E1a local extension. The default-overlay
+  // preset below deliberately stays on the kernel subset (stable preset-run output); E1a metrics are
+  // discoverable + submittable but opt-in per request (E2/E3 request them explicitly).
+  overlayMetricCatalog: [...OVERLAY_METRIC_CATALOG, ...E1A_METRIC_CATALOG],
   overlayRunPresets: [
     {
       id: 'default-overlay',
