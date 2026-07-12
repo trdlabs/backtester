@@ -262,7 +262,7 @@ async function finalizeResult(
  * omitted ⇒ byte-identical). When on but the dataset's coverage span can't be found, returns an
  * explicit `unknown` marker (so a consumer distinguishes "feature off" from "coverage missing").
  */
-async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
+export async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
   if (!deps.holdout?.enabled) return undefined;
   let coverage: RunPeriod | undefined;
   try {
