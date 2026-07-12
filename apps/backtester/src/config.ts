@@ -113,6 +113,8 @@ export interface AppConfig {
   readonly coalesceEnabled: boolean;
   /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Default off (dark launch). */
   readonly barBatching: boolean;
+  /** 17d: bar-major execution mode — one bar across all symbols before advancing. Default off (dark launch). */
+  readonly barMajor: boolean;
   /** 17b: max bars per hookBatch (clamped >= 2). */
   readonly batchBars: number;
   /** 17c: run all symbols of a bundle in ONE container (N per-symbol instances). Default off (dark launch). */
@@ -177,6 +179,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         }
       : {}),
   };
+  // Fail-fast: bar-major and bar-batching are mutually exclusive.
+  if (env.BACKTESTER_BAR_MAJOR === 'true' && env.BACKTESTER_BAR_BATCHING === 'true') {
+    throw new Error('BACKTESTER_BAR_MAJOR and BACKTESTER_BAR_BATCHING cannot both be enabled');
+  }
   const workerConcurrencyRaw = Number(env.WORKER_CONCURRENCY ?? 4);
   const workerConcurrency = Number.isFinite(workerConcurrencyRaw)
     ? Math.max(1, Math.floor(workerConcurrencyRaw))
@@ -276,6 +282,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     jobObs: env.BACKTESTER_JOB_OBS === 'true',
     coalesceEnabled: env.BACKTESTER_COALESCE_ENABLED === 'true',
     barBatching: env.BACKTESTER_BAR_BATCHING === 'true',
+    barMajor: env.BACKTESTER_BAR_MAJOR === 'true',
     // `|| 64` OUTSIDE the max: garbage → NaN → 64, while '0'/'1' clamp to the floor 2 (a falsy-zero
     // inside would silently resolve '0' to 64 — the master flag, not batchBars, is the off switch).
     batchBars: Math.max(2, Math.floor(Number(env.BACKTESTER_BATCH_BARS ?? 64))) || 64,

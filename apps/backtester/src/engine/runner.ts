@@ -45,6 +45,7 @@ import { detectProtection } from './protection.js';
 import { type TrustedModuleRegistry } from './registry.js';
 import { RiskEngine } from './risk.js';
 import { createSeededRng } from '../determinism/rng.js';
+import { mergeAccumulators } from './bar-major-aggregate.js';
 
 /** Зависимости прогона (contracts/runner-api.md §RunDeps; 019 additive — всё опционально). */
 export interface RunDeps {
@@ -61,6 +62,8 @@ export interface RunDeps {
   readonly barBatching?: { readonly maxBars: number };
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap, no scaled policy (byte-identical). */
   readonly universe?: { readonly enabled: boolean; readonly maxN: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
+  /** Bar-major execution flip: N>1-symbol runs get per-symbol independent portfolios interleaved by union timestamp. Absent/false ⇒ symbol-major (default, byte-identical). N=1 unaffected either way. */
+  readonly barMajor?: boolean;
 }
 
 /** Поддерживаемые точки перехвата overlay (MVP). */
@@ -135,7 +138,7 @@ export interface FundingLedgerEntry {
 }
 
 /** Аккумуляторы артефактов одного таргета. */
-interface RunAccumulators {
+export interface RunAccumulators {
   readonly decisionRecords: DecisionRecord[];
   readonly orders: MutableOrder[];
   readonly fills: SimulatedFill[];
@@ -499,6 +502,56 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
   acc.equityCurve.push({ barIndex: t, barTs: bar.ts, equity: portfolio.equityAt(bar.close) });
 }
 
+/** Setup half of `runSymbol` (17b/Task-3 refactor): grid/funding derivation, session init, `BarEnv` construction. Callers must ensure `candles.length >= 1`. */
+async function buildBarEnv(
+  symbol: string,
+  candles: readonly Readonly<Bar>[],
+  builder: PointInTimeContextBuilder,
+  strategy: ResolvedStrategy,
+  overlays: OverlaySplit,
+  portfolio: Portfolio,
+  engine: SimEngine,
+  acc: RunAccumulators,
+  marketTape: MarketTapeDataset | undefined,
+  barBatching: { readonly maxBars: number } | undefined,
+): Promise<BarEnv> {
+  const n = candles.length;
+  const { router, risk, exec, composer } = engine;
+  const gridMinutes = n > 1 ? (candles[1].ts - candles[0].ts) / 60_000 : 1;
+  const fundingCol = exec.fundingEnabled() ? marketTape?.funding(symbol) : undefined;
+  const gridTs = exec.fundingEnabled() ? candles.map((b) => b.ts) : [];
+  const module = strategy.module;
+  const strategyExec = router.forStrategy(strategy);
+
+  // 019: session-lifecycle через seam. trusted → module.init?(ctx) (поведение 018 неизменно);
+  // sandbox → открыть контейнер + init-хук. Вызывается всегда (sandbox-сессия открывается и без 'init').
+  await strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
+
+  return { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs, ...(barBatching ? { batch: barBatching } : {}) };
+}
+
+/** End-of-data half of `runSymbol` (17b/Task-3 refactor): expire leftover pending, forced MTM close, session dispose. Assumes `env.candles.length >= 1`. */
+async function finalizeSymbol(env: BarEnv): Promise<void> {
+  const { candles, portfolio, acc, strategyExec, module, builder } = env;
+  const n = candles.length;
+
+  // End-of-data: leftover pending (решение на ПОСЛЕДНЕМ баре, нет next-bar для settle) → expired
+  // (без сделки, без ошибки; FR-020, US5-AC3).
+  const expired = portfolio.expirePending();
+  if (expired !== null) {
+    const order = acc.orders.find((o) => o.id === expired.id);
+    if (order !== undefined) order.status = 'expired';
+  }
+
+  // End-of-data forced MTM открытой позиции.
+  const last = candles[n - 1];
+  const forced = portfolio.forcedMtmClose(n - 1, last.ts, last.close);
+  if (forced !== null) acc.trades.push(forced);
+
+  // 019: dispose через seam (trusted → module.dispose?; sandbox → dispose-хук, если объявлен).
+  await strategyExec.disposeStrategy?.(module, builder.build(n - 1, stateAt(portfolio, last.close)));
+}
+
 /** Детерминированный проход одного символа (внутри-барный порядок R8) с overlay-композицией. */
 async function runSymbol(
   symbol: string,
@@ -514,18 +567,8 @@ async function runSymbol(
 ): Promise<void> {
   const n = candles.length;
   if (n === 0) return;
-  const { router, risk, exec, composer } = engine;
-  const gridMinutes = n > 1 ? (candles[1].ts - candles[0].ts) / 60_000 : 1;
-  const fundingCol = exec.fundingEnabled() ? marketTape?.funding(symbol) : undefined;
-  const gridTs = exec.fundingEnabled() ? candles.map((b) => b.ts) : [];
-  const module = strategy.module;
-  const strategyExec = router.forStrategy(strategy);
-
-  // 019: session-lifecycle через seam. trusted → module.init?(ctx) (поведение 018 неизменно);
-  // sandbox → открыть контейнер + init-хук. Вызывается всегда (sandbox-сессия открывается и без 'init').
-  await strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
-
-  const env: BarEnv = { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs, ...(barBatching ? { batch: barBatching } : {}) };
+  const env = await buildBarEnv(symbol, candles, builder, strategy, overlays, portfolio, engine, acc, marketTape, barBatching);
+  const { strategyExec, module } = env;
 
   for (let t = 0; t < n; t += 1) {
     preBarStages(env, t);
@@ -564,21 +607,7 @@ async function runSymbol(
     await processBar(env, t, base);
   }
 
-  // End-of-data: leftover pending (решение на ПОСЛЕДНЕМ баре, нет next-bar для settle) → expired
-  // (без сделки, без ошибки; FR-020, US5-AC3).
-  const expired = portfolio.expirePending();
-  if (expired !== null) {
-    const order = acc.orders.find((o) => o.id === expired.id);
-    if (order !== undefined) order.status = 'expired';
-  }
-
-  // End-of-data forced MTM открытой позиции.
-  const last = candles[n - 1];
-  const forced = portfolio.forcedMtmClose(n - 1, last.ts, last.close);
-  if (forced !== null) acc.trades.push(forced);
-
-  // 019: dispose через seam (trusted → module.dispose?; sandbox → dispose-хук, если объявлен).
-  await strategyExec.disposeStrategy?.(module, builder.build(n - 1, stateAt(portfolio, last.close)));
+  await finalizeSymbol(env);
 }
 
 /** Детерминированный closed-candle проход одного таргета → `BacktestRunResult` (research R8). */
@@ -591,6 +620,7 @@ async function simulateTarget(
   executionProfileRef: Ref,
   marketTape: MarketTapeDataset | undefined,
   barBatching: { readonly maxBars: number } | undefined,
+  barMajor: boolean,
 ): Promise<BacktestRunResult> {
   const acc: RunAccumulators = {
     decisionRecords: [],
@@ -611,34 +641,143 @@ async function simulateTarget(
   const overlays = splitOverlays(target.overlays);
 
   let barsProcessed = 0;
-  for (const symbol of request.symbols) {
-    const candles = dataset.candles(symbol);
-    const builder = new PointInTimeContextBuilder({
-      run: { runId: target.runId, mode: request.mode, seed: request.seed },
-      params,
-      symbol,
-      candles,
-      rng: createSeededRng(request.seed),
-      // 023: лента передаётся в builder; ctx.market выставляется по составу ленты (composition-following).
-      ...(marketTape !== undefined ? { marketTape } : {}),
-    });
-    // Per-symbol изоляция module-state: если стратегия несёт `moduleFactory` (trusted), инстанцируем
-    // её свежей на КАЖДЫЙ символ — FSM-state в замыкании `createStrategyModule` не протекает между
-    // символами (паритет с sandbox, где каждый символ исполняется в своей сессии). Без фабрики —
-    // переиспользуем единственный `module` (поведение single-symbol неизменно).
-    const symbolStrategy =
-      target.strategy.moduleFactory !== undefined
-        ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
-        : target.strategy;
-    await runSymbol(symbol, candles, builder, symbolStrategy, overlays, portfolio, engine, acc, marketTape, barBatching);
-    barsProcessed += candles.length;
+  if (barMajor && request.symbols.length > 1) {
+    barsProcessed = await runBarMajor(target, request, dataset, engine, acc, params, overlays, marketTape);
+  } else {
+    for (const symbol of request.symbols) {
+      const candles = dataset.candles(symbol);
+      const builder = new PointInTimeContextBuilder({
+        run: { runId: target.runId, mode: request.mode, seed: request.seed },
+        params,
+        symbol,
+        candles,
+        rng: createSeededRng(request.seed),
+        // 023: лента передаётся в builder; ctx.market выставляется по составу ленты (composition-following).
+        ...(marketTape !== undefined ? { marketTape } : {}),
+      });
+      // Per-symbol изоляция module-state: если стратегия несёт `moduleFactory` (trusted), инстанцируем
+      // её свежей на КАЖДЫЙ символ — FSM-state в замыкании `createStrategyModule` не протекает между
+      // символами (паритет с sandbox, где каждый символ исполняется в своей сессии). Без фабрики —
+      // переиспользуем единственный `module` (поведение single-symbol неизменно).
+      const symbolStrategy =
+        target.strategy.moduleFactory !== undefined
+          ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
+          : target.strategy;
+      await runSymbol(symbol, candles, builder, symbolStrategy, overlays, portfolio, engine, acc, marketTape, barBatching);
+      barsProcessed += candles.length;
+    }
   }
 
   // 023: coverage заполняется ТОЛЬКО когда лента реально несёт OI/liquidations (есть present-entry).
   // bar_close-only лента (как и OHLCV-only) → coverage undefined → байт-идентичность 018 (SC-001).
   const cov = marketTape !== undefined ? marketTape.coverage() : undefined;
   const coverage = cov !== undefined && cov.entries.some((e) => e.present) ? cov : undefined;
-  return assembleResult(target, request, acc, barsProcessed, riskProfileRef, executionProfileRef, coverage);
+  // Task 5: bar-major (N>1) capitalises N per-symbol accounts equally; symbol-major/N=1 stays
+  // undefined so the evidence key is omitted and outputs remain byte-identical (SC-001 style).
+  const capitalModel: RunEvidence['capitalModel'] =
+    barMajor && request.symbols.length > 1
+      ? {
+          model: 'equal_weight_per_symbol' as const,
+          perSymbolInitialEquity: INITIAL_EQUITY,
+          symbolCount: request.symbols.length,
+          aggregateBaseline: INITIAL_EQUITY * request.symbols.length,
+        }
+      : undefined;
+  return assembleResult(target, request, acc, barsProcessed, riskProfileRef, executionProfileRef, coverage, capitalModel);
+}
+
+/** Bar-major driver: per-symbol Portfolio, interleaved by union timestamp, aggregated into `acc`. */
+async function runBarMajor(
+  target: RunTarget,
+  request: BacktestRunRequest,
+  dataset: CandleDataset,
+  engine: SimEngine,
+  acc: RunAccumulators,
+  params: Record<string, unknown>,
+  overlays: OverlaySplit,
+  marketTape: MarketTapeDataset | undefined,
+): Promise<number> {
+  const envs: BarEnv[] = [];
+  const perAcc: RunAccumulators[] = [];
+  const finalized = new Set<BarEnv>();
+  try {
+    // Phase 1 — setup: one BarEnv (own Portfolio + own acc) per NON-EMPTY symbol.
+    for (const symbol of request.symbols) {
+      const candles = dataset.candles(symbol);
+      if (candles.length === 0) continue; // parity with runSymbol's `n===0` early return — no init for a data-less symbol
+      const builder = new PointInTimeContextBuilder({
+        run: { runId: target.runId, mode: request.mode, seed: request.seed },
+        params, symbol, candles, rng: createSeededRng(request.seed),
+        ...(marketTape !== undefined ? { marketTape } : {}),
+      });
+      const symbolStrategy = target.strategy.moduleFactory !== undefined
+        ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
+        : target.strategy;
+      const symAcc: RunAccumulators = {
+        decisionRecords: [], orders: [], fills: [], riskDecisions: [],
+        trades: [], equityCurve: [], fundingLedger: [], validationIssues: [],
+      };
+      const portfolio = new Portfolio(INITIAL_EQUITY);
+      // barBatching is undefined in bar-major (flags mutually exclusive).
+      const env = await buildBarEnv(symbol, candles, builder, symbolStrategy, overlays, portfolio, engine, symAcc, marketTape, undefined);
+      envs.push(env);
+      perAcc.push(symAcc);
+    }
+
+    // Phase 2 — bar-major loop over the sorted union timeline; per-symbol cursor.
+    const cursor = envs.map(() => 0);
+    const tsSet = new Set<number>();
+    for (const env of envs) for (const c of env.candles) tsSet.add(c.ts);
+    const unionTs = [...tsSet].sort((a, b) => a - b);
+    for (const ts of unionTs) {
+      for (let s = 0; s < envs.length; s += 1) {   // request.symbols order (envs built in that order)
+        const env = envs[s];
+        const t = cursor[s];
+        if (env.candles[t]?.ts !== ts) continue;   // symbol absent at this ts
+        preBarStages(env, t);
+        const ctx = env.builder.build(t, stateAt(env.portfolio, env.candles[t].close));
+        const base = firstDecision(await env.strategyExec.executeStrategyHook(env.module, 'onBarClose', ctx));
+        await processBar(env, t, base);
+        cursor[s] += 1;
+      }
+    }
+
+    // Phase 3 — teardown per symbol in request.symbols order.
+    let barsProcessed = 0;
+    for (const env of envs) {
+      await finalizeSymbol(env);
+      finalized.add(env);
+      barsProcessed += env.candles.length;
+    }
+
+    // Phase 4 — aggregate N per-symbol accs into the outer acc.
+    const merged = mergeAccumulators(perAcc);
+    acc.decisionRecords.push(...merged.decisionRecords);
+    acc.orders.push(...merged.orders);
+    acc.fills.push(...merged.fills);
+    acc.riskDecisions.push(...merged.riskDecisions);
+    acc.trades.push(...merged.trades);
+    acc.equityCurve.push(...merged.equityCurve);
+    acc.fundingLedger.push(...merged.fundingLedger);
+    acc.validationIssues.push(...merged.validationIssues);
+    return barsProcessed;
+  } finally {
+    // Best-effort teardown of any env built but not finalized (setup/loop threw mid-way): bar-major
+    // holds N live module instances at once, so a partial failure must not leak per-symbol resources.
+    // Sandbox container sessions are also closed by runBacktest's `finally { router.closeAll(); }`;
+    // this covers the trusted `module.dispose` seam and is idempotent-safe via the `finalized` guard.
+    for (const env of envs) {
+      if (finalized.has(env)) continue;
+      try {
+        await env.strategyExec.disposeStrategy?.(
+          env.module,
+          env.builder.build(env.candles.length - 1, stateAt(env.portfolio, env.candles[env.candles.length - 1].close)),
+        );
+      } catch {
+        /* best-effort cleanup — swallow so the original error propagates */
+      }
+    }
+  }
 }
 
 function assembleResult(
@@ -649,6 +788,7 @@ function assembleResult(
   riskProfileRef: Ref,
   executionProfileRef: Ref,
   coverage: CoverageModel | undefined,
+  capitalModel?: RunEvidence['capitalModel'],
 ): BacktestRunResult {
   const metrics = computeMetrics(request.metrics, acc.equityCurve, acc.trades);
   const overlayRefs: readonly Ref[] = target.overlays.map((o) => refOf(o.manifest.id, o.manifest.version));
@@ -682,6 +822,8 @@ function assembleResult(
     ...(coverage !== undefined ? { coverage } : {}),
     // 035 (realism): только при наличии зарядов (DEFAULT_EXEC → пусто → ключ не добавляется → байт-идентичность).
     ...(acc.fundingLedger.length > 0 ? { fundingLedger: acc.fundingLedger } : {}),
+    // Bar-major only (Task 5): только при N>1 bar-major → ключ не добавляется на symbol-major/N=1 → байт-идентичность.
+    ...(capitalModel !== undefined ? { capitalModel } : {}),
   };
 
   return {
@@ -822,6 +964,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
       request.executionProfileRef,
       marketTape,
       deps.barBatching,
+      deps.barMajor === true,
     );
 
     let variant: BacktestRunResult | null = null;
@@ -836,6 +979,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
         request.executionProfileRef,
         marketTape,
         deps.barBatching,
+        deps.barMajor === true,
       );
       comparison = computeComparison(baseline, variant);
     }
