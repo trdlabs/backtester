@@ -94,6 +94,9 @@ export class SandboxSession {
   // credited to profOpenMs (an init/startup cost, symmetric with the non-universe init inside
   // openInner); this counts them so the profile surfaces them instead of dropping them silently.
   private profInitCalls = 0;
+  // Slice B: one hookBarMajor round-trip (N symbols' bars collapsed into a single IPC envelope).
+  // Distinct from profHookCalls, which still counts the underlying per-symbol logical hook calls.
+  private profBarMajorBatches = 0;
   private profClosed = false;
 
   constructor(
@@ -465,6 +468,84 @@ export class SandboxSession {
     return finish({ ok: false, stoppedAt: -1, error });
   }
 
+  /**
+   * Slice B: one IPC round-trip carrying all N symbols' onBarClose increments. Returns one HookResult
+   * per ctx (index-aligned). Per-symbol harness error → that symbol's HookResult is fail-closed AND
+   * latched (same path as callHook's universe err branch). A malformed/short response or channel death
+   * is session-fatal.
+   */
+  async callHookBarMajor(ctxs: readonly StrategyContext[]): Promise<readonly HookResult[]> {
+    if (this.failed) return ctxs.map(() => ({ ok: false, decisions: [], error: this.lastError }));
+    // Latched symbols (universe per-symbol fail-closed) must NOT be re-sent — mirror callHook's early
+    // fail-closed-WITHOUT-send. Partition into healthy (sent) and latched (resolved locally from the
+    // prior error), send only healthy, then remap results back to the original ctx indices.
+    const out: HookResult[] = new Array(ctxs.length);
+    const healthy: { ctx: StrategyContext; idx: number }[] = [];
+    for (let i = 0; i < ctxs.length; i += 1) {
+      const prior = this.failedSymbols.get(ctxs[i]!.symbol);
+      if (prior !== undefined) out[i] = { ok: false, decisions: [], error: prior };
+      else healthy.push({ ctx: ctxs[i]!, idx: i });
+    }
+    if (healthy.length === 0) return out; // all latched → no IPC send, no counter increments
+
+    const failHealthy = (error: SessionError | undefined): readonly HookResult[] => {
+      for (const h of healthy) out[h.idx] = { ok: false, decisions: [], error };
+      return out;
+    };
+    if (this.channel === undefined) {
+      const opened = await this.open();
+      if (!opened.ok) return failHealthy(this.lastError);
+    }
+    // Per-symbol lazy init handshakes (universe): one per not-yet-initialized HEALTHY symbol, in order.
+    for (const h of healthy) {
+      const f = await this.ensureSymbolInit(h.ctx);
+      if (f !== undefined) return failHealthy(this.lastError);
+    }
+    const channel = this.channel;
+    if (channel === undefined) return failHealthy(this.lastError);
+
+    const bars = healthy.map((h) => this.buildHookPayload(h.ctx)); // only healthy symbols' bookkeeping advances
+    this.seq += 1;
+    channel.send({ t: 'hookBarMajor', seq: this.seq, hook: 'onBarClose', bars });
+
+    const profT0 = SandboxSession.profileEnabled ? performance.now() : 0;
+    const outcome = await channel.receive(this.callDeadline());
+    if (SandboxSession.profileEnabled) {
+      this.profIpcWaitMs += performance.now() - profT0;
+      this.profHookCalls += healthy.length; // logical hooks actually executed (latched excluded → parity with lockstep)
+      this.profBarMajorBatches += 1; // one hookBarMajor round-trip (the collapse)
+    }
+
+    if (outcome.kind !== 'okBarMajor') {
+      // channel death (eof/timeout/overflow/malformed/wrong-kind) → session-fatal
+      const error = this.mapFailure(outcome, 'onBarClose', 'sandbox_crashed');
+      this.fail(error);
+      return failHealthy(error);
+    }
+    if (outcome.results.length !== healthy.length) {
+      const error = this.mapFailure(
+        { kind: 'malformed', detail: `okBarMajor results length ${outcome.results.length} != ${healthy.length}` },
+        'onBarClose',
+        'sandbox_crashed',
+      );
+      this.fail(error);
+      return failHealthy(error);
+    }
+    for (let j = 0; j < healthy.length; j += 1) {
+      const r = outcome.results[j]!;
+      const h = healthy[j]!;
+      if (r.ok) {
+        out[h.idx] = { ok: true, decisions: r.decisions };
+        continue;
+      }
+      // per-symbol soft failure: latch THIS symbol (mirror callHook's universe err branch), keep session.
+      const error = this.mapFailure({ kind: 'err', code: r.error.code, detail: r.error.detail }, 'onBarClose', 'sandbox_crashed');
+      this.failedSymbols.set(h.ctx.symbol, error);
+      out[h.idx] = { ok: false, decisions: [], error };
+    }
+    return out;
+  }
+
   /** Закрыть контейнер: EOF на stdin + принудительная детерминированная очистка (idempotent). */
   close(): void {
     if (SandboxSession.profileEnabled && !this.profClosed && this.profHookCalls > 0) {
@@ -475,6 +556,7 @@ export class SandboxSession {
         symbol: this.cfg.symbol,
         hookCalls: this.profHookCalls,
         symbolInits: this.profInitCalls,
+        barMajorBatches: this.profBarMajorBatches,
         ipcWaitMs: Math.round(this.profIpcWaitMs),
         openMs: Math.round(this.profOpenMs),
         avgIpcWaitMsPerHook: Number((this.profIpcWaitMs / this.profHookCalls).toFixed(3)),
