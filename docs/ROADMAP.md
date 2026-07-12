@@ -488,16 +488,22 @@ Sequencing is dependency-driven (E1 is the substrate for everything above it); e
 additive and keeps the golden-gate merge bar (new metrics ride the existing requested-`metrics`
 mechanism — unrequested ⇒ byte-identical results, INV preserved).
 
-20. **E1 — metric catalog expansion + structured failure feedback (substrate slice).**
-    Split into **E1a (metrics) ✅ SHIPPED (PR #103, squash `8c89f66`)** + E1b (feedback, open).
-    E1a added request-gated `sortino/expectancy/sqn/cagr(calendar)/calmar` + DSR moments
+20. **E1 — metric catalog expansion + structured failure feedback.** Split into **E1a (metrics)
+    ✅ SHIPPED (#103)** + **E1b (diagnostics) ✅ SHIPPED**. E1a added request-gated
+    `sortino/expectancy/sqn/cagr(calendar)/calmar` + DSR moments
     `returns_stddev/skew/kurtosis(Pearson)/count` via a shared `computeReturnsStats` (sharpe
-    refactored byte-identically). Design:
-    `specs/2026-07-12-e1a-metrics-catalog-design.md`. **E1b (open):** the machine-readable failure
-    channel for the LLM loop — quality vector, failure-mode category (no_entries / suspected_overfit
-    / complexity_violation / hypothesis_mismatch — mostly lab-side, engine emits facts), per-trade
-    diagnostics artifact; lab-side loop KPIs (hit ratio, dev success rate). Pattern: AlphaAgent
-    (+81 % hit ratio). rolling-Sharpe deferred to Tier 2 (a series, not a scalar).
+    refactored byte-identically); design `specs/2026-07-12-e1a-metrics-catalog-design.md`.
+    **E1b** (`specs/2026-07-12-e1b-run-diagnostics-design.md`): pure `computeRunDiagnostics` →
+    `RunResultSummary.diagnostics` (non-hashed) = deterministic FACTS (tradeCount, orderCount,
+    barsProcessed, exposureFraction [position-bars/total, may exceed 1], winning/losing,
+    topTradeContributionPct, returnsCount) + engine-DERIVABLE flags (no_entries / underpowered /
+    single_trade_dominated / zero_exposure / all_losing) against config thresholds
+    (`BACKTESTER_RUN_DIAGNOSTICS` OFF, `BACKTESTER_DIAG_MIN_TRADES` 30, `_CONCENTRATION_PCT` 80).
+    **Boundary invariant:** the engine emits only facts it fully sees + flags derivable from them;
+    the lab-only judgments (suspected_overfit / hypothesis_mismatch) stay lab-side (need hypothesis
+    text / cross-run context). Closes the trade-level power gap DSR-on-bars misses (few trades / zero
+    exposure). Pattern: AlphaAgent (+81 % hit ratio). Deferred: request-supplied thresholds, per-trade
+    diagnostics artifact, lab-side categories + loop KPIs, rolling-Sharpe (Tier 2 series).
 21. ✅ **E2 — trial ledger + Deflated Sharpe (advisory) SHIPPED.** Design:
     `specs/2026-07-12-e2-trial-ledger-dsr-design.md`. Server-side per-family trial ledger
     (`InMemory`/`Pg`, migration 0007, dedupe `UNIQUE(family_key, request_fingerprint)` so

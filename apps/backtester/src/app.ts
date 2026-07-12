@@ -182,6 +182,9 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       ? { trialLedger, trialLedgerEnabled: true, trialEmpiricalMinN: config.trialEmpiricalMinN }
       : {}),
     ...(config.holdout ? { holdout: { enabled: true, fraction: config.holdoutFraction } } : {}),
+    ...(config.runDiagnostics
+      ? { diagnostics: { enabled: true, minTrades: config.diagMinTrades, concentrationPct: config.diagConcentrationPct } }
+      : {}),
     ...(overrides.evidenceSigningKey
       ? { evidenceSigningKey: overrides.evidenceSigningKey }
       : config.evidenceSigningKeyPem

@@ -137,6 +137,12 @@ export interface AppConfig {
   readonly holdout: boolean;
   /** E4a: held-out window = last `holdoutFraction` of coverage. Only read when `holdout` is on. */
   readonly holdoutFraction: number;
+  /** E1b: structured run diagnostics enabled. Default off (dark launch). */
+  readonly runDiagnostics: boolean;
+  /** E1b: `underpowered` flag threshold (trades). Default 30. */
+  readonly diagMinTrades: number;
+  /** E1b: `single_trade_dominated` flag threshold (% of gross profit). Default 80. */
+  readonly diagConcentrationPct: number;
   /** Compute-lock TTL (ms). Default = workerLeaseTtlMs. */
   readonly computeLockTtlMs: number;
   /** compute_wait_attempts poison cap. Default 3. */
@@ -313,6 +319,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     trialEmpiricalMinN: Math.max(2, Math.floor(Number(env.BACKTESTER_TRIAL_EMPIRICAL_MIN_N ?? 5))) || 5,
     holdout: env.BACKTESTER_HOLDOUT_ENABLED === 'true',
     holdoutFraction: Number(env.BACKTESTER_HOLDOUT_FRACTION) || 0.2,
+    runDiagnostics: env.BACKTESTER_RUN_DIAGNOSTICS === 'true',
+    diagMinTrades: Math.max(0, Math.floor(Number(env.BACKTESTER_DIAG_MIN_TRADES ?? 30))) || 30,
+    diagConcentrationPct: Math.max(0, Number(env.BACKTESTER_DIAG_CONCENTRATION_PCT ?? 80)) || 80,
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),
