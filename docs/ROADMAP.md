@@ -472,18 +472,30 @@ additive and keeps the golden-gate merge bar (new metrics ride the existing requ
 mechanism — unrequested ⇒ byte-identical results, INV preserved).
 
 20. **E1 — metric catalog expansion + structured failure feedback (substrate slice).**
-    Sortino/Calmar/CAGR/expectancy/SQN/rolling-Sharpe + per-symbol/per-exit-reason breakdowns
-    (pure functions over existing equity/trades; additive via requested-metrics). Plus the
-    machine-readable failure channel for the LLM loop: quality vector, failure-mode category
-    (no_entries / suspected_overfit / complexity_violation / hypothesis_mismatch), per-trade
-    diagnostics artifact. Lab-side loop KPIs (hit ratio, development success rate) consume it.
-    Pattern: AlphaAgent (+81 % hit ratio from this discipline alone).
-21. **E2 — trial ledger + Deflated Sharpe gate (dark-launch as advisory first).**
-    Server-side count of trials per hypothesis family (extends the existing fingerprint layer).
-    DSR computed from Sharpe + return moments (needs E1); admission threshold scales with N;
-    N + DSR recorded into the signed evidence bundle («provable rigor» on top of provable
-    reproducibility). Report-only first, gate flip later. Basis: Bailey & López de Prado
-    (SSRN 2460551) — SR 2.5 over 5y fails the 95 % gate at N=100 trials.
+    Split into **E1a (metrics) ✅ SHIPPED (PR #103, squash `8c89f66`)** + E1b (feedback, open).
+    E1a added request-gated `sortino/expectancy/sqn/cagr(calendar)/calmar` + DSR moments
+    `returns_stddev/skew/kurtosis(Pearson)/count` via a shared `computeReturnsStats` (sharpe
+    refactored byte-identically). Design:
+    `specs/2026-07-12-e1a-metrics-catalog-design.md`. **E1b (open):** the machine-readable failure
+    channel for the LLM loop — quality vector, failure-mode category (no_entries / suspected_overfit
+    / complexity_violation / hypothesis_mismatch — mostly lab-side, engine emits facts), per-trade
+    diagnostics artifact; lab-side loop KPIs (hit ratio, dev success rate). Pattern: AlphaAgent
+    (+81 % hit ratio). rolling-Sharpe deferred to Tier 2 (a series, not a scalar).
+21. ✅ **E2 — trial ledger + Deflated Sharpe (advisory) SHIPPED.** Design:
+    `specs/2026-07-12-e2-trial-ledger-dsr-design.md`. Server-side per-family trial ledger
+    (`InMemory`/`Pg`, migration 0007, dedupe `UNIQUE(family_key, request_fingerprint)` so
+    replay/cache-hit never inflates N) + pure `deflated-sharpe.ts` (own normal CDF/inverse-CDF, no
+    `Math.erf`). Hybrid V[SR]: asymptotic `(1+0.5·SR²)/T` for small N, empirical sample-variance of
+    stored trial Sharpes for `N≥empiricalMinN` (default 5); cold-start `N≤1 ⇒ sr0=0` (PSR vs 0).
+    Family key = `sha256({hint: trialFamilyHint ?? moduleRef.id, datasetRef, symbols sorted,
+    timeframe, period})` — market context AND window scope V[SR] to comparable trials. Recorded into
+    a NON-hashed `RunResultSummary.trialContext` (DSR is stateful → out of `result_hash`), computed
+    from the equity curve independent of `request.metrics`. **Advisory: `decideVerdict` unchanged;
+    `BACKTESTER_TRIAL_LEDGER` default OFF (flag-OFF byte-identical, goldens green).** Ownership =
+    hybrid (server counts, lab hints via `trialFamilyHint` = family-layer L1). Basis: Bailey &
+    López de Prado (SSRN 2460551) — SR 2.5/5y fails the 95 % gate at N=100. **Deferred to gate-flip
+    follow-up:** signed `backtest-evidence/v1` body change (cross-repo), the gate flip itself,
+    atomic cross-process `recordAndQueryFamily`. Momentum path not laddered (no equity curve).
 
     **Family identity — DECIDED 2026-07-12: layered hybrid** (a narrow definition is gamed by
     renaming the hypothesis / rewriting the bundle, resetting N; an over-broad one punishes honest

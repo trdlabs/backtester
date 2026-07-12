@@ -180,6 +180,24 @@ function returnsCount(equity: readonly EquityPoint[]): number {
   return quantize(computeReturnsStats(equity).count);
 }
 
+/**
+ * E2: узкий helper — DSR-входы (sharpe + Пирсоновские skew/kurtosis + T) напрямую из equity curve,
+ * НЕЗАВИСИМО от `request.metrics` (реестру они нужны всегда). Переиспользует `computeReturnsStats`
+ * (единое правило с метриками). `null` при вырожденном ряде (`count<2` или `std=0`).
+ */
+export function dsrInputsFromEquity(
+  equity: readonly EquityPoint[],
+): { sharpe: number; skew: number; kurtosis: number; tCount: number } | null {
+  const s = computeReturnsStats(equity);
+  if (s.count < 2 || s.std === 0) return null;
+  return {
+    sharpe: quantize(s.mean / s.std),
+    skew: quantize(s.m3 / s.std ** 3),
+    kurtosis: quantize(s.m4 / s.std ** 4),
+    tCount: s.count,
+  };
+}
+
 /** `expectancy = mean(realizedPnl)` по закрытым сделкам (абсолютная валюта, как `pnl`); 0 при 0 сделок. */
 function expectancy(trades: readonly Trade[]): number {
   if (trades.length === 0) return 0;

@@ -36,6 +36,10 @@ export interface BacktestRunRequest {
   readonly engine?: BacktestEngine;
   /** Backtester-only: trusted baseline ref to compare against for signed evidence (e.g. short_after_pump). Stripped before the lifted runner; never reaches the 017 validator. */
   readonly curatedBaselineRef?: Ref;
+  /** E2: lab-supplied hypothesis-family hint (family-identity layer L1). Groups trials for the
+   *  Deflated Sharpe trial count N; advisory, NOT part of `requestFingerprint`. Falls back to
+   *  `moduleRef.id` server-side when absent. */
+  readonly trialFamilyHint?: string;
 }
 
 export interface ModuleValidateRequest {
@@ -122,6 +126,22 @@ export interface ComparisonSummary {
   readonly variants: readonly ComparisonVariant[];
 }
 
+/**
+ * E2: advisory Deflated Sharpe Ratio + trial provenance. NEVER part of the hashed result payload —
+ * DSR depends on the family's trial history (stateful), so it lives on this projection only and is
+ * present solely when the trial ledger is enabled (`BACKTESTER_TRIAL_LEDGER`).
+ */
+export interface TrialContext {
+  readonly familyKey: string;
+  readonly familyHint?: string;
+  readonly trialCount: number;
+  readonly deflatedSharpe: number;
+  readonly sr0: number;
+  readonly vSR: number;
+  readonly vSRBasis: 'asymptotic' | 'empirical';
+  readonly tCount: number;
+}
+
 export interface RunResultSummary {
   readonly runId: string;
   readonly status: RunStatus;
@@ -132,6 +152,8 @@ export interface RunResultSummary {
   readonly comparison?: ComparisonSummary;
   /** Pointer to the signed backtest-evidence/v1 artifact in the ArtifactStore (present only when evidence was produced). */
   readonly evidenceRef?: ArtifactReference;
+  /** E2: advisory trial count + Deflated Sharpe; NOT covered by `resultHash`. */
+  readonly trialContext?: TrialContext;
 }
 
 export type CompletionEventType =
