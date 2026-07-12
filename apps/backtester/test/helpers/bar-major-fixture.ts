@@ -118,7 +118,7 @@ export function makeRequest(symbols: readonly string[]): BacktestRunRequest {
 }
 
 /** Trusted `RunDeps` (Docker-free) for a multi-symbol run, with `barMajor` set per `opts`. */
-export function makeMultiSymbolDeps(opts: { readonly barMajor: boolean }): RunDeps {
+export function makeMultiSymbolDeps(opts: { readonly barMajor: boolean; readonly barMajorBatch?: boolean }): RunDeps {
   const factory = makeStatefulFactory();
   const probe = factory();
   const registry = createModuleRegistry({
@@ -139,6 +139,7 @@ export function makeMultiSymbolDeps(opts: { readonly barMajor: boolean }): RunDe
     marketTape: built.tape,
     router: createTrustedRouter(),
     barMajor: opts.barMajor,
+    barMajorBatch: opts.barMajorBatch,
   };
 }
 
