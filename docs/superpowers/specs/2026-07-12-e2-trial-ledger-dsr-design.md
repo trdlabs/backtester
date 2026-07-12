@@ -10,7 +10,7 @@ Count trials per hypothesis family server-side and compute a Deflated Sharpe Rat
 López de Prado 2014) that scales admission difficulty with the recorded trial count N — turning our
 "provable reproducibility" into "provable rigor". **E2 is advisory + dark-launched**: it records
 N + DSR into a non-hashed result field (and the unsigned evidence result), never changes the
-`decideVerdict` gate, and is off unless `BACKTESTER_TRIAL_LEDGER=on`. `result_hash` stays
+`decideVerdict` gate, and is off unless `BACKTESTER_TRIAL_LEDGER=true`. `result_hash` stays
 byte-identical.
 
 ## Decisions (from brainstorming)
@@ -74,7 +74,7 @@ interface TrialLedger {
 ```
 
 - `InMemoryTrialLedger` (Map keyed `familyKey`→Map keyed `requestFingerprint`) + `PgTrialLedger`.
-- Migration `0006_trial_ledger.sql`: table `backtest_trial_ledger` with
+- Migration `0007_trial_ledger.sql`: table `backtest_trial_ledger` with
   **`UNIQUE(family_key, request_fingerprint)`** (the dedupe key — `recordIfNew` = `INSERT … ON
   CONFLICT DO NOTHING`), index on `family_key` for `query`.
 - `computeFamilyKey(req)` helper (same dir): the canonical-JSON sha256 above. `trialFamilyHint` is

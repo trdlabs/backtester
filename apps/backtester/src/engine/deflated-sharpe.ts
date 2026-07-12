@@ -171,8 +171,16 @@ export function computeDsr(input: DsrInput): DsrResult | null {
     vSRBasis = 'asymptotic';
     sr0 = deflationThreshold(vSR, N);
   } else {
-    vSR = sampleVariance(priorSharpes);
-    vSRBasis = 'empirical';
+    const empirical = sampleVariance(priorSharpes);
+    // Fall back to asymptotic when the empirical variance is undefined/non-positive (e.g. N identical
+    // Sharpes ⇒ 0): otherwise sr0 collapses to 0 and the multiple-testing penalty vanishes.
+    if (Number.isFinite(empirical) && empirical > 0) {
+      vSR = empirical;
+      vSRBasis = 'empirical';
+    } else {
+      vSR = asymptoticSharpeVariance(sr, T);
+      vSRBasis = 'asymptotic';
+    }
     sr0 = deflationThreshold(vSR, N);
   }
 
