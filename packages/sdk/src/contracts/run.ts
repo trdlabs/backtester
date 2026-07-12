@@ -16,6 +16,55 @@ export interface RunPeriod {
   readonly to: string;
 }
 
+// E3a — walk-forward substrate types. Exported as the shared contract; NOT yet wired into any
+// request/result (server-side per-fold execution is E3b). Fold windows reuse RunPeriod.
+export interface WalkForwardScheme {
+  readonly folds: number;
+  readonly mode: 'rolling' | 'expanding';
+}
+export interface FoldWindow {
+  readonly index: number;
+  readonly train: RunPeriod;
+  readonly test: RunPeriod;
+}
+export interface WalkForwardFoldMetrics {
+  readonly index: number;
+  readonly metrics: Record<string, number>;
+}
+export interface WalkForwardMetricStats {
+  readonly mean: number;
+  /** Population standard deviation (consistency with E1a; robust at small fold counts). */
+  readonly stddev: number;
+  readonly min: number;
+  readonly max: number;
+  /** Fraction of folds with value > 0. */
+  readonly positiveFraction: number;
+}
+export interface WalkForwardAggregate {
+  readonly foldCount: number;
+  readonly metrics: Record<string, WalkForwardMetricStats>;
+}
+
+// E4a — held-out OOS qualification marker (advisory; NOT part of the hashed result). A run's
+// `holdout` marker records whether the run touched the server-reserved OOS window, with provenance
+// (the window drifts as coverage grows). Present only when BACKTESTER_HOLDOUT_ENABLED.
+export interface HoldoutResolved {
+  readonly status: 'resolved';
+  readonly policy: 'coverage_fraction';
+  readonly fraction: number;
+  /** Coverage span the window was carved from (provenance — the window moves as coverage grows). */
+  readonly coverage: RunPeriod;
+  readonly window: RunPeriod;
+  readonly overlaps: boolean;
+  /** 'full' = run entirely INSIDE the holdout (run ⊆ holdout), NOT "run covered the whole holdout". */
+  readonly containment: 'none' | 'partial' | 'full';
+}
+export interface HoldoutUnknown {
+  readonly status: 'unknown';
+  readonly reason: 'coverage_not_found';
+}
+export type HoldoutMarker = HoldoutResolved | HoldoutUnknown;
+
 export interface BacktestRunRequest {
   readonly runId: string;
   readonly mode: RunMode;
@@ -36,6 +85,10 @@ export interface BacktestRunRequest {
   readonly engine?: BacktestEngine;
   /** Backtester-only: trusted baseline ref to compare against for signed evidence (e.g. short_after_pump). Stripped before the lifted runner; never reaches the 017 validator. */
   readonly curatedBaselineRef?: Ref;
+  /** E2: lab-supplied hypothesis-family hint (family-identity layer L1). Groups trials for the
+   *  Deflated Sharpe trial count N; advisory, NOT part of `requestFingerprint`. Falls back to
+   *  `moduleRef.id` server-side when absent. */
+  readonly trialFamilyHint?: string;
 }
 
 export interface ModuleValidateRequest {
@@ -122,6 +175,22 @@ export interface ComparisonSummary {
   readonly variants: readonly ComparisonVariant[];
 }
 
+/**
+ * E2: advisory Deflated Sharpe Ratio + trial provenance. NEVER part of the hashed result payload —
+ * DSR depends on the family's trial history (stateful), so it lives on this projection only and is
+ * present solely when the trial ledger is enabled (`BACKTESTER_TRIAL_LEDGER`).
+ */
+export interface TrialContext {
+  readonly familyKey: string;
+  readonly familyHint?: string;
+  readonly trialCount: number;
+  readonly deflatedSharpe: number;
+  readonly sr0: number;
+  readonly vSR: number;
+  readonly vSRBasis: 'asymptotic' | 'empirical';
+  readonly tCount: number;
+}
+
 export interface RunResultSummary {
   readonly runId: string;
   readonly status: RunStatus;
@@ -132,6 +201,10 @@ export interface RunResultSummary {
   readonly comparison?: ComparisonSummary;
   /** Pointer to the signed backtest-evidence/v1 artifact in the ArtifactStore (present only when evidence was produced). */
   readonly evidenceRef?: ArtifactReference;
+  /** E2: advisory trial count + Deflated Sharpe; NOT covered by `resultHash`. */
+  readonly trialContext?: TrialContext;
+  /** E4a: advisory held-out OOS qualification marker; NOT covered by `resultHash`. */
+  readonly holdout?: HoldoutMarker;
 }
 
 export type CompletionEventType =

@@ -97,6 +97,7 @@ export function produceStrategyEvidence(input: StrategyEvidenceInput): ProduceSt
     ['sharpe', 'max_drawdown', 'win_rate', 'total_trades'],
     input.candidate.baseline.evidence.equityCurve,
     input.candidate.baseline.trades,
+    { elapsedYears: null },
   );
   const verdict = decideVerdict(metrics);
   const bundleHash = sha256BundleRef(input.bundleBytes);

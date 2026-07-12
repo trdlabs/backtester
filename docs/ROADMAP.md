@@ -472,6 +472,119 @@ node-per-algorithm model and is already designed.
   Nautilus → binary IPC framing (17c note); VectorBT → trusted-side vectorized precompute (tape
   cache already covers most); gVisor → item-18 note above.
 
+### Phase E — research rigor & admission quality (2026-07-12 feature-parity analysis)
+
+Source: [`docs/FEATURE-PARITY.md`](FEATURE-PARITY.md) — feature-parity scan vs OSS engines
+(LEAN/Nautilus/VectorBT PRO/Freqtrade), alpha-mining platforms (WorldQuant BRAIN, Numerai), and
+LLM-quant systems 2023–2026 (AlphaAgent, AlphaMemo, Agentic-Trading survey). Verdict: our
+determinism/evidence/sandbox stack is ahead of the field; the critical gap is **statistical
+rigor against overfitting** — `DeferredRobustness` is still `'validated_but_not_computed'`,
+7 metrics, grid-only search. Phase C/D scaling work *amplifies* this risk: the more variants
+the LLM loop can afford to run, the stronger the selection bias in what survives. Phase E turns
+that around — the perf ladder stays paused (no bottleneck today); Phase E is the track that will
+eventually *generate* the load that re-justifies Tier 3.
+
+Sequencing is dependency-driven (E1 is the substrate for everything above it); every item is
+additive and keeps the golden-gate merge bar (new metrics ride the existing requested-`metrics`
+mechanism — unrequested ⇒ byte-identical results, INV preserved).
+
+20. **E1 — metric catalog expansion + structured failure feedback (substrate slice).**
+    Split into **E1a (metrics) ✅ SHIPPED (PR #103, squash `8c89f66`)** + E1b (feedback, open).
+    E1a added request-gated `sortino/expectancy/sqn/cagr(calendar)/calmar` + DSR moments
+    `returns_stddev/skew/kurtosis(Pearson)/count` via a shared `computeReturnsStats` (sharpe
+    refactored byte-identically). Design:
+    `specs/2026-07-12-e1a-metrics-catalog-design.md`. **E1b (open):** the machine-readable failure
+    channel for the LLM loop — quality vector, failure-mode category (no_entries / suspected_overfit
+    / complexity_violation / hypothesis_mismatch — mostly lab-side, engine emits facts), per-trade
+    diagnostics artifact; lab-side loop KPIs (hit ratio, dev success rate). Pattern: AlphaAgent
+    (+81 % hit ratio). rolling-Sharpe deferred to Tier 2 (a series, not a scalar).
+21. ✅ **E2 — trial ledger + Deflated Sharpe (advisory) SHIPPED.** Design:
+    `specs/2026-07-12-e2-trial-ledger-dsr-design.md`. Server-side per-family trial ledger
+    (`InMemory`/`Pg`, migration 0007, dedupe `UNIQUE(family_key, request_fingerprint)` so
+    replay/cache-hit never inflates N) + pure `deflated-sharpe.ts` (own normal CDF/inverse-CDF, no
+    `Math.erf`). Hybrid V[SR]: asymptotic `(1+0.5·SR²)/T` for small N, empirical sample-variance of
+    stored trial Sharpes for `N≥empiricalMinN` (default 5); cold-start `N≤1 ⇒ sr0=0` (PSR vs 0).
+    Family key = `sha256({hint: trialFamilyHint ?? moduleRef.id, datasetRef, symbols sorted,
+    timeframe, period})` — market context AND window scope V[SR] to comparable trials. Recorded into
+    a NON-hashed `RunResultSummary.trialContext` (DSR is stateful → out of `result_hash`), computed
+    from the equity curve independent of `request.metrics`. **Advisory: `decideVerdict` unchanged;
+    `BACKTESTER_TRIAL_LEDGER` default OFF (flag-OFF byte-identical, goldens green).** Ownership =
+    hybrid (server counts, lab hints via `trialFamilyHint` = family-layer L1). Basis: Bailey &
+    López de Prado (SSRN 2460551) — SR 2.5/5y fails the 95 % gate at N=100. **Deferred to gate-flip
+    follow-up:** signed `backtest-evidence/v1` body change (cross-repo), the gate flip itself,
+    atomic cross-process `recordAndQueryFamily`. Momentum path not laddered (no equity curve).
+
+    **Family identity — DECIDED 2026-07-12: layered hybrid** (a narrow definition is gamed by
+    renaming the hypothesis / rewriting the bundle, resetting N; an over-broad one punishes honest
+    new ideas). Four layers, cheapest-first; the authority hierarchy mirrors the rule lab already
+    enforces in `EvidencePolicy` («fingerprint is the only exact-duplicate authority; semantic
+    matches are always “similar”, never “the same”»):
+    - **L0 — fingerprint** (exists): exact request duplicate.
+    - **L1 — lab hypothesis id + bundle lineage**: all runs under one hypothesis id are one
+      family; a `derivedFrom` field on the bundle manifest (new, small contract addition) chains
+      edited bundles into the same family regardless of the id they were submitted under.
+    - **L2 — semantic similarity, pre-submit (lab side)**: lab's `SimilarHypothesisSearchPort`
+      (in-memory lexical/Jaccard adapter + `PgHybridStrategySimilarityAdapter` FTS/RRF — both
+      already implemented, advisory) runs BEFORE codegen/submit; a hit either rejects the
+      rephrase or stamps a `familyHint` on the submit so the N counter is inherited, not reset.
+      The only layer that saves the whole run (~23 s engine + lab tokens). Embedding/pgvector
+      upgrade is a later step; lexical is enough to start.
+    - **L3 — PnL-delta correlation (E5)**: behavioral ground truth and the final arbiter —
+      retroactively merges families the earlier layers missed (same alpha in different words)
+      and vetoes «new» families that behave like admitted ones. Statistically this is the layer
+      that matters for DSR: correlated trials shrink the *effective* N.
+    RAG caveat (**Outcome Embargo**): when L2 retrieval feeds prior outcomes back into
+    generation (AlphaMemo pattern — «here are 3 similar hypotheses and why they failed»), it must
+    never expose held-out/qualification-period (E4) outcomes, or the RAG layer itself becomes the
+    test-leak channel.
+22. **E3 — walk-forward split runs (CPCV later).** Split into **E3a (substrate) ✅ SHIPPED** +
+    E3b (execution, open). **E3a** (`specs/2026-07-12-e3a-walk-forward-substrate-design.md`): pure
+    deterministic `splitWalkForward(period, {folds, mode})` → ordered train/test `FoldWindow[]`
+    (N+1 equal segments, expanding/rolling train, fail-fast typed error) + `aggregateFolds` →
+    transparent per-metric `{mean, population-stddev, min, max, positiveFraction}` surface;
+    contract types in the SDK. **Executes nothing — no submit/result wiring** (so no "silent WF"
+    impression); goldens byte-identical. **E3b (open):** server-side per-fold execution — the
+    invasive part (marketTape is materialized for the whole period, so folds need tape/period
+    slicing + a worker loop), `walkForward` request field + `RunResultSummary.walkForward` result,
+    `result_hash` over ordered fold payloads. NOTE (family-identity interaction): WF folds of one
+    hypothesis span DIFFERENT windows ⇒ DIFFERENT E2 families (period is in the family key), so WF
+    does NOT feed a family's trial count N — WF's value is OOS stability; N stays the
+    parameter-trial (same-window) axis. CPCV with purging+embargo (and PBO) is the follow-up after
+    E3b (Arian et al. 2024: CPCV ≫ WF at false-discovery prevention; WF is still the industry floor).
+23. **E4 — held-out OOS qualification window (BRAIN-style admission).** Split into **E4a (marker)
+    ✅ SHIPPED** + E4b (enforcement, open). **E4a**
+    (`specs/2026-07-12-e4a-holdout-oos-marker-design.md`): a server-reserved held-out window =
+    last `BACKTESTER_HOLDOUT_FRACTION` of the dataset's coverage span; every run whose `period`
+    structurally overlaps it (half-open) is marked with a provenance-bearing, NON-hashed
+    `RunResultSummary.holdout` (`{status:'resolved', policy, fraction, coverage, window, overlaps,
+    containment}` or `{status:'unknown', reason:'coverage_not_found'}`). Pure `holdout.ts`
+    (`computeHoldoutWindow`/`holdoutOverlap`/`buildHoldoutMarker`) + finalize wiring (coverage via
+    `dataPort.listDatasets`), flag-gated `BACKTESTER_HOLDOUT_ENABLED` default OFF (byte-identical),
+    `decideVerdict` untouched. Structural overlap = the un-evadable signal; **it is the defense
+    against period-shopping, which E2's family-N does NOT catch** (different period ⇒ different
+    family). Qualification-attempt NUMBER reuses E2 `trialContext.trialCount` (holdout runs of one
+    family share the fixed window ⇒ one family). **E4b (open):** enforcement (reject/budget the 2nd
+    qualification attempt = the gate flip) + qualification verdict into the signed
+    `backtest-evidence/v1` body (cross-repo) + explicit `mode:'promotion'` semantics; lab-side twin
+    = Outcome Embargo on agent memory. Only systemic defense against adaptive overfitting *of the
+    refine loop itself* (Agentic-Trading survey's top validity risk; E2/E3 alone are gameable by
+    iteration).
+24. **E5 — hypothesis novelty gate (PnL-correlation first, AST later).**
+    Daily-PnL-delta correlation of a candidate vs the admitted-strategy pool (BRAIN: 2y window,
+    escape hatch at Sharpe ≥ +10 %; AlphaMemo admission: |ρ| ≤ 0.70) — cheap post-processing over
+    equity artifacts we already store. Novelty score returned in `RunResultSummary` as a loop
+    reward signal. Follow-ups: AST largest-common-subtree similarity over bundles (AlphaAgent),
+    MMC-style orthogonal-contribution scoring (research). Parallelizable with E3/E4 after E1.
+    E5 doubles as **layer L3 of the item-21 family identity**: a confirmed behavioral match
+    retro-merges families (fixing the N counter) and feeds corrections back to the lab-side
+    semantic layer (L2). E2 and E5 are two ends of one defense — E2 punishes search *within* an
+    acknowledged family, E5 stops passing an old family off as a new one.
+
+Deliberately NOT in Phase E: Nautilus-style L2/L3 matching (our product gates hypotheses on
+bars, and fills are already validated against the live paper engine to 3e-7 — honest by
+construction for OUR admission target); seeded slippage models, HTML tearsheet, Optuna-in-lab
+are Tier 2 follow-ups (see FEATURE-PARITY.md §4) once E1–E5 stand.
+
 ## Definition of Done
 
 The system is “working” when (✅ across the board — the real-platform data path ships as an

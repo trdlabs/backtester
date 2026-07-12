@@ -1,7 +1,9 @@
 // 018 — метрики над equity curve и закрытыми сделками (data-model §6, FR-023). MVP-набор:
 // `pnl`/`max_drawdown`/`win_rate`/`sharpe`; расширен в 038: `total_trades`/`profit_factor`/
-// `top_trade_contribution_pct`. Вычисляются ТОЛЬКО запрошенные имена (request-gated), результат
-// квантован через `quantize`. Comparison deltas — omit-safe (FR-006).
+// `top_trade_contribution_pct`; расширен в E1a: `sortino`/`expectancy`/`sqn`/`cagr`/`calmar` +
+// сырьё для DSR (E2) `returns_stddev`/`returns_skew`/`returns_kurtosis`/`returns_count`.
+// Вычисляются ТОЛЬКО запрошенные имена (request-gated), результат квантован через `quantize`.
+// Comparison deltas — omit-safe (FR-006).
 
 import type {
   BacktestRunResult,
@@ -16,6 +18,24 @@ import { quantize } from '../determinism/canonical-json.js';
 
 /** Начальный капитал прогона (константа, data-model §6). */
 export const INITIAL_EQUITY = 10_000;
+
+/**
+ * E1a: метрики, добавленные ПОВЕРХ внешнего kernel-каталога (@trdlabs/sdk/research-contract).
+ * Локальное расширение overlay/strategy-словаря: engine их вычисляет (`computeMetrics`), submit-гейт
+ * принимает (`VALID_OVERLAY_METRICS`), registry рекламирует (`overlayMetricCatalog`). Каталог kernel
+ * не трогаем — продвижение имён в него отдельный cross-repo шаг.
+ */
+export const E1A_METRIC_CATALOG = [
+  'sortino',
+  'expectancy',
+  'sqn',
+  'cagr',
+  'calmar',
+  'returns_stddev',
+  'returns_skew',
+  'returns_kurtosis',
+  'returns_count',
+] as const;
 
 /** `pnl = equity[last] − equity[0]`; 0 при пустой кривой. */
 function pnl(equity: readonly EquityPoint[]): number {
@@ -83,21 +103,146 @@ function topTradeContributionPct(trades: readonly Trade[]): number {
   return quantize((maxWinner / grossProfit) * 100);
 }
 
-/** `sharpe = mean(r) / std_pop(r)` по per-bar доходностям; 0 при `std=0` или `<2` точек. */
-function sharpe(equity: readonly EquityPoint[]): number {
-  if (equity.length < 2) return 0;
+/**
+ * Статистики ряда per-bar доходностей `r_i = equity[i]/equity[i-1] − 1`, посчитанные ОДИН раз и
+ * ОДНИМ правилом — единый источник для sharpe / sortino / returns_stddev / returns_skew /
+ * returns_kurtosis / returns_count (E1a). `mean`/`std` популяционные, как в прежнем `sharpe`.
+ * Fail-closed: `equity.length<2` или `prev===0` где-либо ⇒ ряд невалиден (`count 0`, моменты 0),
+ * что воспроизводит прежний короткий замыкатель `sharpe` (байт-идентичность golden `result_hash`).
+ * `count<2` (ровно одна доходность) ⇒ моменты 0, но `count` отражает реально построенный ряд.
+ */
+interface ReturnsStats {
+  readonly count: number;
+  readonly mean: number;
+  readonly std: number;
+  readonly m3: number; // Σ(r−mean)³ / count
+  readonly m4: number; // Σ(r−mean)⁴ / count
+  readonly downsideStd: number; // sqrt(mean(min(r,0)²))
+}
+
+function computeReturnsStats(equity: readonly EquityPoint[]): ReturnsStats {
+  const INVALID: ReturnsStats = { count: 0, mean: 0, std: 0, m3: 0, m4: 0, downsideStd: 0 };
+  if (equity.length < 2) return INVALID;
   const returns: number[] = [];
   for (let i = 1; i < equity.length; i += 1) {
     const prev = equity[i - 1].equity;
-    if (prev === 0) return 0;
+    if (prev === 0) return INVALID;
     returns.push(equity[i].equity / prev - 1);
   }
-  if (returns.length < 2) return 0;
-  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const variance = returns.reduce((a, r) => a + (r - mean) ** 2, 0) / returns.length;
+  const count = returns.length;
+  if (count < 2) return { ...INVALID, count };
+  // mean/variance — тем же порядком reduce и делителем, что прежний sharpe → sharpe байт-идентичен.
+  const mean = returns.reduce((a, b) => a + b, 0) / count;
+  const variance = returns.reduce((a, r) => a + (r - mean) ** 2, 0) / count;
+  const std = Math.sqrt(variance);
+  const m3 = returns.reduce((a, r) => a + (r - mean) ** 3, 0) / count;
+  const m4 = returns.reduce((a, r) => a + (r - mean) ** 4, 0) / count;
+  const downsideVar = returns.reduce((a, r) => (r < 0 ? a + r * r : a), 0) / count;
+  return { count, mean, std, m3, m4, downsideStd: Math.sqrt(downsideVar) };
+}
+
+/** `sharpe = mean(r) / std_pop(r)` по per-bar доходностям; 0 при `std=0` или `<2` точек. */
+function sharpe(equity: readonly EquityPoint[]): number {
+  const s = computeReturnsStats(equity);
+  if (s.count < 2 || s.std === 0) return 0;
+  return quantize(s.mean / s.std);
+}
+
+/** `sortino = mean(r) / downsideStd(r)`; downside deviation ОТНОСИТЕЛЬНО 0 (не MAR/target); 0 при downsideStd=0/<2. */
+function sortino(equity: readonly EquityPoint[]): number {
+  const s = computeReturnsStats(equity);
+  if (s.count < 2 || s.downsideStd === 0) return 0;
+  return quantize(s.mean / s.downsideStd);
+}
+
+/** Популяционный std ряда доходностей; 0 при <2 точек. */
+function returnsStddev(equity: readonly EquityPoint[]): number {
+  const s = computeReturnsStats(equity);
+  return s.count < 2 ? 0 : quantize(s.std);
+}
+
+/** Асимметрия `(Σ(r−μ)³/count) / std³`; 0 при std=0 или <2 точек. */
+function returnsSkew(equity: readonly EquityPoint[]): number {
+  const s = computeReturnsStats(equity);
+  if (s.count < 2 || s.std === 0) return 0;
+  return quantize(s.m3 / s.std ** 3);
+}
+
+/** Пирсоновский эксцесс `(Σ(r−μ)⁴/count) / std⁴` (НЕ excess; нормальное распределение = 3.0); 0 при std=0/<2. */
+function returnsKurtosis(equity: readonly EquityPoint[]): number {
+  const s = computeReturnsStats(equity);
+  if (s.count < 2 || s.std === 0) return 0;
+  return quantize(s.m4 / s.std ** 4);
+}
+
+/** Длина реально построенного ряда доходностей (это `T`, длина выборки для DSR в E2). */
+function returnsCount(equity: readonly EquityPoint[]): number {
+  return quantize(computeReturnsStats(equity).count);
+}
+
+/**
+ * E2: узкий helper — DSR-входы (sharpe + Пирсоновские skew/kurtosis + T) напрямую из equity curve,
+ * НЕЗАВИСИМО от `request.metrics` (реестру они нужны всегда). Переиспользует `computeReturnsStats`
+ * (единое правило с метриками). `null` при вырожденном ряде (`count<2` или `std=0`).
+ */
+export function dsrInputsFromEquity(
+  equity: readonly EquityPoint[],
+): { sharpe: number; skew: number; kurtosis: number; tCount: number } | null {
+  const s = computeReturnsStats(equity);
+  if (s.count < 2 || s.std === 0) return null;
+  return {
+    sharpe: quantize(s.mean / s.std),
+    skew: quantize(s.m3 / s.std ** 3),
+    kurtosis: quantize(s.m4 / s.std ** 4),
+    tCount: s.count,
+  };
+}
+
+/** `expectancy = mean(realizedPnl)` по закрытым сделкам (абсолютная валюта, как `pnl`); 0 при 0 сделок. */
+function expectancy(trades: readonly Trade[]): number {
+  if (trades.length === 0) return 0;
+  const sum = trades.reduce((a, t) => a + t.realizedPnl, 0);
+  return quantize(sum / trades.length);
+}
+
+/** `sqn = mean(pnl)/std_pop(pnl) · √N` по сделкам; 0 при <2 сделок или std=0. */
+function sqn(trades: readonly Trade[]): number {
+  const n = trades.length;
+  if (n < 2) return 0;
+  const mean = trades.reduce((a, t) => a + t.realizedPnl, 0) / n;
+  const variance = trades.reduce((a, t) => a + (t.realizedPnl - mean) ** 2, 0) / n;
   const std = Math.sqrt(variance);
   if (std === 0) return 0;
-  return quantize(mean / std);
+  return quantize((mean / std) * Math.sqrt(n));
+}
+
+/**
+ * `cagr = (eq_last/eq_first)^(1/years) − 1`, `years = context.elapsedYears` (календарное время из
+ * `request.period`). Возвращает `null` (⇒ omit ключа, как `profit_factor`) при отсутствии времени
+ * или неположительном капитале: значение не определено, а не «0».
+ */
+function cagr(equity: readonly EquityPoint[], elapsedYears: number | null): number | null {
+  if (elapsedYears === null || elapsedYears <= 0) return null;
+  if (equity.length === 0) return null;
+  const first = equity[0].equity;
+  const last = equity[equity.length - 1].equity;
+  if (first <= 0 || last <= 0) return null;
+  return quantize((last / first) ** (1 / elapsedYears) - 1);
+}
+
+/** `calmar = cagr / max_drawdown`; `null` (⇒ omit) при неопределённом cagr или нулевом drawdown. */
+function calmar(equity: readonly EquityPoint[], elapsedYears: number | null): number | null {
+  const c = cagr(equity, elapsedYears);
+  if (c === null) return null;
+  const mdd = maxDrawdown(equity);
+  if (mdd === 0) return null;
+  return quantize(c / mdd);
+}
+
+/** Контекст вычисления метрик — расширяемый seam (timeframe/periodsPerYear добавятся сюда позже). */
+export interface MetricsContext {
+  /** Календарная длительность прогона в годах (из `request.period`); `null` ⇒ cagr/calmar опускаются. */
+  readonly elapsedYears: number | null;
 }
 
 /** Вычислить запрошенные метрики (имена вне MVP-набора игнорируются — robustness обрабатывается отдельно). */
@@ -105,6 +250,7 @@ export function computeMetrics(
   requested: readonly string[],
   equity: readonly EquityPoint[],
   trades: readonly Trade[],
+  context: MetricsContext,
 ): Record<string, number> {
   const out: Record<string, number> = {};
   for (const name of requested) {
@@ -131,6 +277,37 @@ export function computeMetrics(
       }
       case 'top_trade_contribution_pct':
         out.top_trade_contribution_pct = topTradeContributionPct(trades);
+        break;
+      case 'sortino':
+        out.sortino = sortino(equity);
+        break;
+      case 'expectancy':
+        out.expectancy = expectancy(trades);
+        break;
+      case 'sqn':
+        out.sqn = sqn(trades);
+        break;
+      case 'cagr': {
+        const v = cagr(equity, context.elapsedYears);
+        if (v !== null) out.cagr = v;
+        break;
+      }
+      case 'calmar': {
+        const v = calmar(equity, context.elapsedYears);
+        if (v !== null) out.calmar = v;
+        break;
+      }
+      case 'returns_stddev':
+        out.returns_stddev = returnsStddev(equity);
+        break;
+      case 'returns_skew':
+        out.returns_skew = returnsSkew(equity);
+        break;
+      case 'returns_kurtosis':
+        out.returns_kurtosis = returnsKurtosis(equity);
+        break;
+      case 'returns_count':
+        out.returns_count = returnsCount(equity);
         break;
       default:
         break;

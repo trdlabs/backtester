@@ -7,6 +7,7 @@
 import type { ArtifactManifest, ArtifactReference, ContentHash } from '@trading-backtester/sdk/artifacts';
 import type {
   BacktestRunRequest,
+  HoldoutMarker,
   RunPeriod,
   RunResultSummary,
 } from '@trading-backtester/sdk/contracts';
@@ -58,6 +59,9 @@ import { wakeComputeWaiters } from './coalesce/wake.js';
 import type { ResultCache } from './dedup/result-cache.js';
 import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.js';
 import { ObsRegistry, type DedupClass, type JobObsSample } from './obs-registry.js';
+import type { TrialLedger } from './ledger/trial-ledger.js';
+import { recordTrialAndComputeContext } from './ledger/record-trial.js';
+import { buildHoldoutMarker } from '../engine/holdout.js';
 
 export { RunnerError };
 
@@ -103,6 +107,14 @@ export interface WorkerDeps extends CompletionDeps {
   batchBars?: number;
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap, no scaled policy (byte-identical). */
   universe?: { enabled: boolean; maxN: number; memBaseMb: number; memPerSymbolMb: number };
+  /** E2: per-hypothesis-family trial ledger. Absent ⇒ trial ledger + DSR OFF (kill-switch). */
+  trialLedger?: TrialLedger;
+  /** E2 master kill-switch: DSR/trialContext engages only when true AND trialLedger present. */
+  trialLedgerEnabled?: boolean;
+  /** E2: N at/above which V[SR] switches asymptotic→empirical (default 5). */
+  trialEmpiricalMinN?: number;
+  /** E4a: held-out OOS marker. Absent/disabled ⇒ no `holdout` field (byte-identical). */
+  holdout?: { enabled: boolean; fraction: number };
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -215,7 +227,7 @@ async function finalizeResult(
   }
   const outcome = payload as Extract<RunOutcome, { status: 'completed' }>;
   const persisted = await persistOverlayArtifacts(deps.artifactStore, outcome, datasetFingerprint);
-  const summary = toOverlaySummary(
+  let summary = toOverlaySummary(
     outcome,
     claimed.runId,
     persisted.artifactRefs,
@@ -224,7 +236,45 @@ async function finalizeResult(
     claimed.bundleHash,
     evidenceRef,
   );
+  // E2 (advisory, flag-gated): record this run as a trial and attach the Deflated Sharpe / N context.
+  // Runs AFTER resultHash is fixed; trialContext lives on the summary projection ONLY (never hashed),
+  // so flag-OFF is byte-identical. Momentum has no equity curve → not laddered.
+  if (deps.trialLedger && deps.trialLedgerEnabled) {
+    const trialContext = await recordTrialAndComputeContext(
+      { ledger: deps.trialLedger, empiricalMinN: deps.trialEmpiricalMinN ?? 5, clock: deps.clock },
+      {
+        request: claimed.request,
+        requestFingerprint: claimed.requestFingerprint,
+        runId: claimed.runId,
+        resultHash,
+        equity: outcome.baseline.evidence.equityCurve,
+      },
+    );
+    if (trialContext) summary = { ...summary, trialContext };
+  }
+  // E4a (advisory, flag-gated): mark whether this run touched the server-reserved held-out OOS window.
+  // Non-hashed (config-derived); flag-OFF ⇒ field absent ⇒ byte-identical.
+  const holdout = await resolveHoldoutMarker(deps, claimed);
+  if (holdout) summary = { ...summary, holdout };
   return { summary, manifest: persisted.manifest, resultHash };
+}
+
+/**
+ * E4a: resolve the held-out marker for a completed run. `undefined` when the feature is off (field
+ * omitted ⇒ byte-identical). When on but the dataset's coverage span can't be found, returns an
+ * explicit `unknown` marker (so a consumer distinguishes "feature off" from "coverage missing").
+ */
+async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
+  if (!deps.holdout?.enabled) return undefined;
+  let coverage: RunPeriod | undefined;
+  try {
+    const datasets = await deps.dataPort.listDatasets();
+    coverage = datasets.find((d) => d.datasetRef === claimed.datasetRef)?.period;
+  } catch {
+    coverage = undefined;
+  }
+  if (coverage === undefined) return { status: 'unknown', reason: 'coverage_not_found' };
+  return buildHoldoutMarker(coverage, deps.holdout.fraction, claimed.request.period);
 }
 
 function engineOf(claimed: JobRow): Engine {
