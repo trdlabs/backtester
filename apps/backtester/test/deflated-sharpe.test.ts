@@ -119,4 +119,14 @@ describe('computeDsr — orchestrator', () => {
     expect(r.deflatedSharpe).toBeGreaterThanOrEqual(0);
     expect(r.deflatedSharpe).toBeLessThanOrEqual(1);
   });
+
+  it('falls back to asymptotic vSR when N ≥ empiricalMinN but sample variance is 0 (identical Sharpes)', () => {
+    // 5 identical trial Sharpes ⇒ empirical vSR = 0 ⇒ WITHOUT a fallback sr0 collapses to 0 and the
+    // multiple-testing penalty vanishes. Must fall back to the asymptotic variance instead.
+    const r = computeDsr({ ...base, priorSharpes: [0.3, 0.3, 0.3, 0.3, 0.3] });
+    expect(r).not.toBeNull();
+    expect(r!.vSRBasis).toBe('asymptotic');
+    expect(r!.vSR).toBeGreaterThan(0);
+    expect(r!.sr0).toBeGreaterThan(0);
+  });
 });
