@@ -13,6 +13,7 @@ import type {
   RunPeriod,
   RunResultSummary,
   WalkForward,
+  WalkForwardFailureCode,
 } from '@trading-backtester/sdk/contracts';
 import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import { contentRef } from '../determinism/hash';
@@ -196,19 +197,85 @@ export function overlaySandboxDeps(s: OverlaySandboxSettings): SandboxExecutorDe
   return { harnessDir, mount };
 }
 
+/** I/O collaborators a fold needs: build the per-fold tape, make a fresh sandbox router, run the
+ *  engine. Defaulted to the real collaborators below; injected in tests so the factory's OWN control
+ *  flow (fresh router per fold, closeAll on success+throw, error-code mapping) is unit-testable
+ *  without Docker. */
+interface WalkForwardFoldIO {
+  buildTape(period: RunPeriod): Promise<MarketTapeDataset>;
+  makeRouter(): ExecutorRouter;
+  runEngine(request: BacktestRunRequest, tape: MarketTapeDataset, router: ExecutorRouter): Promise<RunOutcome>;
+}
+
+/** Normalize a RunnerError.code into the SDK's WalkForwardFailureCode taxonomy. */
+function mapRunnerCode(code: string): WalkForwardFailureCode {
+  if (code === 'sandbox_error' || code === 'sandbox_unavailable') return 'sandbox_failure';
+  if (code === 'validation_error') return 'validation_error';
+  if (code.includes('timeout')) return 'timeout';
+  return 'runner_failure';
+}
+
 /**
- * E3b: production runFold factory — one FRESH sandbox session per fold. Task-6 stub: any real
- * (non-overridden) fold errors, which is safe because the feature flag defaults OFF. Replaced with the
- * real implementation in Task 7.
+ * E3b: build the per-fold executor. ONE FRESH sandbox session per fold (no shared mutable router —
+ * load-bearing while P1-4 IPC/sequence is open); assertSandboxClean before accepting; failures classified
+ * into normalized codes. Registry is built once from the OUTER bundle (pure, reused); the outer bundle's
+ * cleanup stays with the worker (no reload here). engineRequest is the outer one — only `period` changes.
  */
 function makeWalkForwardRunFold(
-  _deps: WorkerDeps,
-  _engine: Engine,
-  _engineRequest: BacktestRunRequest,
-  _bundle?: SandboxBundleHandle,
+  deps: WorkerDeps,
+  engine: Engine,
+  engineRequest: BacktestRunRequest,
+  sandboxBundle?: SandboxBundleHandle,
+  io?: WalkForwardFoldIO,
 ): RunFold {
-  return async () => {
-    throw new WalkForwardFoldError('runner_failure', 'production runFold not yet wired (Task 7)');
+  const registry =
+    engine === 'strategy'
+      ? buildInlineOverlayRegistry([], sandboxBundle ? [sandboxBundle.bundle] : [])
+      : sandboxBundle
+        ? buildInlineOverlayRegistry([sandboxBundle.bundle])
+        : buildTrustedRegistry();
+  const r = engineRequest;
+  const realIo: WalkForwardFoldIO = {
+    buildTape: (period) =>
+      overlayTapeCache.getOrBuild(
+        tapeCacheKey({ datasetRef: r.datasetRef, symbols: r.symbols, timeframe: r.timeframe, from: period.from, to: period.to }),
+        () => buildOverlayDataset(deps.dataPort, { datasetRef: r.datasetRef, symbols: r.symbols, timeframe: r.timeframe, period }),
+      ),
+    makeRouter: () => workerInternals.overlayRouterFor(deps, r.symbols.length),
+    runEngine: (request, tape, router) =>
+      engine === 'strategy'
+        ? runStrategyBacktest(request, {
+            registry, marketTape: tape, router,
+            ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
+            ...(deps.barMajor === true ? { barMajor: true } : {}),
+            ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
+            ...(deps.universe ? { universe: deps.universe } : {}),
+          })
+        : runOverlayBacktest(request, { registry, marketTape: tape, router, ...(deps.universe ? { universe: deps.universe } : {}) }),
+  };
+  const foldIo = io ?? realIo;
+
+  return async (fold) => {
+    const period = { from: fold.train.from, to: fold.test.to };
+    let tape: MarketTapeDataset;
+    try {
+      tape = await foldIo.buildTape(period);
+    } catch (err) {
+      throw new WalkForwardFoldError('missing_dataset', `fold ${fold.index} tape build failed: ${String(err)}`);
+    }
+    const router = foldIo.makeRouter();
+    try {
+      const outcome = await foldIo.runEngine({ ...r, period }, tape, router);
+      if (outcome.status !== 'completed') throw new WalkForwardFoldError('validation_error', `fold ${fold.index} rejected`);
+      assertSandboxClean(router); // throws RunnerError('sandbox_error') if the session left errors → mapped below
+      return { outcome, hash: contentRef(outcome) };
+    } catch (err) {
+      if (err instanceof WalkForwardFoldError) throw err;
+      const code = err instanceof RunnerError ? mapRunnerCode(err.code) : 'runner_failure';
+      throw new WalkForwardFoldError(code, `fold ${fold.index}: ${String(err)}`);
+    } finally {
+      router.closeAll();
+    }
   };
 }
 
