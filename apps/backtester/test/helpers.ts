@@ -58,6 +58,8 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     novelty: false,
     noveltyCorrThreshold: 0.8,
     noveltyMinOverlapDays: 30,
+    walkForward: false,
+    walkForwardMaxFolds: 20,
     batchBars: 64,
     universeSession: false,
     universeMaxN: 64,
