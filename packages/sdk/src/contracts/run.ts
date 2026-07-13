@@ -91,6 +91,33 @@ export interface RunDiagnostics {
   readonly policy: { readonly minTrades: number; readonly concentrationPct: number };
 }
 
+// E5a — hypothesis novelty gate (advisory; NOT part of the hashed result). Behavioral distance of a
+// run's daily-PnL-delta trajectory from prior runs on the same market (comparabilityKey). Doubles as
+// family-identity layer L3.
+export interface NoveltyNearest {
+  readonly ref: string;        // resultHash — stable across replay/re-stamp; nearest tie-break key
+  readonly runId: string;      // human-friendly pointer to the nearest run
+  readonly correlation: number; // signed ρ of the nearest member (not abs)
+  readonly overlapDays: number;
+}
+export type Novelty =
+  | {
+      readonly status: 'resolved';
+      readonly score: number;            // 1 − maxAbsCorrelation; 1 = fully novel, 0 = exact twin
+      readonly maxAbsCorrelation: number;
+      readonly nearest: NoveltyNearest;
+      readonly comparabilityKey: string;
+      readonly comparedAgainst: number;  // pool members that met minOverlapDays
+      readonly behavioralDuplicate: boolean; // maxAbsCorrelation ≥ threshold
+      readonly policy: { readonly threshold: number; readonly minOverlapDays: number };
+    }
+  | {
+      readonly status: 'no_comparators';
+      readonly reason: 'empty_pool' | 'insufficient_overlap' | 'empty_candidate';
+      readonly comparabilityKey: string;
+      readonly policy: { readonly threshold: number; readonly minOverlapDays: number };
+    };
+
 export interface BacktestRunRequest {
   readonly runId: string;
   readonly mode: RunMode;
@@ -233,6 +260,8 @@ export interface RunResultSummary {
   readonly holdout?: HoldoutMarker;
   /** E1b: advisory structured run diagnostics (facts + flags); NOT covered by `resultHash`. */
   readonly diagnostics?: RunDiagnostics;
+  /** E5a: advisory behavioral-novelty signal (PnL-delta correlation vs the pool); NOT covered by `resultHash`. */
+  readonly novelty?: Novelty;
 }
 
 export type CompletionEventType =

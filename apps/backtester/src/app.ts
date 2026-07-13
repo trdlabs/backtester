@@ -26,6 +26,8 @@ import { InMemoryResultCache } from './jobs/dedup/result-cache';
 import { PgResultCache } from './jobs/dedup/pg-result-cache';
 import { InMemoryTrialLedger } from './jobs/ledger/trial-ledger';
 import { PgTrialLedger } from './jobs/ledger/pg-trial-ledger';
+import { InMemoryNoveltyPool } from './jobs/ledger/novelty-pool';
+import { PgNoveltyPool } from './jobs/ledger/pg-novelty-pool';
 import { InMemoryComputeLockStore } from './jobs/coalesce/compute-lock.js';
 import { PgComputeLockStore } from './jobs/coalesce/pg-compute-lock.js';
 import { wakeComputeWaiters } from './jobs/coalesce/wake.js';
@@ -99,6 +101,12 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     : undefined;
   const computeLock = config.coalesceEnabled
     ? (ownedPool ? new PgComputeLockStore(ownedPool) : new InMemoryComputeLockStore())
+    : undefined;
+  // E5a: construct the novelty pool only when enabled — flag-OFF stays fully inert (no Pg table dep).
+  const noveltyPool = config.novelty
+    ? ownedPool
+      ? new PgNoveltyPool(ownedPool)
+      : new InMemoryNoveltyPool()
     : undefined;
 
   const dataPort =
@@ -184,6 +192,9 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     ...(config.holdout ? { holdout: { enabled: true, fraction: config.holdoutFraction } } : {}),
     ...(config.runDiagnostics
       ? { diagnostics: { enabled: true, minTrades: config.diagMinTrades, concentrationPct: config.diagConcentrationPct } }
+      : {}),
+    ...(noveltyPool
+      ? { novelty: { enabled: true, threshold: config.noveltyCorrThreshold, minOverlapDays: config.noveltyMinOverlapDays, pool: noveltyPool } }
       : {}),
     ...(overrides.evidenceSigningKey
       ? { evidenceSigningKey: overrides.evidenceSigningKey }
