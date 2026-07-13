@@ -197,3 +197,34 @@ describe('market-access — composition-following + immutability', () => {
     expect(surface.liqAsOf()).toBeUndefined();
   });
 });
+
+
+describe('market-access — P3-1 precomputed {gridTs, idx} is byte-identical to self-computed', () => {
+  // The builder now hoists gridTs + passes the bar index; prove the precomputed path yields exactly
+  // the same surface as the original self-computing form, for in-grid AND out-of-grid `t`.
+  const oi = col<OpenInterestSnapshot>([{ ts: 100, oiTotalUsd: 1000 }, { ts: 102, oiTotalUsd: 2000 }, { ts: 103, oiTotalUsd: 0 }]);
+  const liq = col<LiquidationSnapshot>([{ ts: 100, longUsd: 5, shortUsd: 6 }, { ts: 103, longUsd: 0, shortUsd: 0 }]);
+  const funding = col<FundingSnapshot>([{ ts: 100, fundingRate: 0.0001, markPrice: 10 } as unknown as FundingSnapshot]);
+  const taker = col<TakerSnapshot>([{ ts: 100, buyUsd: 7, sellUsd: 8 }, { ts: 102, buyUsd: 0, sellUsd: 0 }]);
+  const cols: Cols = { oi, liq, funding, taker };
+
+  const snapshot = (m: ReturnType<typeof pointInTimeMarketApi>) => ({
+    oiAsOf: m.oiAsOf(),
+    liqAsOf: m.liqAsOf(),
+    oiWindow: m.oiWindow(3),
+    liqWindow: m.liqWindow(3),
+    fundingAsOf: m.fundingAsOf?.(),
+    fundingWindow: m.fundingWindow?.(3),
+    takerAsOf: m.takerAsOf?.(),
+    takerWindow: m.takerWindow?.(3),
+  });
+
+  for (const t of [99, 100, 101, 102, 103, 104]) {
+    it(`t=${t}: precomputed === self-computed`, () => {
+      const ds = dataset(cols);
+      const selfComputed = pointInTimeMarketApi(ds, 'BTCUSDT', t);
+      const precomputed = pointInTimeMarketApi(ds, 'BTCUSDT', t, { gridTs: GRID, idx: GRID.indexOf(t) });
+      expect(snapshot(precomputed)).toEqual(snapshot(selfComputed));
+    });
+  }
+});

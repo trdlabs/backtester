@@ -60,9 +60,14 @@ export function pointInTimeMarketApi(
   dataset: MarketTapeDataset,
   symbol: string,
   t: number,
+  precomputed?: { readonly gridTs: readonly number[]; readonly idx: number },
 ): PointInTimeMarketApi {
-  const gridTs = dataset.candles(symbol).map((b) => b.ts);
-  const idx = gridTs.indexOf(t);
+  // P3-1 perf: the caller (PointInTimeContextBuilder) hoists `gridTs` ONCE per symbol and passes the
+  // bar index, so this no longer allocates a fresh grid array AND linear-scans it (indexOf) on EVERY
+  // bar — the two O(n)-per-bar costs that made a market-tape run O(n²) in tape length. Direct callers
+  // (tests) omit `precomputed` and get the original self-computed behaviour, byte-for-byte.
+  const gridTs = precomputed?.gridTs ?? dataset.candles(symbol).map((b) => b.ts);
+  const idx = precomputed?.idx ?? gridTs.indexOf(t);
   const oiCol = dataset.openInterest(symbol);
   const liqCol = dataset.liquidations(symbol);
   const fundingCol = dataset.funding(symbol);
