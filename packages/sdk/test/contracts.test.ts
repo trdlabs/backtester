@@ -67,5 +67,13 @@ describe('public contracts', () => {
     const failed: PromotionResult = { verdict: 'not_qualified', reason: 'holdout_not_covered', evaluatedOn: 'holdout' };
     expect(passed.verdict).toBe('passed');
     expect(failed.reason).toBe('holdout_not_covered');
+
+    // @ts-expect-error — 'passed' must NOT carry a reason
+    const bad1: PromotionResult = { verdict: 'passed', reason: 'gate_rejected', attemptNumber: 1, evaluationWindow: { from: 'a', to: 'b' }, evaluatedOn: 'holdout' };
+    // @ts-expect-error — 'not_qualified' REQUIRES a reason
+    const bad2: PromotionResult = { verdict: 'not_qualified', evaluatedOn: 'holdout' };
+    // @ts-expect-error — 'passed' REQUIRES attemptNumber
+    const bad3: PromotionResult = { verdict: 'passed', evaluationWindow: { from: 'a', to: 'b' }, evaluatedOn: 'holdout' };
+    void bad1; void bad2; void bad3;
   });
 });
