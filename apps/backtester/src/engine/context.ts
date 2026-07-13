@@ -69,6 +69,11 @@ export class PointInTimeContextBuilder {
   /** Несёт ли лента OI/liquidations/funding/taker для символа (composition-following; вычисляется один раз). */
   private readonly carriesMarket: boolean;
 
+  /** P3-1: минутная сетка ленты (ts по индексу) — материализуется ОДИН раз на символ, а не на каждый
+   *  бар, и передаётся в pointInTimeMarketApi вместе с индексом (убирает O(n) аллокацию + O(n) indexOf
+   *  на бар). undefined, когда лента не несёт market-kind. */
+  private readonly marketGridTs?: readonly number[];
+
   constructor(private readonly base: ContextBuilderBase) {
     this.indicatorEngine = createIndicatorEngine(base.candles);
     const tape = base.marketTape;
@@ -80,6 +85,7 @@ export class PointInTimeContextBuilder {
         tape.liquidations(base.symbol) !== undefined ||
         tape.funding(base.symbol) !== undefined ||
         tape.taker(base.symbol) !== undefined);
+    this.marketGridTs = this.carriesMarket && tape !== undefined ? tape.candles(base.symbol).map((b) => b.ts) : undefined;
   }
 
   build(barIndex: number, state: PerBarState): StrategyContext {
@@ -101,7 +107,15 @@ export class PointInTimeContextBuilder {
       rng: { next: () => this.base.rng.next() },
       // 023: market выставляется ТОЛЬКО когда лента несёт kind (иначе ключ отсутствует — форма 018).
       ...(this.carriesMarket && this.base.marketTape !== undefined
-        ? { market: pointInTimeMarketApi(this.base.marketTape, this.base.symbol, bar.ts) }
+        ? {
+            market: pointInTimeMarketApi(this.base.marketTape, this.base.symbol, bar.ts, {
+              gridTs: this.marketGridTs!,
+              // Fast path: barIndex IS the tape-grid index when base.candles aligns with the tape grid
+              // (the norm — same materialized per-symbol stream). Fall back to indexOf only on a
+              // misaligned/absent slot, so the resolved idx is byte-identical to the old self-computed one.
+              idx: this.marketGridTs![barIndex] === bar.ts ? barIndex : this.marketGridTs!.indexOf(bar.ts),
+            }),
+          }
         : {}),
     };
     return deepFreeze(ctx);
