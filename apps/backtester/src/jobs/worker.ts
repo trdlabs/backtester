@@ -643,6 +643,9 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
   // Bounded, log-safe detail from the caught error (Task 5) — set in the catch, read by the obs
   // sample below so a failed job's job_terminal line carries the same detail as its job_error line.
   let caughtErrorDetail: string | undefined;
+  // P2-2: whether THIS worker performed the terminal transition. Publish only when true — if our CAS
+  // lost (a reaper already terminalized + published the row) re-publishing would emit a duplicate event.
+  let ownTerminalTransition = false;
   try {
     // NOTE: the bundle is loaded here (pre-flight) rather than lazily in the miss-path so the strategy
     // validation guards fire before tape materialization — preserving the sandbox error taxonomy
@@ -920,17 +923,24 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       // lookup, not populate). Reachable only after the engine returned, before the terminal
       // transition, so failed/timeout/validation_error runs (which threw) never cache.
       if (dedupOn) {
-        const normalized = normalize(engine, payload, runId);
-        const templateRef = await deps.artifactStore.write(normalized);
-        await deps.resultCache!.put({
-          computeIdentity: identity!,
-          requestFingerprint: claimed.requestFingerprint,
-          datasetFingerprint: dsFingerprint,
-          computeVersion: DEDUP_COMPUTE_VERSION,
-          sandboxPolicyVersion,
-          templateRef,
-          createdAtMs: deps.clock(),
-        });
+        // P2-4: dedup populate is best-effort — a cache / artifact-store fault must NOT fail a run whose
+        // engine already succeeded. Log and fall through to the terminal `completed` transition.
+        try {
+          const normalized = normalize(engine, payload, runId);
+          const templateRef = await deps.artifactStore.write(normalized);
+          await deps.resultCache!.put({
+            computeIdentity: identity!,
+            requestFingerprint: claimed.requestFingerprint,
+            datasetFingerprint: dsFingerprint,
+            computeVersion: DEDUP_COMPUTE_VERSION,
+            sandboxPolicyVersion,
+            templateRef,
+            createdAtMs: deps.clock(),
+          });
+        } catch (cacheErr) {
+          // eslint-disable-next-line no-console
+          console.warn(JSON.stringify({ evt: 'dedup_populate_failed', runId, detail: boundedErrorDetail(cacheErr) }));
+        }
       }
     }
 
@@ -941,7 +951,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     if (walkForward) finalized = { ...finalized, summary: { ...finalized.summary, walkForward } };
 
     const now = deps.clock();
-    await deps.store.transition(runId, 'running', 'completed', {
+    ownTerminalTransition = await deps.store.transition(runId, 'running', 'completed', {
       atMs: now,
       terminalAtMs: now,
       lastActivityMs: now,
@@ -967,7 +977,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     }));
     const terminalStatus = err instanceof RunnerError ? err.terminalStatus : 'failed';
     const now = deps.clock();
-    await deps.store.transition(runId, 'running', terminalStatus, {
+    ownTerminalTransition = await deps.store.transition(runId, 'running', terminalStatus, {
       atMs: now,
       terminalAtMs: now,
       terminalCode: code,
@@ -1012,7 +1022,8 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     }
   }
 
-  if (finished) await publishCompletion(deps, finished);
+  // P2-2: publish ONLY when this worker owns the terminal transition (else the reaper already did).
+  if (finished && ownTerminalTransition) await publishCompletion(deps, finished);
   return finished;
 }
 
