@@ -110,10 +110,11 @@ async function driveHook(
   symbol: string,
   barIndex: number,
   firstBarForSymbol: boolean,
+  hookSeq: number,
 ): Promise<void> {
   const p = session.callHook('onBarClose', makeCtx(symbol, barIndex));
-  if (firstBarForSymbol) driver.stdout.write(OK); // reply to ensureSymbolInit(symbol)
-  driver.stdout.write(OK); // reply to hook(symbol, bar)
+  if (firstBarForSymbol) driver.stdout.write(OK); // reply to ensureSymbolInit(symbol) — init carries no seq
+  driver.stdout.write(`${JSON.stringify({ t: 'ok', seq: hookSeq, decisions: [] })}\n`); // reply to hook(symbol, bar)
   const r = await p;
   if (!r.ok) throw new Error(`callHook failed for ${symbol}@${barIndex}: ${JSON.stringify(r.error)}`);
 }
@@ -129,10 +130,10 @@ describe('SandboxSession universe-mode IPC-profile accounting', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     // 2 symbols × 2 bars = 4 hook calls; first bar of each symbol also does an init handshake.
-    await driveHook(driver, session, 'AAA', 0, true);
-    await driveHook(driver, session, 'AAA', 1, false);
-    await driveHook(driver, session, 'BBB', 0, true);
-    await driveHook(driver, session, 'BBB', 1, false);
+    await driveHook(driver, session, 'AAA', 0, true, 1);
+    await driveHook(driver, session, 'AAA', 1, false, 2);
+    await driveHook(driver, session, 'BBB', 0, true, 3);
+    await driveHook(driver, session, 'BBB', 1, false, 4);
 
     session.close();
 

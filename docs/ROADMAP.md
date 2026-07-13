@@ -64,7 +64,22 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   folded into `requestFingerprint.normalize` CONDITIONALLY: requests without it keep byte-identical
   fingerprints (no dedup-cache churn; curated runs bypass the cache), so a `resumeToken` replay that
   changes the baseline is no longer silently treated as identical. Full suite 1003 passed / 58 skipped
-  green. REMAINING review findings unaddressed.
+  green.
+- **2026-07-13 — sandbox IPC hardening (P1-4, last open P1)** (branch `fix/sandbox-ipc-seq-stdio`, TDD,
+  Docker-verified): the untrusted bundle shares the harness process (stdin/stdout/console). (1) Host STRICTLY
+  validates the echoed `seq` on every hook response (`SandboxSession.assertSeq`) — a missing OR mismatched
+  seq is a desync/forgery → `malformed`/fail-closed (the real harness always echoes seq; init responses
+  don't flow through assertSeq, so compat is unaffected). (2) `isolateStdio` (deny-shims) REPLACES + LOCKS
+  `process.stdout` with a discard sink and `process.stdin` with a dead stream (both `writable:false,
+  configurable:false`) after readline captured the real stdin, keeping the real fd-1 write only in a private
+  closure — so the bundle can neither inject/corrupt the protocol stream (even via `delete
+  process.stdout.write` or a prototype-chain `write.call`) nor peek the request wire (batch/bar-major
+  look-ahead); `console.*` is no-op'd. If isolation can't be installed the harness FAILS CLOSED (exits),
+  never running untrusted code with real stdio exposed. Residual: an fd-level `fs.writeSync(1)` seqless
+  line — caught by the strict seq check, with the container flags as the boundary. Byte-
+  identical goldens hold (Docker N=2/3/64 lockstep-equivalent); momentum one-shot harness out of scope
+  (separate hardening item). Full suite 1012 passed / 58 skipped green. REMAINING: O(n²) market-API perf
+  (P3-1) + the rest of P2/P3/P4.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

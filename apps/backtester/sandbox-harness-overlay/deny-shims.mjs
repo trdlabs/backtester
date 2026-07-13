@@ -22,6 +22,50 @@ function deny(code, message) {
 
 const SECRET_KEY_RE = /key|secret|token|password|passwd|credential|bearer|api[_-]?key/i;
 
+/**
+ * P1-4 — stdio isolation. The untrusted bundle shares this process (imported via `import()`), hence it
+ * shares process.stdin / process.stdout / console. Capture a PRIVATE write handle for the NDJSON
+ * protocol, neuter the public stdout write + console.* so the bundle can neither inject a forged
+ * response line nor corrupt the stream with logs, and (when `opts.deadStdin` is given) hand the bundle
+ * a dead stdin so it can't peek the request wire — a batch/bar-major envelope carries FUTURE bars, so a
+ * `process.stdin.on('data')` listener would be a structural look-ahead. The harness's readline is
+ * created from the REAL stdin BEFORE this call and keeps its own reference, so request reading is
+ * unaffected. Container flags remain the real security boundary; this is defense-in-depth for RESULT
+ * integrity. Returns `{ realWrite }` — the harness routes every protocol line through it.
+ */
+export function isolateStdio(proc, con, opts = {}) {
+  // The ONLY surviving reference to the real fd-1 stream is this closure-captured bound write. The
+  // public process.stdout is then replaced WHOLESALE + LOCKED, so a neuter-bypass — `delete
+  // process.stdout.write` (falls back to the prototype method) or
+  // `Object.getPrototypeOf(...).write.call(process.stdout, ...)` — can only reach the discard sink,
+  // never fd 1. (A raw fd write via fs.writeSync(1) remains a residual; the container flags and the
+  // host seq check are the backstops.)
+  const realWrite = proc.stdout.write.bind(proc.stdout);
+  // Throws if the property can't be locked → the caller (entry.mjs) fails CLOSED rather than running
+  // untrusted code with real stdio exposed.
+  Object.defineProperty(proc, 'stdout', {
+    value: opts.sink,
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+  // console.* → no-op: Node's console keeps its OWN reference to the original stdout, so swapping the
+  // stream object is not enough — a bundle `console.log` would otherwise inject into fd 1.
+  const noop = () => {};
+  for (const m of ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir', 'table', 'group', 'groupEnd']) {
+    if (con && typeof con[m] === 'function') con[m] = noop;
+  }
+  // Hand the bundle a dead, LOCKED process.stdin so it can't peek the request wire (batch/bar-major
+  // look-ahead). The harness's readline captured the REAL stdin before this call.
+  Object.defineProperty(proc, 'stdin', {
+    value: opts.deadStdin,
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+  return { realWrite };
+}
+
 /** Установить shims: блокировать спавн процессов/shell и доступ к секрет-подобным env-переменным. */
 export function installDenyShims() {
   // --- child_process: спавн/shell запрещён (FR-019; ядро + pids-limit это не гарантируют полностью) ---

@@ -8,9 +8,10 @@
 // никаких host/dist/npm-импортов в рантайме (только ./rehydrate.mjs из того же :ro-каталога harness).
 
 import { createInterface } from 'node:readline';
+import { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
-import { installDenyShims, classifyError } from './deny-shims.mjs';
+import { installDenyShims, isolateStdio, classifyError } from './deny-shims.mjs';
 import { runHookBatch } from './hook-batch.mjs';
 import { runHookBarMajor } from './hook-bar-major.mjs';
 import { makeInstanceStore, symbolOf, resolveInstance } from './universe-instances.mjs';
@@ -26,8 +27,12 @@ installDenyShims();
 const store = makeInstanceStore();
 let loadedModule; // импортированный bundle-модуль, кэш между символами
 
+// P1-4 — every harness → host protocol line goes through this ONE sink. Defaults to
+// process.stdout.write; main() rebinds it to isolateStdio's captured real handle after neutering the
+// public one, so the untrusted bundle can't inject/corrupt the NDJSON stream.
+let emit = (s) => process.stdout.write(s);
 function writeLine(obj) {
-  process.stdout.write(`${JSON.stringify(obj)}\n`);
+  emit(`${JSON.stringify(obj)}\n`);
 }
 function ok(seq, decisions) {
   writeLine({ t: 'ok', seq, decisions });
@@ -36,13 +41,11 @@ function err(seq, hook, code, detail) {
   writeLine({ t: 'err', seq, hook, code, detail: String(detail ?? '').slice(0, 4096) });
 }
 // 17b — batch protocol line builders (see runHookBatch / handleHookBatch below).
-const okBatch = (seq, stoppedAt, decisions) =>
-  process.stdout.write(`${JSON.stringify({ t: 'okBatch', seq, stoppedAt, decisions })}\n`);
+const okBatch = (seq, stoppedAt, decisions) => writeLine({ t: 'okBatch', seq, stoppedAt, decisions });
 const errBatch = (seq, hook, code, detail, barOffset) =>
-  process.stdout.write(`${JSON.stringify({ t: 'err', seq, hook, code, detail: String(detail ?? '').slice(0, 4096), barOffset })}\n`);
+  writeLine({ t: 'err', seq, hook, code, detail: String(detail ?? '').slice(0, 4096), barOffset });
 // Slice B — bar-major protocol line builder (see runHookBarMajor / handleHookBarMajor below).
-const okBarMajor = (seq, results) =>
-  process.stdout.write(`${JSON.stringify({ t: 'okBarMajor', seq, results })}\n`);
+const okBarMajor = (seq, results) => writeLine({ t: 'okBarMajor', seq, results });
 
 /** Нормализовать вывод хука `decision | decision[] | null` → массив. */
 function normalize(out) {
@@ -198,6 +201,27 @@ async function handleHookBarMajor(msg) {
 
 async function main() {
   const rl = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
+  // P1-4 — harden stdio AFTER readline captured the real stdin. Replace process.stdout with a discard
+  // sink and process.stdin with a dead stream (both LOCKED), routing the protocol through the private
+  // realWrite handle. If isolation can't be installed, FAIL CLOSED — never run untrusted code with the
+  // real stdio exposed.
+  const realWriteFallback = process.stdout.write.bind(process.stdout);
+  let realWrite;
+  try {
+    const sink = new Writable({ write(_c, _e, cb) { cb(); } });
+    const deadStdin = new Readable({ read() {} });
+    deadStdin.push(null);
+    ({ realWrite } = isolateStdio(process, console, { sink, deadStdin }));
+  } catch (e) {
+    try {
+      realWriteFallback(`${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail: `stdio isolation failed: ${e && e.message ? e.message : e}` })}\n`);
+    } catch {
+      /* ignore */
+    }
+    process.exit(1);
+    return;
+  }
+  emit = (s) => realWrite(s);
   for await (const line of rl) {
     const s = line.trim();
     if (s === '') continue;

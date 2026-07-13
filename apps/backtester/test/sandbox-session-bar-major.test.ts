@@ -112,8 +112,9 @@ function makeCtx(symbol: string, ts: number): StrategyContext {
 
 /** Write a scripted `{t:'ok', decisions:[]}` response line to the fake container's stdout — used for
  * the per-symbol lazy `init` handshakes that precede a hookBarMajor round-trip. */
-function writeOk(driver: ScriptedDriver): void {
-  driver.stdout.write(`${JSON.stringify({ t: 'ok', decisions: [] })}\n`);
+function writeOk(driver: ScriptedDriver, seq?: number): void {
+  const body = seq === undefined ? { t: 'ok', decisions: [] } : { t: 'ok', seq, decisions: [] };
+  driver.stdout.write(`${JSON.stringify(body)}\n`);
 }
 
 describe('SandboxSession.callHookBarMajor', () => {
@@ -262,13 +263,13 @@ describe('SandboxSession.callHookBarMajor', () => {
 
     const pA = session.callHook('onBarClose', makeCtx('AAA', 0));
     writeOk(driver); // reply to init(AAA)
-    writeOk(driver); // reply to hook(AAA)
+    writeOk(driver, 1); // reply to hook(AAA)
     const rA = await pA;
     expect(rA.ok).toBe(true);
 
     const pB = session.callHook('onBarClose', makeCtx('BBB', 0));
     writeOk(driver); // reply to init(BBB)
-    writeOk(driver); // reply to hook(BBB)
+    writeOk(driver, 2); // reply to hook(BBB)
     const rB = await pB;
     expect(rB.ok).toBe(true);
 

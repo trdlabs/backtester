@@ -13,7 +13,7 @@ import { AsyncIpcChannel } from './async-ipc-channel.js';
 import { serializeContext, plainBar } from './context-serializer.js';
 import type { SandboxValidationCode } from './errors.js';
 import { toMountSource, type MountConfig } from './mounts.js';
-import type { HookBatchEntry } from './ipc.js';
+import type { HookBatchEntry, ReceiveOutcome } from './ipc.js';
 
 /** Ошибка одного вызова (стабильный код + bounded detail + хук-контекст). */
 export interface SessionError {
@@ -257,6 +257,29 @@ export class SandboxSession {
   }
 
   /** Вызвать lifecycle-хук модуля внутри сессии; вернуть сырые decisions (ревалидация — в executor). */
+  /**
+   * P1-4 — the harness echoes the request `seq` on EVERY hook response. A hook response whose seq is
+   * missing OR does not match the one we just sent is a desynchronized / forged line (the untrusted
+   * bundle shares the IPC stream) — convert it to `malformed` so the session fails closed instead of
+   * attributing a wrong or forged result to this bar. STRICT (seq required): the real harness always
+   * emits seq, so a seqless hook response can only be an fd-level forgery or a protocol bug — either
+   * way, fail closed. Init responses carry no seq and never flow through here (init receives are not
+   * wrapped), so init compatibility is unaffected.
+   */
+  private assertSeq(outcome: ReceiveOutcome, expected: number): ReceiveOutcome {
+    if (
+      outcome.kind === 'ok' ||
+      outcome.kind === 'okBatch' ||
+      outcome.kind === 'okBarMajor' ||
+      outcome.kind === 'err'
+    ) {
+      if (outcome.seq !== expected) {
+        return { kind: 'malformed', detail: `response seq mismatch: got ${String(outcome.seq)}, expected ${expected}` };
+      }
+    }
+    return outcome;
+  }
+
   async callHook(hook: string, ctx: StrategyContext): Promise<HookResult> {
     if (this.failed) {
       return { ok: false, decisions: [], error: this.lastError };
@@ -289,7 +312,7 @@ export class SandboxSession {
     });
 
     const profT0 = SandboxSession.profileEnabled ? performance.now() : 0;
-    const outcome = await channel.receive(this.callDeadline());
+    const outcome = this.assertSeq(await channel.receive(this.callDeadline()), this.seq);
     if (SandboxSession.profileEnabled) {
       this.profIpcWaitMs += performance.now() - profT0;
       this.profHookCalls += 1;
@@ -400,7 +423,7 @@ export class SandboxSession {
     this.seq += 1;
     channel.send({ t: 'hookBatch', seq: this.seq, hook: 'onBarClose', bars });
     const profT0 = SandboxSession.profileEnabled ? performance.now() : 0;
-    const outcome = await channel.receive(this.callDeadline());
+    const outcome = this.assertSeq(await channel.receive(this.callDeadline()), this.seq);
     if (SandboxSession.profileEnabled) {
       this.profIpcWaitMs += performance.now() - profT0;
     }
@@ -509,7 +532,7 @@ export class SandboxSession {
     channel.send({ t: 'hookBarMajor', seq: this.seq, hook: 'onBarClose', bars });
 
     const profT0 = SandboxSession.profileEnabled ? performance.now() : 0;
-    const outcome = await channel.receive(this.callDeadline());
+    const outcome = this.assertSeq(await channel.receive(this.callDeadline()), this.seq);
     if (SandboxSession.profileEnabled) {
       this.profIpcWaitMs += performance.now() - profT0;
       this.profHookCalls += healthy.length; // logical hooks actually executed (latched excluded → parity with lockstep)

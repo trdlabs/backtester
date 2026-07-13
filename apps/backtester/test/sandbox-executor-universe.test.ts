@@ -100,14 +100,17 @@ function makeCtx(symbol: string, ts: number): StrategyContext {
   } as unknown as StrategyContext;
 }
 
-/** Write a scripted `{t:'ok', decisions:[]}` response line to the fake container's stdout. */
-function writeOk(driver: ScriptedDriver): void {
-  driver.stdout.write(`${JSON.stringify({ t: 'ok', decisions: [] })}\n`);
+/** Write a scripted `{t:'ok'}` response. `seq` omitted for init replies (init carries no seq), set to
+ * the hook request's seq for hook replies — the real harness always echoes it (P1-4 strict seq). */
+function writeOk(driver: ScriptedDriver, seq?: number): void {
+  const body = seq === undefined ? { t: 'ok', decisions: [] } : { t: 'ok', seq, decisions: [] };
+  driver.stdout.write(`${JSON.stringify(body)}\n`);
 }
 
-/** Write a scripted `{t:'err', ...}` response line — harness-caught exception, container alive. */
-function writeErr(driver: ScriptedDriver, detail = 'strategy threw'): void {
-  driver.stdout.write(`${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail, hook: 'onBarClose' })}\n`);
+/** Write a scripted `{t:'err', ...}` response — harness-caught exception, container alive. */
+function writeErr(driver: ScriptedDriver, detail = 'strategy threw', seq?: number): void {
+  const body = { t: 'err', code: 'sandbox_crashed', detail, hook: 'onBarClose', ...(seq === undefined ? {} : { seq }) };
+  driver.stdout.write(`${JSON.stringify(body)}\n`);
 }
 
 describe('SandboxModuleExecutor universe mode', () => {
@@ -126,7 +129,7 @@ describe('SandboxModuleExecutor universe mode', () => {
     await executor.initStrategy(dummyModule, makeCtx(symbols[0]!, 0));
     const p0 = executor.executeStrategyHook(dummyModule, 'onBarClose', makeCtx(symbols[0]!, 0));
     writeOk(driver); // reply to lazy init(AAA)
-    writeOk(driver); // reply to hook(AAA, bar0)
+    writeOk(driver, 1); // reply to hook(AAA, bar0)
     const d0 = await p0;
     expect(d0).toEqual([]);
 
@@ -135,7 +138,7 @@ describe('SandboxModuleExecutor universe mode', () => {
     await executor.initStrategy(dummyModule, makeCtx(symbols[1]!, 0));
     const p1 = executor.executeStrategyHook(dummyModule, 'onBarClose', makeCtx(symbols[1]!, 0));
     writeOk(driver); // reply to lazy init(BBB)
-    writeErr(driver); // reply to hook(BBB, bar0) — soft per-symbol failure
+    writeErr(driver, 'strategy threw', 2); // reply to hook(BBB, bar0) — soft per-symbol failure
     const d1 = await p1;
     expect(d1).toEqual([]); // fail-closed: empty decisions
 
@@ -143,7 +146,7 @@ describe('SandboxModuleExecutor universe mode', () => {
     await executor.initStrategy(dummyModule, makeCtx(symbols[2]!, 0));
     const p2 = executor.executeStrategyHook(dummyModule, 'onBarClose', makeCtx(symbols[2]!, 0));
     writeOk(driver); // reply to lazy init(CCC)
-    writeOk(driver); // reply to hook(CCC, bar0)
+    writeOk(driver, 3); // reply to hook(CCC, bar0)
     const d2 = await p2;
     expect(d2).toEqual([]);
 
@@ -170,7 +173,7 @@ describe('SandboxModuleExecutor universe mode', () => {
       writeOk(driver); // reply to init(symbol) — sent eagerly inside open() (non-universe)
       await initP;
       const hookP = executor.executeStrategyHook(dummyModule, 'onBarClose', makeCtx(symbol, 0));
-      writeOk(driver); // reply to hook(symbol, bar0)
+      writeOk(driver, 1); // reply to hook(symbol, bar0)
       const d = await hookP;
       expect(d).toEqual([]);
     }

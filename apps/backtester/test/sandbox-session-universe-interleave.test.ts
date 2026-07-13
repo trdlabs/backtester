@@ -108,9 +108,11 @@ function makeCtx(symbol: string, ts: number): StrategyContext {
   } as unknown as StrategyContext;
 }
 
-/** Write a scripted `{t:'ok', decisions:[]}` response line to the fake container's stdout. */
-function writeOk(driver: ScriptedDriver): void {
-  driver.stdout.write(`${JSON.stringify({ t: 'ok', decisions: [] })}\n`);
+/** Write a scripted `{t:'ok'}` response. `seq` is omitted for init replies (init carries no seq) and
+ * set to the hook request's seq for hook replies — the real harness always echoes it (P1-4 strict seq). */
+function writeOk(driver: ScriptedDriver, seq?: number): void {
+  const body = seq === undefined ? { t: 'ok', decisions: [] } : { t: 'ok', seq, decisions: [] };
+  driver.stdout.write(`${JSON.stringify(body)}\n`);
 }
 
 const BAR_MS = 60_000;
@@ -122,26 +124,26 @@ describe('SandboxSession universe mode — bar-major interleaved call order', ()
     // A@bar0 — lazy init(A) + hook(A, bar0).
     const pA0 = session.callHook('onBarClose', makeCtx('A', 0));
     writeOk(driver); // init(A)
-    writeOk(driver); // hook(A, bar0)
+    writeOk(driver, 1); // hook(A, bar0)
     const rA0 = await pA0;
     expect(rA0.ok).toBe(true);
 
     // B@bar0 — lazy init(B) + hook(B, bar0), same (already-open) container.
     const pB0 = session.callHook('onBarClose', makeCtx('B', 0));
     writeOk(driver); // init(B)
-    writeOk(driver); // hook(B, bar0)
+    writeOk(driver, 2); // hook(B, bar0)
     const rB0 = await pB0;
     expect(rB0.ok).toBe(true);
 
     // A@bar1 — A already initialized, no init envelope this time.
     const pA1 = session.callHook('onBarClose', makeCtx('A', BAR_MS));
-    writeOk(driver); // hook(A, bar1)
+    writeOk(driver, 3); // hook(A, bar1)
     const rA1 = await pA1;
     expect(rA1.ok).toBe(true);
 
     // B@bar1 — B already initialized, no init envelope this time.
     const pB1 = session.callHook('onBarClose', makeCtx('B', BAR_MS));
-    writeOk(driver); // hook(B, bar1)
+    writeOk(driver, 4); // hook(B, bar1)
     const rB1 = await pB1;
     expect(rB1.ok).toBe(true);
 
