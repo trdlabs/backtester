@@ -12,6 +12,7 @@ import type {
   RunDiagnostics,
   RunPeriod,
   RunResultSummary,
+  WalkForward,
 } from '@trading-backtester/sdk/contracts';
 import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import { contentRef } from '../determinism/hash';
@@ -67,6 +68,7 @@ import { buildHoldoutMarker } from '../engine/holdout.js';
 import { computeRunDiagnostics } from '../engine/diagnostics.js';
 import { toDailyPnlDeltas, computeNovelty } from '../engine/novelty.js';
 import { computeComparabilityKey, type NoveltyPool } from './ledger/novelty-pool.js';
+import { runWalkForward, WalkForwardFoldError, type RunFold } from '../engine/walk-forward-exec.js';
 
 export { RunnerError };
 
@@ -124,6 +126,8 @@ export interface WorkerDeps extends CompletionDeps {
   diagnostics?: { enabled: boolean; minTrades: number; concentrationPct: number };
   /** E5a: behavioral-novelty gate. Absent/disabled ⇒ no `novelty` field (byte-identical). */
   novelty?: { enabled: boolean; threshold: number; minOverlapDays: number; pool: NoveltyPool };
+  /** E3b: walk-forward per-fold execution. Absent/disabled ⇒ no `walkForward` field (byte-identical). */
+  walkForward?: { enabled: boolean; maxFolds: number };
 }
 
 export function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -193,11 +197,27 @@ export function overlaySandboxDeps(s: OverlaySandboxSettings): SandboxExecutorDe
 }
 
 /**
+ * E3b: production runFold factory — one FRESH sandbox session per fold. Task-6 stub: any real
+ * (non-overridden) fold errors, which is safe because the feature flag defaults OFF. Replaced with the
+ * real implementation in Task 7.
+ */
+function makeWalkForwardRunFold(
+  _deps: WorkerDeps,
+  _engine: Engine,
+  _engineRequest: BacktestRunRequest,
+  _bundle?: SandboxBundleHandle,
+): RunFold {
+  return async () => {
+    throw new WalkForwardFoldError('runner_failure', 'production runFold not yet wired (Task 7)');
+  };
+}
+
+/**
  * Boundary indirection: processNextQueued invokes bundle/executor/router construction through this
  * object so tests can `vi.spyOn(workerInternals, 'sandboxBundleFor')` and prove a dedup HIT performs
  * NONE of them (a bare intra-module call would not be interceptable by the spy). Compute-skip proof.
  */
-export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor };
+export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor, makeWalkForwardRunFold };
 
 /**
  * P0-1: a sandboxed run degrades internal hook failures to `idle` and only RECORDS them on the router
@@ -373,6 +393,42 @@ export async function resolveNovelty(
     }
   }
   return novelty;
+}
+
+/**
+ * E3b: run the advisory walk-forward folds for a completed overlay/strategy run. `undefined` ONLY for
+ * the gate (flag off / no scheme / momentum); when enabled-with-scheme it always resolves to a
+ * WalkForward (fail-open — a fault becomes `unavailable: internal_error`, never a rejection). The
+ * production runFold (built from the outer engineRequest + sandboxBundle) executes one FRESH sandbox
+ * session per fold; tests pass `runFoldOverride`.
+ */
+export async function resolveWalkForward(
+  deps: WorkerDeps,
+  claimed: JobRow,
+  engine: Engine,
+  ctx: { engineRequest: BacktestRunRequest; sandboxBundle?: SandboxBundleHandle },
+  runFoldOverride?: RunFold,
+): Promise<WalkForward | undefined> {
+  if (!deps.walkForward?.enabled) return undefined;
+  if (engine !== 'overlay' && engine !== 'strategy') return undefined;
+  const scheme = claimed.request.walkForward;
+  if (scheme === undefined) return undefined;
+  try {
+    const runFold = runFoldOverride ?? workerInternals.makeWalkForwardRunFold(deps, engine, ctx.engineRequest, ctx.sandboxBundle);
+    const deadlineMs = claimed.runDeadlineMs;
+    return await runWalkForward(
+      {
+        scheme,
+        period: claimed.request.period,
+        requestedMetrics: claimed.request.metrics ?? [],
+        maxFolds: deps.walkForward.maxFolds,
+        deadlineExceeded: () => deadlineMs !== undefined && deps.clock() >= deadlineMs,
+      },
+      runFold,
+    );
+  } catch {
+    return { status: 'unavailable', scheme, reason: 'internal_error', failedFolds: [], insufficientFolds: [] };
+  }
 }
 
 export async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
@@ -809,6 +865,12 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         });
       }
     }
+
+    // E3b (advisory, flag-gated): per-fold walk-forward OOS stability. Runs on both the canonical miss AND
+    // hit paths and AFTER the result-cache is populated (a crash mid-folds still leaves the canonical result
+    // cached for the retry). Merged onto the summary projection ⇒ result_hash byte-identical when OFF.
+    const walkForward = await resolveWalkForward(deps, claimed, engineOf(claimed), { engineRequest, sandboxBundle });
+    if (walkForward) finalized = { ...finalized, summary: { ...finalized.summary, walkForward } };
 
     const now = deps.clock();
     await deps.store.transition(runId, 'running', 'completed', {
