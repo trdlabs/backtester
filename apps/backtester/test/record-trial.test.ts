@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { EquityPoint } from '../src/engine/artifacts.js';
-import { InMemoryTrialLedger } from '../src/jobs/ledger/trial-ledger.js';
+import { InMemoryTrialLedger, type TrialLedger } from '../src/jobs/ledger/trial-ledger.js';
 import { recordTrialAndComputeContext } from '../src/jobs/ledger/record-trial.js';
 
 function eq(values: readonly number[]): EquityPoint[] {
@@ -77,5 +77,36 @@ describe('recordTrialAndComputeContext', () => {
     for (const v of [ctx!.trialCount, ctx!.deflatedSharpe, ctx!.sr0, ctx!.vSR, ctx!.tCount]) {
       expect(Number.isFinite(v)).toBe(true);
     }
+  });
+
+  // Advisory-safety hardening (fast-follow to E5a's review): a ledger I/O fault must NEVER fail an
+  // otherwise-successful run. recordIfNew failure is swallowed (best-effort insert); query failure
+  // drops the advisory context (null). Mirrors E5a resolveNovelty.
+  const throwingLedger = (which: 'record' | 'query'): TrialLedger => ({
+    async recordIfNew() {
+      if (which === 'record') throw new Error('ledger down');
+      return true;
+    },
+    async query() {
+      if (which === 'query') throw new Error('ledger down');
+      return [];
+    },
+  });
+
+  it('does not fail the run when the ledger recordIfNew throws (best-effort insert)', async () => {
+    const ctx = await recordTrialAndComputeContext(
+      { ledger: throwingLedger('record'), empiricalMinN: 5, clock: () => 1_000_000 },
+      { request: REQUEST, requestFingerprint: 'fp-1', runId: 'run-1', resultHash: 'sha256:a', equity: EQUITY },
+    );
+    // The insert throw is swallowed and the call resolves — a valid context or null, never a rejection.
+    expect(ctx === null || typeof ctx.trialCount === 'number').toBe(true);
+  });
+
+  it('drops the advisory context (null) when the ledger query throws, without failing the run', async () => {
+    const ctx = await recordTrialAndComputeContext(
+      { ledger: throwingLedger('query'), empiricalMinN: 5, clock: () => 1_000_000 },
+      { request: REQUEST, requestFingerprint: 'fp-1', runId: 'run-1', resultHash: 'sha256:a', equity: EQUITY },
+    );
+    expect(ctx).toBeNull();
   });
 });

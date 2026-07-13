@@ -35,26 +35,38 @@ export async function recordTrialAndComputeContext(
   if (inputs === null) return null;
 
   const familyKey = computeFamilyKey(input.request);
-  await deps.ledger.recordIfNew({
-    familyKey,
-    requestFingerprint: input.requestFingerprint,
-    runId: input.runId,
-    resultHash: input.resultHash,
-    trialFamilyHint: input.request.trialFamilyHint,
-    marketContext: {
-      datasetRef: input.request.datasetRef,
-      symbols: input.request.symbols,
-      timeframe: input.request.timeframe,
-      period: input.request.period,
-    },
-    sharpe: inputs.sharpe,
-    skew: inputs.skew,
-    kurtosis: inputs.kurtosis,
-    tCount: inputs.tCount,
-    createdAtMs: deps.clock(),
-  });
+  // Advisory-safety: a ledger I/O fault must NEVER fail an otherwise-successful run. A failed insert
+  // is best-effort (swallowed); a failed read drops the advisory context (null). Mirrors E5a's
+  // resolveNovelty guard — this whole seam rides the non-hashed summary projection only.
+  try {
+    await deps.ledger.recordIfNew({
+      familyKey,
+      requestFingerprint: input.requestFingerprint,
+      runId: input.runId,
+      resultHash: input.resultHash,
+      trialFamilyHint: input.request.trialFamilyHint,
+      marketContext: {
+        datasetRef: input.request.datasetRef,
+        symbols: input.request.symbols,
+        timeframe: input.request.timeframe,
+        period: input.request.period,
+      },
+      sharpe: inputs.sharpe,
+      skew: inputs.skew,
+      kurtosis: inputs.kurtosis,
+      tCount: inputs.tCount,
+      createdAtMs: deps.clock(),
+    });
+  } catch {
+    // best-effort insert: a failed record must not fail the run
+  }
 
-  const trials = await deps.ledger.query(familyKey);
+  let trials: Awaited<ReturnType<TrialLedger['query']>>;
+  try {
+    trials = await deps.ledger.query(familyKey);
+  } catch {
+    return null; // can't compute DSR without the family history — drop the advisory context
+  }
   const dsr = computeDsr({
     sr: inputs.sharpe,
     skew: inputs.skew,
