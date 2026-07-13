@@ -20,5 +20,13 @@ export function createPool(
   }
   if (startup.length > 0) config.options = startup.join(' ');
   if (opts?.max !== undefined) config.max = Math.max(1, opts.max);
-  return new Pool(config);
+  const pool = new Pool(config);
+  // P1-1: node-pg emits 'error' on idle clients (Pg restart / network reset / failover). An unhandled
+  // 'error' on the pool EventEmitter is an uncaught exception that crashes the whole worker/API process
+  // on any transient blip. Swallow-and-log so pg's own reconnect + the job leases recover instead.
+  pool.on('error', (err) => {
+    // eslint-disable-next-line no-console
+    console.error(`[pool] idle client error: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  return pool;
 }

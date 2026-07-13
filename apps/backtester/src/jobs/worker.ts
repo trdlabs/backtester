@@ -46,7 +46,7 @@ import type { RunOutcome } from '../engine/artifacts';
 import { SandboxModuleExecutor, type SandboxConfig } from '../sandbox/sandbox-executor';
 import type { BundleStore } from '../sandbox/bundle-store';
 import type { OverlaySandboxSettings } from '../config';
-import { publishCompletion, reapAndPublish, type CompletionDeps } from './completion';
+import { deliverOutbox, publishCompletion, reapAndPublish, type CompletionDeps } from './completion';
 import type { JobRow, JobStore } from './job-store';
 import { overlayTapeCache, momentumTapeCache, tapeCacheKey } from '../data/tape-cache.js';
 import type { SigningKey } from '../evidence/signing.js';
@@ -186,6 +186,21 @@ export function overlaySandboxDeps(s: OverlaySandboxSettings): SandboxExecutorDe
  * NONE of them (a bare intra-module call would not be interceptable by the spy). Compute-skip proof.
  */
 export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor };
+
+/**
+ * P0-1: a sandboxed run degrades internal hook failures to `idle` and only RECORDS them on the router
+ * (sandbox-executor.ts) — the run can still return status:'completed' with trades truncated from the
+ * crash bar onward. Surface those recorded errors as a hard RunnerError BEFORE finalize/cache so a
+ * crashed / OOM container never finalizes as `completed` nor poisons the dedup cache. Mirrors the
+ * evidence driver's H1 guard (strategy-evidence-driver.ts). No-op on the trusted / momentum path.
+ */
+export function assertSandboxClean(router: ExecutorRouter | undefined): void {
+  if (!router) return;
+  const errors = router.errors();
+  if (errors.length > 0) {
+    throw new RunnerError('sandbox_error', `sandbox execution failed: ${JSON.stringify(errors)}`);
+  }
+}
 
 type Engine = 'momentum' | 'overlay' | 'strategy';
 
@@ -621,6 +636,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           `overlay run rejected: ${JSON.stringify(outcome.validation.issues)}`,
         );
       }
+      assertSandboxClean(sandboxRouter); // P0-1: crashed sandbox must fail, never finalize completed
       payload = outcome;
       finalized = await finalizeResult(deps, 'overlay', outcome, claimed, dsFingerprint);
     } else if (claimed.request.engine === 'strategy') {
@@ -646,6 +662,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           `strategy run rejected: ${JSON.stringify(outcome.validation.issues)}`,
         );
       }
+      assertSandboxClean(sandboxRouter); // P0-1: a crashed candidate must fail here, before evidence/finalize
       // ── E4: evidence block (run-once, additive) ──────────────────────────────
       // Runs ONLY when curatedBaselineRef is set AND a signing key is present.
       // Any failure leaves evidenceRef undefined — the run still completes with resultHash.
@@ -850,6 +867,9 @@ export async function runWorkerLoop(
         coalesceEnabled: deps.coalesceEnabled,
         computeWaitMaxAttempts: deps.computeWaitMaxAttempts,
       });
+      // P1-2: in the multi-process topology ONLY this loop runs — the app-level tick() that flushes the
+      // durable outbox never fires, so a webhook that failed once is never retried. Redeliver each pass.
+      await deliverOutbox(deps);
       if (deps.coalesceEnabled && deps.computeLock && deps.resultCache) {
         await wakeComputeWaiters({
           store: deps.store,

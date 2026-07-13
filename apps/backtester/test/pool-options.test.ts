@@ -34,6 +34,17 @@ describe('createPool options', () => {
     expect(pool.options.options).toBeUndefined(); // negative timeout = off
     void pool.end();
   });
+
+  // P1-1: node-pg emits 'error' on idle clients (Pg restart / network reset / failover). An unhandled
+  // 'error' on an EventEmitter is an uncaught exception → the whole worker/API process crashes on any
+  // network blip. createPool must attach a handler so the emit is swallowed.
+  it('attaches an error listener so an idle-client error never crashes the process', () => {
+    const pool = createPool('postgres://u:p@localhost:5/db');
+    expect(pool.listenerCount('error')).toBeGreaterThanOrEqual(1);
+    // With a handler attached, emitting 'error' must NOT throw (no unhandled 'error' event).
+    expect(() => pool.emit('error', new Error('idle client boom'), undefined as never)).not.toThrow();
+    void pool.end();
+  });
 });
 
 describe.skipIf(!PG_AVAILABLE)('createPool statement_timeout (Postgres conformance)', () => {

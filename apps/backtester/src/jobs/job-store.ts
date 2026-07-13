@@ -392,6 +392,17 @@ export class InMemoryJobStore implements JobStore {
             atMs: nowMs, terminalAtMs: nowMs, terminalCode: 'run_deadline_exceeded',
           })) reaped.push(job);
         }
+      } else if (job.status === 'waiting_for_compute') {
+        // P1-3: a parked coalescing follower is woken ONLY by wakeComputeWaiters (flag-gated). If the
+        // coalescing flag is rolled back, nothing wakes it, so the run-deadline reaper is its only
+        // backstop — time it out UNCONDITIONALLY (flag-independent) once past its run deadline, else it
+        // strands forever and publicStatus keeps reporting it as 'running'.
+        const runStale = job.runDeadlineMs !== undefined && nowMs > job.runDeadlineMs;
+        if (runStale) {
+          if (await this.transition(job.runId, 'waiting_for_compute', 'timed_out', {
+            atMs: nowMs, terminalAtMs: nowMs, terminalCode: 'run_deadline_exceeded',
+          })) reaped.push(job);
+        }
       }
     }
     return reaped;

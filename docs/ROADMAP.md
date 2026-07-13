@@ -37,7 +37,16 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   shared with untrusted code + no `seq` correlation; SDK↔server bundle-path-validation drift; SSRF via
   `callbackUrl`), plus 27×P2 / 9×P3 / 8×P4. Cross-cutting: `curatedBaselineRef` missing from the request
   fingerprint (found independently 3×). Top perf item: O(n²) per-bar market-API construction. Suggested
-  fix order lives at the bottom of the report. **None of these are fixed yet — code was not modified.**
+  fix order lives at the bottom of the report.
+- **2026-07-13 — worker-resilience remediation (P0-1 + P1-1/1-2/1-3)** (branch `fix/worker-resilience-p0-p1`,
+  TDD): P0-1 — `assertSandboxClean` fails a run whose sandbox recorded errors BEFORE finalize/cache, so a
+  crashed/OOM container never finalizes as `completed` nor poisons the dedup cache (mirrors the evidence
+  driver's H1 guard); P1-1 — `createPool` attaches a `pool.on('error')` handler so an idle-client error
+  (Pg restart / failover) no longer crashes the worker/API process; P1-2 — `runWorkerLoop` now flushes the
+  durable outbox each pass, so failed webhooks are actually redelivered in the multi-process topology;
+  P1-3 — the deadline reaper (in-memory + Pg) times out a stranded `waiting_for_compute` follower past its
+  run deadline UNCONDITIONALLY (flag-independent), closing the coalescing-rollback strand. All default
+  (flag-OFF) paths byte-identical — full suite 881 passed / 89 skipped green. REMAINING findings unaddressed.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
