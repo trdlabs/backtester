@@ -232,8 +232,10 @@ byte-identical. Momentum path not evaluated.
 Validation is **fail-fast only when the flag is enabled** (mirrors E4a's `holdoutFraction`): a
 `NoveltyConfigError` is thrown from `loadConfig` if `enabled` and `threshold ∉ [0,1]` or
 `minOverlapDays` is not an integer `≥ 1`. When **disabled**, `loadConfig` does **not** throw and the
-bad values are never used — the parser normalizes an unparseable/out-of-range env to the default
-(`0.80` / `30`) so the `AppConfig` object never carries `NaN` even with the flag OFF.
+bad values are never used — the parser normalizes an unparseable/blank/`NaN` env to the default
+(`0.80` / `30`) so the `AppConfig` object never carries `NaN` even with the flag OFF. (A finite but
+out-of-range value with the flag OFF is stored verbatim and simply never read — matching the existing
+`holdoutFraction` disabled-path convention; range is only enforced fail-fast when the flag is ON.)
 (`nonNegNumEnv` from PR #113 is deliberately NOT used here — it would admit `threshold > 1` and
 `minOverlapDays = 0`.)
 
