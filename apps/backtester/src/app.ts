@@ -196,6 +196,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     ...(noveltyPool
       ? { novelty: { enabled: true, threshold: config.noveltyCorrThreshold, minOverlapDays: config.noveltyMinOverlapDays, pool: noveltyPool } }
       : {}),
+    ...(config.walkForward ? { walkForward: { enabled: true, maxFolds: config.walkForwardMaxFolds } } : {}),
     ...(overrides.evidenceSigningKey
       ? { evidenceSigningKey: overrides.evidenceSigningKey }
       : config.evidenceSigningKeyPem

@@ -150,6 +150,10 @@ export interface AppConfig {
   readonly noveltyCorrThreshold: number;
   /** E5a: minimum shared UTC days for a valid Pearson. Validated integer ≥ 1 when enabled. Default 30. */
   readonly noveltyMinOverlapDays: number;
+  /** E3b: walk-forward per-fold execution enabled. Default off (dark launch). */
+  readonly walkForward: boolean;
+  /** E3b: policy cap on fold count (safe integer >= 1). Default 20. */
+  readonly walkForwardMaxFolds: number;
   /** Compute-lock TTL (ms). Default = workerLeaseTtlMs. */
   readonly computeLockTtlMs: number;
   /** compute_wait_attempts poison cap. Default 3. */
@@ -374,6 +378,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       env.BACKTESTER_NOVELTY_MIN_OVERLAP_DAYS !== undefined && Number.isInteger(noveltyOverlapRaw)
         ? noveltyOverlapRaw
         : 30,
+    walkForward: env.BACKTESTER_WALK_FORWARD_ENABLED === 'true',
+    walkForwardMaxFolds: (() => {
+      const n = Number(env.BACKTESTER_WALK_FORWARD_MAX_FOLDS);
+      return Number.isSafeInteger(n) && n >= 1 ? n : 20;
+    })(),
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),

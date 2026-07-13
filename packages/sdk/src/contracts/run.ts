@@ -45,6 +45,44 @@ export interface WalkForwardAggregate {
   readonly metrics: Record<string, WalkForwardMetricStats>;
 }
 
+// E3b — walk-forward EXECUTION result (advisory; NOT part of the hashed result). Per-fold OOS metrics
+// over each fold's test window (engine executed over [train.from, test.to] for continuous-state warmup).
+export type WalkForwardFailureCode =
+  | 'validation_error' | 'missing_dataset' | 'sandbox_failure' | 'timeout'
+  | 'runner_failure' | 'budget_exhausted';
+export interface WalkForwardFailure {
+  readonly index: number;
+  readonly code: WalkForwardFailureCode;
+}
+export interface WalkForwardFoldResult {
+  readonly index: number;
+  readonly train: RunPeriod;
+  readonly test: RunPeriod;
+  readonly foldOutcomeHash: string;
+  readonly metrics: Record<string, number>;
+  readonly carryInClosedTradeCount: number;
+}
+export interface WalkForwardExecAggregate extends WalkForwardAggregate {
+  readonly requestedFoldCount: number;
+  readonly completedFoldCount: number;
+  readonly insufficientFolds: readonly number[];
+}
+export type WalkForward =
+  | {
+      readonly status: 'resolved' | 'partial';
+      readonly scheme: WalkForwardScheme;
+      readonly folds: readonly WalkForwardFoldResult[];
+      readonly aggregate: WalkForwardExecAggregate;
+      readonly failedFolds: readonly WalkForwardFailure[];
+    }
+  | {
+      readonly status: 'unavailable';
+      readonly scheme: WalkForwardScheme;
+      readonly reason: 'split_error' | 'all_folds_failed' | 'folds_exceeds_max' | 'insufficient_folds' | 'internal_error';
+      readonly failedFolds: readonly WalkForwardFailure[];
+      readonly insufficientFolds: readonly number[];
+    };
+
 // E4a — held-out OOS qualification marker (advisory; NOT part of the hashed result). A run's
 // `holdout` marker records whether the run touched the server-reserved OOS window, with provenance
 // (the window drifts as coverage grows). Present only when BACKTESTER_HOLDOUT_ENABLED.
@@ -142,6 +180,8 @@ export interface BacktestRunRequest {
    *  Deflated Sharpe trial count N; advisory, NOT part of `requestFingerprint`. Falls back to
    *  `moduleRef.id` server-side when absent. */
   readonly trialFamilyHint?: string;
+  /** E3b: per-request walk-forward scheme. Part of the request fingerprint; executed only when the flag is ON. */
+  readonly walkForward?: WalkForwardScheme;
 }
 
 export interface ModuleValidateRequest {
@@ -262,6 +302,8 @@ export interface RunResultSummary {
   readonly diagnostics?: RunDiagnostics;
   /** E5a: advisory behavioral-novelty signal (PnL-delta correlation vs the pool); NOT covered by `resultHash`. */
   readonly novelty?: Novelty;
+  /** E3b: advisory per-fold walk-forward OOS-stability summary; NOT covered by `resultHash`. */
+  readonly walkForward?: WalkForward;
 }
 
 export type CompletionEventType =

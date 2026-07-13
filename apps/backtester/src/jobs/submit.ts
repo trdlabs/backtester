@@ -157,6 +157,21 @@ function validate(req: RunSubmitRequest): void {
   if (typeof req.seed !== 'number' || !Number.isFinite(req.seed)) {
     throw new SubmitError(400, 'validation_error', 'seed must be a finite number');
   }
+  // E3b: walkForward is arbitrary inbound JSON at runtime — the object guard MUST run before any
+  // `.folds`/`.mode` access, else `walkForward: null` (or a string/array) crashes instead of 400ing.
+  if (req.walkForward !== undefined) {
+    const wf = req.walkForward as unknown;
+    if (typeof wf !== 'object' || wf === null || Array.isArray(wf)) {
+      throw new SubmitError(400, 'validation_error', 'walkForward must be an object { folds, mode }');
+    }
+    const { folds, mode } = wf as { folds?: unknown; mode?: unknown };
+    if (!Number.isSafeInteger(folds) || (folds as number) < 1) {
+      throw new SubmitError(400, 'validation_error', 'walkForward.folds must be an integer >= 1');
+    }
+    if (mode !== 'rolling' && mode !== 'expanding') {
+      throw new SubmitError(400, 'validation_error', "walkForward.mode must be 'rolling' or 'expanding'");
+    }
+  }
   if (req.metrics !== undefined) {
     if (!Array.isArray(req.metrics)) {
       throw new SubmitError(400, 'validation_error', 'metrics must be an array');

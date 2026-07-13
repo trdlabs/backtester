@@ -12,6 +12,8 @@ import type {
   RunDiagnostics,
   RunPeriod,
   RunResultSummary,
+  WalkForward,
+  WalkForwardFailureCode,
 } from '@trading-backtester/sdk/contracts';
 import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
 import { contentRef } from '../determinism/hash';
@@ -67,6 +69,7 @@ import { buildHoldoutMarker } from '../engine/holdout.js';
 import { computeRunDiagnostics } from '../engine/diagnostics.js';
 import { toDailyPnlDeltas, computeNovelty } from '../engine/novelty.js';
 import { computeComparabilityKey, type NoveltyPool } from './ledger/novelty-pool.js';
+import { runWalkForward, WalkForwardFoldError, type RunFold } from '../engine/walk-forward-exec.js';
 
 export { RunnerError };
 
@@ -124,6 +127,8 @@ export interface WorkerDeps extends CompletionDeps {
   diagnostics?: { enabled: boolean; minTrades: number; concentrationPct: number };
   /** E5a: behavioral-novelty gate. Absent/disabled ⇒ no `novelty` field (byte-identical). */
   novelty?: { enabled: boolean; threshold: number; minOverlapDays: number; pool: NoveltyPool };
+  /** E3b: walk-forward per-fold execution. Absent/disabled ⇒ no `walkForward` field (byte-identical). */
+  walkForward?: { enabled: boolean; maxFolds: number };
 }
 
 export function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -192,12 +197,95 @@ export function overlaySandboxDeps(s: OverlaySandboxSettings): SandboxExecutorDe
   return { harnessDir, mount };
 }
 
+/** I/O collaborators a fold needs: build the per-fold tape, make a fresh sandbox router, run the
+ *  engine. Defaulted to the real collaborators below; injected in tests so the factory's OWN control
+ *  flow (fresh router per fold, closeAll on success+throw, error-code mapping) is unit-testable
+ *  without Docker. */
+interface WalkForwardFoldIO {
+  buildTape(period: RunPeriod): Promise<MarketTapeDataset>;
+  makeRouter(): ExecutorRouter;
+  runEngine(request: BacktestRunRequest, tape: MarketTapeDataset, router: ExecutorRouter): Promise<RunOutcome>;
+}
+
+/** Normalize a RunnerError.code into the SDK's WalkForwardFailureCode taxonomy. */
+function mapRunnerCode(code: string): WalkForwardFailureCode {
+  if (code === 'sandbox_error' || code === 'sandbox_unavailable') return 'sandbox_failure';
+  if (code === 'validation_error') return 'validation_error';
+  if (code.includes('timeout')) return 'timeout';
+  return 'runner_failure';
+}
+
+/**
+ * E3b: build the per-fold executor. ONE FRESH sandbox session per fold (no shared mutable router —
+ * load-bearing while P1-4 IPC/sequence is open); assertSandboxClean before accepting; failures classified
+ * into normalized codes. Registry is built once from the OUTER bundle (pure, reused); the outer bundle's
+ * cleanup stays with the worker (no reload here). engineRequest is the outer one — only `period` changes.
+ */
+function makeWalkForwardRunFold(
+  deps: WorkerDeps,
+  engine: Engine,
+  engineRequest: BacktestRunRequest,
+  sandboxBundle?: SandboxBundleHandle,
+  io?: WalkForwardFoldIO,
+): RunFold {
+  const registry =
+    engine === 'strategy'
+      ? buildInlineOverlayRegistry([], sandboxBundle ? [sandboxBundle.bundle] : [])
+      : sandboxBundle
+        ? buildInlineOverlayRegistry([sandboxBundle.bundle])
+        : buildTrustedRegistry();
+  const r = engineRequest;
+  const realIo: WalkForwardFoldIO = {
+    buildTape: (period) =>
+      overlayTapeCache.getOrBuild(
+        tapeCacheKey({ datasetRef: r.datasetRef, symbols: r.symbols, timeframe: r.timeframe, from: period.from, to: period.to }),
+        () => buildOverlayDataset(deps.dataPort, { datasetRef: r.datasetRef, symbols: r.symbols, timeframe: r.timeframe, period }),
+      ),
+    makeRouter: () => workerInternals.overlayRouterFor(deps, r.symbols.length),
+    runEngine: (request, tape, router) =>
+      engine === 'strategy'
+        ? runStrategyBacktest(request, {
+            registry, marketTape: tape, router,
+            ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
+            ...(deps.barMajor === true ? { barMajor: true } : {}),
+            ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
+            ...(deps.universe ? { universe: deps.universe } : {}),
+          })
+        : runOverlayBacktest(request, { registry, marketTape: tape, router, ...(deps.universe ? { universe: deps.universe } : {}) }),
+  };
+  const foldIo = io ?? realIo;
+
+  return async (fold) => {
+    const period = { from: fold.train.from, to: fold.test.to };
+    let tape: MarketTapeDataset;
+    try {
+      tape = await foldIo.buildTape(period);
+    } catch (err) {
+      throw new WalkForwardFoldError('missing_dataset', `fold ${fold.index} tape build failed: ${String(err)}`);
+    }
+    let router: ExecutorRouter | undefined;
+    try {
+      router = foldIo.makeRouter();
+      const outcome = await foldIo.runEngine({ ...r, period }, tape, router);
+      if (outcome.status !== 'completed') throw new WalkForwardFoldError('validation_error', `fold ${fold.index} rejected`);
+      assertSandboxClean(router); // throws RunnerError('sandbox_error') if the session left errors → mapped below
+      return { outcome, hash: contentRef(outcome) };
+    } catch (err) {
+      if (err instanceof WalkForwardFoldError) throw err;
+      const code = err instanceof RunnerError ? mapRunnerCode(err.code) : 'runner_failure';
+      throw new WalkForwardFoldError(code, `fold ${fold.index}: ${String(err)}`);
+    } finally {
+      router?.closeAll();
+    }
+  };
+}
+
 /**
  * Boundary indirection: processNextQueued invokes bundle/executor/router construction through this
  * object so tests can `vi.spyOn(workerInternals, 'sandboxBundleFor')` and prove a dedup HIT performs
  * NONE of them (a bare intra-module call would not be interceptable by the spy). Compute-skip proof.
  */
-export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor };
+export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor, makeWalkForwardRunFold };
 
 /**
  * P0-1: a sandboxed run degrades internal hook failures to `idle` and only RECORDS them on the router
@@ -373,6 +461,42 @@ export async function resolveNovelty(
     }
   }
   return novelty;
+}
+
+/**
+ * E3b: run the advisory walk-forward folds for a completed overlay/strategy run. `undefined` ONLY for
+ * the gate (flag off / no scheme / momentum); when enabled-with-scheme it always resolves to a
+ * WalkForward (fail-open — a fault becomes `unavailable: internal_error`, never a rejection). The
+ * production runFold (built from the outer engineRequest + sandboxBundle) executes one FRESH sandbox
+ * session per fold; tests pass `runFoldOverride`.
+ */
+export async function resolveWalkForward(
+  deps: WorkerDeps,
+  claimed: JobRow,
+  engine: Engine,
+  ctx: { engineRequest: BacktestRunRequest; sandboxBundle?: SandboxBundleHandle },
+  runFoldOverride?: RunFold,
+): Promise<WalkForward | undefined> {
+  if (!deps.walkForward?.enabled) return undefined;
+  if (engine !== 'overlay' && engine !== 'strategy') return undefined;
+  const scheme = claimed.request.walkForward;
+  if (scheme === undefined) return undefined;
+  try {
+    const runFold = runFoldOverride ?? workerInternals.makeWalkForwardRunFold(deps, engine, ctx.engineRequest, ctx.sandboxBundle);
+    const deadlineMs = claimed.runDeadlineMs;
+    return await runWalkForward(
+      {
+        scheme,
+        period: claimed.request.period,
+        requestedMetrics: claimed.request.metrics ?? [],
+        maxFolds: deps.walkForward.maxFolds,
+        deadlineExceeded: () => deadlineMs !== undefined && deps.clock() >= deadlineMs,
+      },
+      runFold,
+    );
+  } catch {
+    return { status: 'unavailable', scheme, reason: 'internal_error', failedFolds: [], insufficientFolds: [] };
+  }
 }
 
 export async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
@@ -809,6 +933,12 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         });
       }
     }
+
+    // E3b (advisory, flag-gated): per-fold walk-forward OOS stability. Runs on both the canonical miss AND
+    // hit paths and AFTER the result-cache is populated (a crash mid-folds still leaves the canonical result
+    // cached for the retry). Merged onto the summary projection ⇒ result_hash byte-identical when OFF.
+    const walkForward = await resolveWalkForward(deps, claimed, engineOf(claimed), { engineRequest, sandboxBundle });
+    if (walkForward) finalized = { ...finalized, summary: { ...finalized.summary, walkForward } };
 
     const now = deps.clock();
     await deps.store.transition(runId, 'running', 'completed', {

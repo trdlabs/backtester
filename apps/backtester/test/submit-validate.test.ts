@@ -42,6 +42,19 @@ async function expectSubmitError(deps: SubmitDeps, body: RunSubmitRequest): Prom
   return caught;
 }
 
+/** Submit an otherwise-valid body with `over` merged in, for fields that are runtime-invalid
+ *  (arbitrary inbound JSON — e.g. `walkForward: null`/string/array). Cast through `unknown` so the
+ *  raw value reaches validate() without a static type error; `req()` only trusts the shape it's
+ *  given, it never checks it. */
+function submitBad(over: Record<string, unknown>): Promise<unknown> {
+  return submitRun(minimalDeps(), req(over as Partial<RunSubmitRequest>));
+}
+
+/** Submit an otherwise-valid body with `over` merged in and expect it to be accepted. */
+function submitOk(over: Partial<RunSubmitRequest> = {}): Promise<unknown> {
+  return submitRun(minimalDeps(), req({ metrics: [], ...over }));
+}
+
 describe('submit validate — engine:strategy metric catalog (Gap 1 + Gap 2)', () => {
   // ── Gap 1 ─────────────────────────────────────────────────────────────────
   it('Gap 1 — engine:strategy + overlay metric (sharpe) is ACCEPTED', async () => {
@@ -149,4 +162,39 @@ describe('submit validate — E1a expanded metric catalog', () => {
       ).resolves.toBeDefined();
     });
   }
+});
+
+describe('submit validate — E3b walkForward shape (Task 3)', () => {
+  it('rejects a walkForward with folds < 1 (400)', async () => {
+    await expect(submitBad({ walkForward: { folds: 0, mode: 'rolling' } }))
+      .rejects.toMatchObject({ statusCode: 400, category: 'validation_error' });
+  });
+
+  it('rejects a non-integer folds (400)', async () => {
+    await expect(submitBad({ walkForward: { folds: 2.5, mode: 'rolling' } }))
+      .rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('rejects an unknown walkForward mode (400)', async () => {
+    await expect(submitBad({ walkForward: { folds: 2, mode: 'bogus' } }))
+      .rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  // Arbitrary inbound JSON — walkForward is `unknown` at runtime; the object guard must run FIRST so a
+  // non-object never dereferences `.folds`.
+  it('rejects walkForward: null (400, not a crash)', async () => {
+    await expect(submitBad({ walkForward: null })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('rejects walkForward as a string (400)', async () => {
+    await expect(submitBad({ walkForward: 'nope' })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('rejects walkForward as an array (400)', async () => {
+    await expect(submitBad({ walkForward: [1, 2] })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('accepts a valid walkForward scheme', async () => {
+    await expect(submitOk({ walkForward: { folds: 3, mode: 'expanding' } })).resolves.toBeDefined();
+  });
 });
