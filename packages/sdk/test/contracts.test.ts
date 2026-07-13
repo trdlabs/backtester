@@ -7,6 +7,7 @@ import {
   type RunSubmitRequest,
 } from '../src/contracts/index';
 import type { Novelty } from '../src/contracts/run.js';
+import type { WalkForward } from '../src/contracts/run.js';
 
 describe('public contracts', () => {
   it('pins the current contract versions', () => {
@@ -39,5 +40,24 @@ describe('public contracts', () => {
     };
     expect(resolved.status).toBe('resolved');
     expect(none.status).toBe('no_comparators');
+  });
+
+  it('WalkForward union carries resolved / partial / unavailable shapes', () => {
+    const agg = {
+      foldCount: 2, metrics: {}, requestedFoldCount: 3, completedFoldCount: 2, insufficientFolds: [],
+    };
+    const resolved: WalkForward = {
+      status: 'partial',
+      scheme: { folds: 3, mode: 'rolling' },
+      folds: [{ index: 0, train: { from: 'a', to: 'b' }, test: { from: 'b', to: 'c' }, foldOutcomeHash: 'h', metrics: { sharpe: 1 }, carryInClosedTradeCount: 0 }],
+      aggregate: agg,
+      failedFolds: [{ index: 2, code: 'sandbox_failure' }],
+    };
+    const none: WalkForward = {
+      status: 'unavailable', scheme: { folds: 3, mode: 'rolling' }, reason: 'all_folds_failed',
+      failedFolds: [{ index: 0, code: 'runner_failure' }], insufficientFolds: [],
+    };
+    expect(resolved.status).toBe('partial');
+    expect(none.status).toBe('unavailable');
   });
 });
