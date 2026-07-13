@@ -312,3 +312,38 @@ describe('SandboxSession.callHookBatch (17b — inert protocol, scripted fake ch
     expect(result.error?.code).toBe('sandbox_timeout');
   });
 });
+
+
+describe('SandboxSession IPC seq validation (P1-4)', () => {
+  it('callHook fails closed when the response seq != request seq (forged / desynced line)', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+    const p = session.callHook('onBarClose', makeCtx(0)); // host sends seq=1
+    driver.stdout.write(`${JSON.stringify({ t: 'ok', seq: 999, decisions: ['FORGED'] })}\n`);
+    const res = await p;
+    expect(res.ok).toBe(false);
+    // session is now dead → a subsequent call short-circuits WITHOUT sending anything.
+    const before = driver.sent.length;
+    await session.callHook('onBarClose', makeCtx(BAR_MS));
+    expect(driver.sent.length).toBe(before);
+  });
+
+  it('callHook succeeds when the response seq matches (no false positive)', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+    const p = session.callHook('onBarClose', makeCtx(0));
+    driver.stdout.write(`${JSON.stringify({ t: 'ok', seq: 1, decisions: ['OK'] })}\n`);
+    const res = await p;
+    expect(res.ok).toBe(true);
+  });
+
+  it('callHookBatch fails closed on a seq mismatch', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+    const ctxs = [0, 1, 2].map((i) => makeCtx(i * BAR_MS));
+    const p = session.callHookBatch(ctxs);
+    driver.stdout.write(`${JSON.stringify({ t: 'okBatch', seq: 999, stoppedAt: 0, decisions: [] })}\n`);
+    const res = await p;
+    expect(res.ok).toBe(false);
+  });
+});

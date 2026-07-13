@@ -64,7 +64,19 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   folded into `requestFingerprint.normalize` CONDITIONALLY: requests without it keep byte-identical
   fingerprints (no dedup-cache churn; curated runs bypass the cache), so a `resumeToken` replay that
   changes the baseline is no longer silently treated as identical. Full suite 1003 passed / 58 skipped
-  green. REMAINING review findings unaddressed.
+  green.
+- **2026-07-13 — sandbox IPC hardening (P1-4, last open P1)** (branch `fix/sandbox-ipc-seq-stdio`, TDD,
+  Docker-verified): the untrusted bundle shares the harness process (stdin/stdout/console). (1) Host now
+  validates the echoed `seq` on every hook response (`SandboxSession.assertSeq`) — a present-but-mismatched
+  seq is a desync/forgery → `malformed`/fail-closed (lenient on a missing seq: the real harness always
+  echoes seq so every genuine response is validated, and stdout isolation blocks bundle injection; fd-level
+  seqless writes remain a documented residual behind the container boundary). (2) `isolateStdio` (deny-shims)
+  captures a private stdout write for the NDJSON protocol, neuters the public `process.stdout.write` +
+  `console.*`, and hands the bundle a DEAD `process.stdin` (readline captured the real one first) so it can
+  neither inject a protocol line nor peek the request wire — closing the batch/bar-major look-ahead. Byte-
+  identical goldens hold (Docker N=2/3/64 lockstep-equivalent); momentum one-shot harness out of scope
+  (separate hardening item). Full suite 1012 passed / 58 skipped green. REMAINING: O(n²) market-API perf
+  (P3-1) + the rest of P2/P3/P4.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

@@ -22,6 +22,38 @@ function deny(code, message) {
 
 const SECRET_KEY_RE = /key|secret|token|password|passwd|credential|bearer|api[_-]?key/i;
 
+/**
+ * P1-4 — stdio isolation. The untrusted bundle shares this process (imported via `import()`), hence it
+ * shares process.stdin / process.stdout / console. Capture a PRIVATE write handle for the NDJSON
+ * protocol, neuter the public stdout write + console.* so the bundle can neither inject a forged
+ * response line nor corrupt the stream with logs, and (when `opts.deadStdin` is given) hand the bundle
+ * a dead stdin so it can't peek the request wire — a batch/bar-major envelope carries FUTURE bars, so a
+ * `process.stdin.on('data')` listener would be a structural look-ahead. The harness's readline is
+ * created from the REAL stdin BEFORE this call and keeps its own reference, so request reading is
+ * unaffected. Container flags remain the real security boundary; this is defense-in-depth for RESULT
+ * integrity. Returns `{ realWrite }` — the harness routes every protocol line through it.
+ */
+export function isolateStdio(proc, con, opts = {}) {
+  const realWrite = proc.stdout.write.bind(proc.stdout);
+  try {
+    proc.stdout.write = () => true; // bundle writes to stdout → swallowed (protocol uses realWrite)
+  } catch {
+    /* stdout.write not reassignable in this env — ignore */
+  }
+  const noop = () => {};
+  for (const m of ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir', 'table', 'group', 'groupEnd']) {
+    if (con && typeof con[m] === 'function') con[m] = noop;
+  }
+  if (opts.deadStdin !== undefined) {
+    try {
+      Object.defineProperty(proc, 'stdin', { value: opts.deadStdin, configurable: true });
+    } catch {
+      /* stdin not redefinable — ignore (host container flags still isolate) */
+    }
+  }
+  return { realWrite };
+}
+
 /** Установить shims: блокировать спавн процессов/shell и доступ к секрет-подобным env-переменным. */
 export function installDenyShims() {
   // --- child_process: спавн/shell запрещён (FR-019; ядро + pids-limit это не гарантируют полностью) ---
