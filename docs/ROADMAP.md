@@ -98,6 +98,13 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   un-guarded on the critical path, so a cache/artifact-store hiccup failed an otherwise-successful run; now
   best-effort (log + continue). (P2-4b trial-ledger was already guarded by the E2 advisory-safety seam — no
   change.) Full suite 1054 passed / 59 skipped green.
+- **2026-07-13 — API auth hardening (P2-10 / P2-11)** (branch `fix/api-auth-hardening-p2`, TDD): P2-10 —
+  `BACKTESTER_AUTH_TOKEN` defaulted to `dev-token`, silently accepted on every `/v1` route; `loadConfig` now
+  FAILS CLOSED when the API binds a non-loopback host with no token set (mirrors the DATA_SOURCE=real guard),
+  keeps the dev default only for loopback (127.0.0.0/8 as a real IPv4 literal via net.isIP, plus exact ::1 / localhost — a hostname like 127.attacker.internal does NOT qualify) + a loud warning; a whitespace-only token counts as unset. P2-11 — the run
+  API and the data API compared the bearer with a plain `header !== \`Bearer ${token}\`` (short-circuits →
+  timing side-channel); both now route through a shared constant-time `bearerTokenMatches` (SHA-256 both
+  sides → equal-length `timingSafeEqual`, no value/length leak). Full suite 1068 passed / 61 skipped green.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

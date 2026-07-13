@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { hostname } from 'node:os';
+import { isIP } from 'node:net';
 
 import {
   DEFAULT_SANDBOX,
@@ -188,6 +189,18 @@ function nonNegNumEnv(raw: string | undefined, def: number, opts?: { int?: boole
   return opts?.int ? Math.floor(clamped) : clamped;
 }
 
+/** A host bind is loopback-only (safe to run with the dev default token) when it is 127.0.0.0/8,
+ *  ::1, or localhost. Everything else (0.0.0.0, a concrete external address, a hostname) is treated as
+ *  externally reachable and requires an explicit auth token. */
+function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  if (h === 'localhost' || h === '::1') return true; // the ONLY hostname / IPv6 literal we trust
+  // 127.0.0.0/8, but ONLY as a real IPv4 literal — a hostname like "127.attacker.internal" merely
+  // starts with "127." yet can resolve to an external interface, so a string prefix is NOT enough.
+  if (isIP(h) === 4) return Number(h.split('.')[0]) === 127;
+  return false;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // OVERLAY sandbox (Slice-6b-A): default everything to the proven DEFAULT_SANDBOX policy,
   // overriding only image + optional resource limits from BACKTESTER_SANDBOX_OVERLAY_* env.
@@ -317,10 +330,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       'BACKTESTER_REAL_PLATFORM_URL and BACKTESTER_REAL_PLATFORM_TOKEN are required when BACKTESTER_DATA_SOURCE=real',
     );
   }
+  // P2-10: never ship a usable default auth secret on an externally-reachable bind. On a non-loopback
+  // host BACKTESTER_AUTH_TOKEN MUST be set explicitly (fail-closed, mirrors the DATA_SOURCE=real guard);
+  // on loopback the dev default is allowed (a loud warning nudges non-local deployments to set one).
+  const host = env.BACKTESTER_HOST ?? '127.0.0.1';
+  const authTokenSet = typeof env.BACKTESTER_AUTH_TOKEN === 'string' && env.BACKTESTER_AUTH_TOKEN.trim().length > 0;
+  if (!authTokenSet && !isLoopbackHost(host)) {
+    throw new Error(
+      `BACKTESTER_AUTH_TOKEN is required when BACKTESTER_HOST (${host}) is not a loopback address — ` +
+        'refusing to expose the API with the insecure default token',
+    );
+  }
+  if (!authTokenSet) {
+    // eslint-disable-next-line no-console
+    console.warn('[config] BACKTESTER_AUTH_TOKEN is unset — using the insecure dev default; set it for any non-local deployment');
+  }
   return {
-    host: env.BACKTESTER_HOST ?? '127.0.0.1',
+    host,
     port: Number(env.BACKTESTER_PORT ?? 8080),
-    authToken: env.BACKTESTER_AUTH_TOKEN ?? 'dev-token',
+    authToken: authTokenSet ? env.BACKTESTER_AUTH_TOKEN! : 'dev-token',
     fixturesDir: env.BACKTESTER_FIXTURES_DIR ?? resolve(HERE, '../fixtures/candles'),
     artifactsDir: env.BACKTESTER_ARTIFACTS_DIR ?? resolve(HERE, '../.data/artifacts'),
     bundlesDir: env.BACKTESTER_BUNDLES_DIR ?? resolve(HERE, '../.data/bundles'),

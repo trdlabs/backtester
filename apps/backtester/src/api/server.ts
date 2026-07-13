@@ -20,6 +20,7 @@ import { publishCompletion, reapAndPublish, type CompletionDeps } from '../jobs/
 import { submitRun, SubmitError, type SubmitDeps } from '../jobs/submit';
 import { buildRegistryDescriptor } from './registry-route.js';
 import { registerBundleRoutes } from './bundles.js';
+import { bearerTokenMatches } from './bearer-auth.js';
 
 export interface ServerDeps extends SubmitDeps, CompletionDeps {
   store: JobStore;
@@ -57,7 +58,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
     if (!req.url.startsWith('/v1/')) return;
     const header = req.headers.authorization;
-    if (header !== `Bearer ${deps.authToken}`) {
+    if (!bearerTokenMatches(header, deps.authToken)) {
       return unauthorized(reply);
     }
   });
