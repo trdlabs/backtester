@@ -8,7 +8,7 @@
 // никаких host/dist/npm-импортов в рантайме (только ./rehydrate.mjs из того же :ro-каталога harness).
 
 import { createInterface } from 'node:readline';
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
 import { installDenyShims, isolateStdio, classifyError } from './deny-shims.mjs';
@@ -201,11 +201,26 @@ async function handleHookBarMajor(msg) {
 
 async function main() {
   const rl = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
-  // P1-4 — harden stdio AFTER readline has captured the real stdin: neuter the public stdout write +
-  // console.* and hand the untrusted bundle a dead stdin (no wire peeking). The harness keeps realWrite.
-  const deadStdin = new Readable({ read() {} });
-  deadStdin.push(null);
-  const { realWrite } = isolateStdio(process, console, { deadStdin });
+  // P1-4 — harden stdio AFTER readline captured the real stdin. Replace process.stdout with a discard
+  // sink and process.stdin with a dead stream (both LOCKED), routing the protocol through the private
+  // realWrite handle. If isolation can't be installed, FAIL CLOSED — never run untrusted code with the
+  // real stdio exposed.
+  const realWriteFallback = process.stdout.write.bind(process.stdout);
+  let realWrite;
+  try {
+    const sink = new Writable({ write(_c, _e, cb) { cb(); } });
+    const deadStdin = new Readable({ read() {} });
+    deadStdin.push(null);
+    ({ realWrite } = isolateStdio(process, console, { sink, deadStdin }));
+  } catch (e) {
+    try {
+      realWriteFallback(`${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail: `stdio isolation failed: ${e && e.message ? e.message : e}` })}\n`);
+    } catch {
+      /* ignore */
+    }
+    process.exit(1);
+    return;
+  }
   emit = (s) => realWrite(s);
   for await (const line of rl) {
     const s = line.trim();

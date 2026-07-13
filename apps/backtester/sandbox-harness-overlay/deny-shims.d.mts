@@ -9,7 +9,9 @@ export function installDenyShims(): void;
 export function classifyError(e: unknown): string;
 
 export interface StdioIsolationOptions {
-  /** A dead/ended Readable handed to the untrusted bundle as `process.stdin` (no request-wire peek). */
+  /** Discard Writable that REPLACES `process.stdout` for the untrusted bundle (locked). */
+  readonly sink?: unknown;
+  /** Dead/ended Readable that REPLACES `process.stdin` for the untrusted bundle (locked; no wire peek). */
   readonly deadStdin?: unknown;
 }
 

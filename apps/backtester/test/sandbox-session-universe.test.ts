@@ -119,9 +119,11 @@ function makeCtx(symbol: string, ts: number): StrategyContext {
   } as unknown as StrategyContext;
 }
 
-/** Write a scripted `{t:'ok', decisions:[]}` response line to the fake container's stdout. */
-function writeOk(driver: ScriptedDriver): void {
-  driver.stdout.write(`${JSON.stringify({ t: 'ok', decisions: [] })}\n`);
+/** Write a scripted `{t:'ok'}` response. `seq` is omitted for init replies (init carries no seq) and
+ * set to the hook request's seq for hook replies — the real harness always echoes it (P1-4 strict seq). */
+function writeOk(driver: ScriptedDriver, seq?: number): void {
+  const body = seq === undefined ? { t: 'ok', decisions: [] } : { t: 'ok', seq, decisions: [] };
+  driver.stdout.write(`${JSON.stringify(body)}\n`);
 }
 
 /** Narrow a BatchHookResult to its `ok: false` branch (asserts + type-guards in one call) — same
@@ -135,8 +137,9 @@ function expectFailed(result: BatchHookResult): asserts result is Extract<BatchH
  * CONTAINER stays alive (this is the "soft" per-symbol failure this task fail-closes on, as
  * distinct from an `eof`/`timeout`/`overflow`/`malformed` channel/container death).
  */
-function writeErr(driver: ScriptedDriver, detail = 'strategy threw'): void {
-  driver.stdout.write(`${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail, hook: 'onBarClose' })}\n`);
+function writeErr(driver: ScriptedDriver, detail = 'strategy threw', seq?: number): void {
+  const body = { t: 'err', code: 'sandbox_crashed', detail, hook: 'onBarClose', ...(seq === undefined ? {} : { seq }) };
+  driver.stdout.write(`${JSON.stringify(body)}\n`);
 }
 
 describe('SandboxSession universe mode', () => {
@@ -146,14 +149,14 @@ describe('SandboxSession universe mode', () => {
     // initStrategy(AAA) [lazy, inside callHook] → callHook(onBarClose, AAA bar0)
     const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
     writeOk(driver); // reply to init(AAA)
-    writeOk(driver); // reply to hook(AAA, bar0)
+    writeOk(driver, 1); // reply to hook(AAA, bar0)
     const r1 = await p1;
     expect(r1.ok).toBe(true);
 
     // initStrategy(BBB) [lazy] → callHook(onBarClose, BBB bar0) — same (already-open) container.
     const p2 = session.callHook('onBarClose', makeCtx('BBB', 0));
     writeOk(driver); // reply to init(BBB)
-    writeOk(driver); // reply to hook(BBB, bar0)
+    writeOk(driver, 2); // reply to hook(BBB, bar0)
     const r2 = await p2;
     expect(r2.ok).toBe(true);
 
@@ -176,12 +179,12 @@ describe('SandboxSession universe mode', () => {
 
     const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
     writeOk(driver); // init(AAA)
-    writeOk(driver); // hook(AAA, bar0)
+    writeOk(driver, 1); // hook(AAA, bar0)
     await p1;
 
     const p2 = session.callHook('onBarClose', makeCtx('BBB', 0));
     writeOk(driver); // init(BBB)
-    writeOk(driver); // hook(BBB, bar0)
+    writeOk(driver, 2); // hook(BBB, bar0)
     await p2;
 
     // AAA's second bar advances ITS OWN barIndex to 1, independent of BBB.
@@ -250,7 +253,7 @@ describe('SandboxSession universe mode', () => {
 
     const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
     writeOk(driver); // reply to init(AAA)
-    writeErr(driver); // reply to hook(AAA, bar0) — harness-caught exception, container alive
+    writeErr(driver, 'strategy threw', 1); // reply to hook(AAA, bar0) — harness-caught exception, container alive
     const r1 = await p1;
     expect(r1.ok).toBe(false);
     expect(r1.decisions).toEqual([]);
@@ -259,7 +262,7 @@ describe('SandboxSession universe mode', () => {
 
     const p2 = session.callHook('onBarClose', makeCtx('BBB', 0));
     writeOk(driver); // reply to init(BBB)
-    writeOk(driver); // reply to hook(BBB, bar0)
+    writeOk(driver, 2); // reply to hook(BBB, bar0)
     const r2 = await p2;
     expect(r2.ok).toBe(true); // BBB unaffected by AAA's failure
 
@@ -272,7 +275,7 @@ describe('SandboxSession universe mode', () => {
 
     const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
     writeOk(driver); // reply to init(AAA)
-    writeErr(driver); // reply to hook(AAA, bar0) → soft err, latches AAA only
+    writeErr(driver, 'strategy threw', 1); // reply to hook(AAA, bar0) → soft err, latches AAA only
     const r1 = await p1;
     expect(r1.ok).toBe(false);
 
@@ -292,7 +295,7 @@ describe('SandboxSession universe mode', () => {
     // BBB is a different symbol — unaffected, still runs on the same (alive) container.
     const p4 = session.callHook('onBarClose', makeCtx('BBB', 0));
     writeOk(driver); // reply to init(BBB)
-    writeOk(driver); // reply to hook(BBB, bar0)
+    writeOk(driver, 2); // reply to hook(BBB, bar0)
     const r4 = await p4;
     expect(r4.ok).toBe(true);
     expect(driver.spawnCount).toBe(1);
@@ -329,7 +332,7 @@ describe('SandboxSession universe mode', () => {
     writeOk(driver); // reply to lazy init(AAA)
     // Harness caught the strategy exception on bar offset 1 mid-batch; container stays alive.
     driver.stdout.write(
-      `${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail: 'strategy threw', hook: 'onBarClose', barOffset: 1 })}\n`,
+      `${JSON.stringify({ t: 'err', seq: 1, code: 'sandbox_crashed', detail: 'strategy threw', hook: 'onBarClose', barOffset: 1 })}\n`,
     );
     const result = await batchPromise;
 
@@ -342,7 +345,7 @@ describe('SandboxSession universe mode', () => {
     // BBB is unaffected — same (alive) container, still runs normally.
     const p2 = session.callHook('onBarClose', makeCtx('BBB', 0));
     writeOk(driver); // reply to init(BBB)
-    writeOk(driver); // reply to hook(BBB, bar0)
+    writeOk(driver, 2); // reply to hook(BBB, bar0)
     const r2 = await p2;
     expect(r2.ok).toBe(true);
     expect(driver.spawnCount).toBe(1); // still ONE container
@@ -361,7 +364,7 @@ describe('SandboxSession universe mode', () => {
     const batchPromise = session.callHookBatch(ctxsAAA);
     writeOk(driver); // reply to lazy init(AAA)
     driver.stdout.write(
-      `${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail: 'strategy threw', hook: 'onBarClose', barOffset: 0 })}\n`,
+      `${JSON.stringify({ t: 'err', seq: 1, code: 'sandbox_crashed', detail: 'strategy threw', hook: 'onBarClose', barOffset: 0 })}\n`,
     );
     const r1 = await batchPromise;
     expectFailed(r1);

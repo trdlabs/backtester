@@ -258,26 +258,24 @@ export class SandboxSession {
 
   /** Вызвать lifecycle-хук модуля внутри сессии; вернуть сырые decisions (ревалидация — в executor). */
   /**
-   * P1-4 — the harness echoes the request `seq` on every hook response. A response whose seq is PRESENT
-   * but does not match the one we just sent is a desynchronized / forged line (the untrusted bundle
-   * shares the IPC stream) — convert it to `malformed` so the session fails closed instead of
-   * attributing a wrong or forged result to this bar. A response with NO seq is tolerated: the real
-   * harness always echoes seq (so every genuine response is fully validated, and any desync surfaces as
-   * a mismatch), and the primary block on bundle-injected lines is isolateStdio neutering the bundle's
-   * stdout — requiring seq presence here would only reject a harness protocol bug the eof/malformed
-   * paths already cover. (Residual: an fd-level raw write — fs.writeSync(1) — could still emit a seqless
-   * line; the container flags remain the real boundary.) Init responses carry no seq and never flow here.
+   * P1-4 — the harness echoes the request `seq` on EVERY hook response. A hook response whose seq is
+   * missing OR does not match the one we just sent is a desynchronized / forged line (the untrusted
+   * bundle shares the IPC stream) — convert it to `malformed` so the session fails closed instead of
+   * attributing a wrong or forged result to this bar. STRICT (seq required): the real harness always
+   * emits seq, so a seqless hook response can only be an fd-level forgery or a protocol bug — either
+   * way, fail closed. Init responses carry no seq and never flow through here (init receives are not
+   * wrapped), so init compatibility is unaffected.
    */
   private assertSeq(outcome: ReceiveOutcome, expected: number): ReceiveOutcome {
     if (
-      (outcome.kind === 'ok' ||
-        outcome.kind === 'okBatch' ||
-        outcome.kind === 'okBarMajor' ||
-        outcome.kind === 'err') &&
-      outcome.seq !== undefined &&
-      outcome.seq !== expected
+      outcome.kind === 'ok' ||
+      outcome.kind === 'okBatch' ||
+      outcome.kind === 'okBarMajor' ||
+      outcome.kind === 'err'
     ) {
-      return { kind: 'malformed', detail: `response seq mismatch: got ${String(outcome.seq)}, expected ${expected}` };
+      if (outcome.seq !== expected) {
+        return { kind: 'malformed', detail: `response seq mismatch: got ${String(outcome.seq)}, expected ${expected}` };
+      }
     }
     return outcome;
   }

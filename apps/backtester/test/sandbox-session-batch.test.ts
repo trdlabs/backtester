@@ -347,3 +347,43 @@ describe('SandboxSession IPC seq validation (P1-4)', () => {
     expect(res.ok).toBe(false);
   });
 });
+
+
+describe('SandboxSession IPC seq validation — strict (P1-4 review)', () => {
+  it('callHook rejects a SEQLESS ok response (the real harness always echoes seq)', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+    const p = session.callHook('onBarClose', makeCtx(0)); // host sends seq=1
+    driver.stdout.write(`${JSON.stringify({ t: 'ok', decisions: ['FORGED'] })}\n`); // NO seq
+    const res = await p;
+    expect(res.ok).toBe(false);
+  });
+
+  it('callHookBatch rejects a SEQLESS okBatch response', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+    const ctxs = [0, 1, 2].map((i) => makeCtx(i * BAR_MS));
+    const p = session.callHookBatch(ctxs);
+    driver.stdout.write(`${JSON.stringify({ t: 'okBatch', stoppedAt: 0, decisions: [] })}\n`); // NO seq
+    const res = await p;
+    expect(res.ok).toBe(false);
+  });
+
+  it('callHookBarMajor fails closed on a seq mismatch', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+    const p = session.callHookBarMajor([makeCtx(0)]); // host sends seq=1
+    driver.stdout.write(`${JSON.stringify({ t: 'okBarMajor', seq: 999, results: [{ ok: true, decisions: [] }] })}\n`);
+    const res = await p;
+    expect(res.every((r) => !r.ok)).toBe(true);
+  });
+
+  it('callHookBarMajor fails closed on a SEQLESS response', async () => {
+    const { session, driver } = newSession();
+    await scriptOpen(driver, session);
+    const p = session.callHookBarMajor([makeCtx(0)]);
+    driver.stdout.write(`${JSON.stringify({ t: 'okBarMajor', results: [{ ok: true, decisions: [] }] })}\n`); // NO seq
+    const res = await p;
+    expect(res.every((r) => !r.ok)).toBe(true);
+  });
+});
