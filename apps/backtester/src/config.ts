@@ -8,6 +8,7 @@ import {
   type SandboxPolicy,
 } from './engine/sandbox-policy';
 import { mountConfigFor } from './engine/sandbox/mounts';
+import { NoveltyConfigError } from './engine/novelty';
 import type { S3Settings } from './storage/s3-client';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -143,6 +144,12 @@ export interface AppConfig {
   readonly diagMinTrades: number;
   /** E1b: `single_trade_dominated` flag threshold (% of gross profit). Default 80. */
   readonly diagConcentrationPct: number;
+  /** E5a: behavioral-novelty gate enabled. Default off (dark launch). */
+  readonly novelty: boolean;
+  /** E5a: `behavioralDuplicate` when maxAbsCorrelation ≥ this. Validated in [0,1] when enabled. Default 0.80. */
+  readonly noveltyCorrThreshold: number;
+  /** E5a: minimum shared UTC days for a valid Pearson. Validated integer ≥ 1 when enabled. Default 30. */
+  readonly noveltyMinOverlapDays: number;
   /** Compute-lock TTL (ms). Default = workerLeaseTtlMs. */
   readonly computeLockTtlMs: number;
   /** compute_wait_attempts poison cap. Default 3. */
@@ -204,6 +211,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const f = Number(env.BACKTESTER_HOLDOUT_FRACTION);
     if (!Number.isFinite(f) || f <= 0 || f >= 1) {
       throw new Error('BACKTESTER_HOLDOUT_FRACTION must be a finite number in (0,1) when BACKTESTER_HOLDOUT_ENABLED');
+    }
+  }
+  // Fail-fast (E5a): thresholds only meaningful in-range; validate only when the gate is on. When off,
+  // the values are normalized to defaults below (never NaN), so a bad env never poisons the config.
+  const noveltyEnabled = env.BACKTESTER_NOVELTY_ENABLED === 'true';
+  const noveltyThresholdRaw = Number(env.BACKTESTER_NOVELTY_CORR_THRESHOLD);
+  const noveltyOverlapRaw = Number(env.BACKTESTER_NOVELTY_MIN_OVERLAP_DAYS);
+  if (noveltyEnabled) {
+    // Only validate a field the caller actually set — an unset field falls back to its default
+    // below and must not be rejected just because the *other* field was the one under test.
+    if (
+      env.BACKTESTER_NOVELTY_CORR_THRESHOLD !== undefined &&
+      (!Number.isFinite(noveltyThresholdRaw) || noveltyThresholdRaw < 0 || noveltyThresholdRaw > 1)
+    ) {
+      throw new NoveltyConfigError('BACKTESTER_NOVELTY_CORR_THRESHOLD must be a number in [0,1] when BACKTESTER_NOVELTY_ENABLED');
+    }
+    if (
+      env.BACKTESTER_NOVELTY_MIN_OVERLAP_DAYS !== undefined &&
+      (!Number.isInteger(noveltyOverlapRaw) || noveltyOverlapRaw < 1)
+    ) {
+      throw new NoveltyConfigError('BACKTESTER_NOVELTY_MIN_OVERLAP_DAYS must be an integer ≥ 1 when BACKTESTER_NOVELTY_ENABLED');
     }
   }
   const workerConcurrencyRaw = Number(env.WORKER_CONCURRENCY ?? 4);
@@ -322,6 +350,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     runDiagnostics: env.BACKTESTER_RUN_DIAGNOSTICS === 'true',
     diagMinTrades: Math.max(0, Math.floor(Number(env.BACKTESTER_DIAG_MIN_TRADES ?? 30))) || 30,
     diagConcentrationPct: Math.max(0, Number(env.BACKTESTER_DIAG_CONCENTRATION_PCT ?? 80)) || 80,
+    novelty: noveltyEnabled,
+    noveltyCorrThreshold:
+      env.BACKTESTER_NOVELTY_CORR_THRESHOLD !== undefined && Number.isFinite(noveltyThresholdRaw)
+        ? noveltyThresholdRaw
+        : 0.8,
+    noveltyMinOverlapDays:
+      env.BACKTESTER_NOVELTY_MIN_OVERLAP_DAYS !== undefined && Number.isInteger(noveltyOverlapRaw)
+        ? noveltyOverlapRaw
+        : 30,
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),
