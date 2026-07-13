@@ -24,7 +24,9 @@ const ALLOWED_TRANSITIONS: Record<InternalJobStatus, readonly InternalJobStatus[
   // transition (no status change, only a JobRowPatch write) before the engine runs. Without this,
   // that write is rejected by canTransition and the deferred attempts++ charge is silently lost.
   running: ['running', 'completed', 'failed', 'canceled', 'timed_out', 'queued', 'waiting_for_compute'],
-  waiting_for_compute: ['queued', 'failed', 'canceled'],
+  // 'timed_out' added (P1-3): the run-deadline reaper is a parked follower's ONLY backstop when the
+  // coalescing flag is rolled back (wakeComputeWaiters is flag-gated) — without it, a follower strands.
+  waiting_for_compute: ['queued', 'failed', 'canceled', 'timed_out'],
   completed: [],
   failed: [],
   canceled: [],

@@ -459,11 +459,16 @@ export class PgJobStore implements JobStore {
       [nowMs, JSON.stringify([{ status: 'queued', atMs: nowMs }]), maxAttempts],
     );
     requeued += attemptsRequeue.rowCount ?? 0;
+    // P1-3: also time out a parked coalescing follower ('waiting_for_compute') past its run deadline.
+    // It is woken only by wakeComputeWaiters (flag-gated); the run-deadline reaper is its ONLY backstop
+    // when coalescing is rolled back. UNCONDITIONAL (not gated on coalesceEnabled). run_deadline_ms was
+    // set at claim time and survives the running->waiting_for_compute transition.
     const timedOut = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
          status = 'timed_out', terminal_at_ms = $1::bigint, terminal_code = 'run_deadline_exceeded',
          timeline_json = timeline_json || $2::jsonb
-       WHERE status = 'running' AND run_deadline_ms IS NOT NULL AND $1::bigint > run_deadline_ms
+       WHERE status IN ('running', 'waiting_for_compute')
+         AND run_deadline_ms IS NOT NULL AND $1::bigint > run_deadline_ms
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'timed_out', atMs: nowMs }])],
     );

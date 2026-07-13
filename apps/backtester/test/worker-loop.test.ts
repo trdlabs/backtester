@@ -52,6 +52,47 @@ it('heartbeat renews the in-flight lease; abort stops the loop', async () => {
   expect((await store.get('r1'))!.leaseExpiresAt!).toBeGreaterThan(before);
 }, 5_000);
 
+// P1-2: in the multi-process topology (API node with autoWorker=false + a worker fleet) ONLY
+// runWorkerLoop runs — the app-level tick() that flushes the outbox never fires. A webhook that
+// failed once is then never retried. runWorkerLoop must flush the outbox each pass so pending/failed
+// deliveries are redelivered. See CODE-REVIEW-2026-07-12.md P1-2.
+it('runWorkerLoop flushes the durable outbox (redelivers a pending webhook)', async () => {
+  const store = new InMemoryJobStore();
+  // A job with a callback URL plus a pending terminal outbox event, as publishCompletion would leave
+  // after a webhook POST failed once. No queued work — the loop must still deliver it.
+  const job = newJob('deliver-me');
+  job.callbackUrl = 'http://hook.test/cb';
+  await store.insertOrGet(job);
+  await store.appendEvent({
+    eventUid: 'evt-1',
+    jobId: 'deliver-me',
+    runId: 'deliver-me',
+    eventType: 'job_completed',
+    payload: { eventType: 'job_completed', runId: 'deliver-me', status: 'completed' },
+    createdAtMs: 1000,
+    deliveryState: 'pending',
+    deliveryAttempts: 0,
+  });
+
+  const posted: string[] = [];
+  const ac = new AbortController();
+  const deps = {
+    store, clock: () => Date.now(), uid: () => 'u',
+    postWebhook: async (url: string) => { posted.push(url); },
+    dataPort: {} as never, artifactStore: {} as never, overlaySandbox: {} as never,
+    lease: { workerId: 'w1', ttlMs: 30_000, maxAttempts: 3 },
+  } as unknown as WorkerDeps;
+
+  const loop = runWorkerLoop(deps, { concurrency: 1, heartbeatMs: 1_000, pollMs: 5, signal: ac.signal });
+  const deadline = Date.now() + 2_000;
+  while (posted.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+  ac.abort();
+  await loop;
+
+  expect(posted).toContain('http://hook.test/cb');
+  expect((await store.listDeliverable(10)).length).toBe(0); // marked delivered
+}, 5_000);
+
 // ─── Docker/PG-gated integration tests ──────────────────────────────────────
 
 function momentumJob(runId: string, seed = 42): NewJob {
