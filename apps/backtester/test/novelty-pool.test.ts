@@ -28,6 +28,11 @@ describe('computeComparabilityKey', () => {
     const c = computeComparabilityKey({ datasetRef: 'ds', symbols: ['BTC'], timeframe: '1h' });
     expect(a).not.toBe(c);
   });
+  it('differs on datasetRef alone (symbols/timeframe held fixed)', () => {
+    const a = computeComparabilityKey({ datasetRef: 'ds1', symbols: ['BTC'], timeframe: '1m' });
+    const b = computeComparabilityKey({ datasetRef: 'ds2', symbols: ['BTC'], timeframe: '1m' });
+    expect(a).not.toBe(b);
+  });
 });
 
 describe('InMemoryNoveltyPool', () => {
@@ -52,5 +57,21 @@ describe('InMemoryNoveltyPool', () => {
   });
   it('query returns [] for an unknown key', async () => {
     expect(await new InMemoryNoveltyPool().query('nope')).toEqual([]);
+  });
+  it('query sorts by createdAtMs ASC even when inserted out of order', async () => {
+    const pool = new InMemoryNoveltyPool();
+    // Inserted with the LARGER createdAtMs first — insertion order alone would fail the assertion below.
+    await pool.recordIfNew(rec({ requestFingerprint: 'fp2', runId: 'r2', createdAtMs: 20 }));
+    await pool.recordIfNew(rec({ requestFingerprint: 'fp1', runId: 'r1', createdAtMs: 10 }));
+    const rows = await pool.query('k');
+    expect(rows.map((r) => r.runId)).toEqual(['r1', 'r2']);
+  });
+  it('query breaks createdAtMs ties by runId ASC', async () => {
+    const pool = new InMemoryNoveltyPool();
+    // Same createdAtMs, inserted with the LATER runId first — insertion order alone would fail the tie-break.
+    await pool.recordIfNew(rec({ requestFingerprint: 'fp2', runId: 'r2', createdAtMs: 5 }));
+    await pool.recordIfNew(rec({ requestFingerprint: 'fp1', runId: 'r1', createdAtMs: 5 }));
+    const rows = await pool.query('k');
+    expect(rows.map((r) => r.runId)).toEqual(['r1', 'r2']);
   });
 });
