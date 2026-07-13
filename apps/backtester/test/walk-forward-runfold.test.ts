@@ -29,11 +29,12 @@ describe('makeWalkForwardRunFold — per-fold resource lifecycle + error mapping
   it('builds a FRESH router per fold and closeAll()s it on success', async () => {
     const routers = [fakeRouter(), fakeRouter()];
     let n = 0;
-    const io = { buildTape: vi.fn(async () => ({} as any)), makeRouter: () => routers[n++], runEngine: vi.fn(async () => goodOutcome) };
+    const makeRouterFn = vi.fn(() => routers[n++]);
+    const io = { buildTape: vi.fn(async () => ({} as any)), makeRouter: makeRouterFn, runEngine: vi.fn(async () => goodOutcome) };
     const rf = workerInternals.makeWalkForwardRunFold(deps, 'overlay', engineRequest, undefined, io);
     await rf(fold(0));
     await rf(fold(1));
-    expect(io.makeRouter as unknown as ReturnType<typeof vi.fn>).toBeDefined();
+    expect(makeRouterFn).toHaveBeenCalledTimes(2);
     expect(routers[0].closeAll).toHaveBeenCalledTimes(1);
     expect(routers[1].closeAll).toHaveBeenCalledTimes(1);
   });
@@ -58,5 +59,14 @@ describe('makeWalkForwardRunFold — per-fold resource lifecycle + error mapping
     const io = { buildTape: async () => { throw new Error('no rows'); }, makeRouter: () => fakeRouter(), runEngine: async () => goodOutcome };
     const rf = workerInternals.makeWalkForwardRunFold(deps, 'overlay', engineRequest, undefined, io);
     await expect(rf(fold(0))).rejects.toMatchObject({ code: 'missing_dataset' });
+  });
+  it('a makeRouter() throw is classified via mapRunnerCode, not surfaced raw as runner_failure', async () => {
+    const io = {
+      buildTape: async () => ({} as any),
+      makeRouter: () => { throw new RunnerError('sandbox_unavailable', 'no daemon'); },
+      runEngine: async () => goodOutcome,
+    };
+    const rf = workerInternals.makeWalkForwardRunFold(deps, 'overlay', engineRequest, undefined, io);
+    await expect(rf(fold(0))).rejects.toMatchObject({ code: 'sandbox_failure' });
   });
 });

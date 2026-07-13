@@ -263,8 +263,9 @@ function makeWalkForwardRunFold(
     } catch (err) {
       throw new WalkForwardFoldError('missing_dataset', `fold ${fold.index} tape build failed: ${String(err)}`);
     }
-    const router = foldIo.makeRouter();
+    let router: ExecutorRouter | undefined;
     try {
+      router = foldIo.makeRouter();
       const outcome = await foldIo.runEngine({ ...r, period }, tape, router);
       if (outcome.status !== 'completed') throw new WalkForwardFoldError('validation_error', `fold ${fold.index} rejected`);
       assertSandboxClean(router); // throws RunnerError('sandbox_error') if the session left errors → mapped below
@@ -274,7 +275,7 @@ function makeWalkForwardRunFold(
       const code = err instanceof RunnerError ? mapRunnerCode(err.code) : 'runner_failure';
       throw new WalkForwardFoldError(code, `fold ${fold.index}: ${String(err)}`);
     } finally {
-      router.closeAll();
+      router?.closeAll();
     }
   };
 }
