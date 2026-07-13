@@ -305,6 +305,10 @@ export function resolveRunDiagnostics(
  * the gate is off. Order is query → score → record; `query` self-excludes this run's fingerprint so a
  * replay is not scored against itself (idempotent projection). A degenerate run (<2 daily deltas) is
  * scored `no_comparators:empty_candidate` and NOT recorded, so it never pollutes the pool.
+ *
+ * Fault-tolerant by design: this is an advisory, dark-launched signal and must NEVER fail an
+ * otherwise-successful job. A failed pool read drops the signal entirely (returns `undefined`); a
+ * failed pool write is a best-effort insert only — it does NOT discard an already-computed score.
  */
 export async function resolveNovelty(
   deps: WorkerDeps,
@@ -319,23 +323,32 @@ export async function resolveNovelty(
     symbols: claimed.request.symbols,
     timeframe: claimed.request.timeframe,
   });
-  const pool = await deps.novelty.pool.query(comparabilityKey, {
-    excludeRequestFingerprint: claimed.requestFingerprint,
-  });
+  let pool: Awaited<ReturnType<NoveltyPool['query']>>;
+  try {
+    pool = await deps.novelty.pool.query(comparabilityKey, {
+      excludeRequestFingerprint: claimed.requestFingerprint,
+    });
+  } catch {
+    return undefined;
+  }
   const novelty = computeNovelty(
     candidateDeltas,
     pool.map((r) => ({ ref: r.resultHash, runId: r.runId, dailyDeltas: r.dailyDeltas })),
     { minOverlapDays: deps.novelty.minOverlapDays, threshold: deps.novelty.threshold, comparabilityKey },
   );
   if (candidateDeltas.length >= 2) {
-    await deps.novelty.pool.recordIfNew({
-      comparabilityKey,
-      requestFingerprint: claimed.requestFingerprint,
-      runId: claimed.runId,
-      resultHash,
-      dailyDeltas: candidateDeltas,
-      createdAtMs: deps.clock(), // WorkerDeps.clock is `() => number` (not an object)
-    });
+    try {
+      await deps.novelty.pool.recordIfNew({
+        comparabilityKey,
+        requestFingerprint: claimed.requestFingerprint,
+        runId: claimed.runId,
+        resultHash,
+        dailyDeltas: candidateDeltas,
+        createdAtMs: deps.clock(), // WorkerDeps.clock is `() => number` (not an object)
+      });
+    } catch {
+      // best-effort insert; a failed write must not discard the already-computed score
+    }
   }
   return novelty;
 }

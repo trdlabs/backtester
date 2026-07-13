@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { resolveNovelty, type WorkerDeps } from '../src/jobs/worker.js';
-import { InMemoryNoveltyPool, computeComparabilityKey } from '../src/jobs/ledger/novelty-pool.js';
+import { InMemoryNoveltyPool, computeComparabilityKey, type NoveltyPool } from '../src/jobs/ledger/novelty-pool.js';
 
 const DAY = 86_400_000;
 function equityCurve(vals: number[]) {
@@ -65,6 +65,38 @@ describe('resolveNovelty — E1b-style worker wiring', () => {
     expect(r2).toMatchObject({ status: 'resolved', behavioralDuplicate: true });
     // replay of fp1 must NOT see itself → not a duplicate against itself
     const replay = await resolveNovelty(d, claimed({ requestFingerprint: 'fp1', runId: 'r1' }), outcome(SERIES), 'h1');
+    expect(replay?.status).toBe('resolved');
     if (replay?.status === 'resolved') expect(replay.nearest.ref).not.toBe('h1');
+  });
+
+  it('pool.query rejects ⇒ resolveNovelty resolves to undefined (never throws)', async () => {
+    const throwingPool = {
+      query: async () => {
+        throw new Error('boom');
+      },
+      recordIfNew: async () => {
+        throw new Error('boom');
+      },
+    } as unknown as NoveltyPool;
+    const d = deps({
+      novelty: { enabled: true, threshold: 0.8, minOverlapDays: 2, pool: throwingPool },
+      clock: (() => 1) as WorkerDeps['clock'],
+    });
+    await expect(resolveNovelty(d, claimed(), outcome(SERIES), 'h1')).resolves.toBeUndefined();
+  });
+
+  it('pool.query resolves but recordIfNew rejects ⇒ score preserved, no throw', async () => {
+    const flakyWritePool = {
+      query: async () => [],
+      recordIfNew: async () => {
+        throw new Error('boom');
+      },
+    } as unknown as NoveltyPool;
+    const d = deps({
+      novelty: { enabled: true, threshold: 0.8, minOverlapDays: 2, pool: flakyWritePool },
+      clock: (() => 1) as WorkerDeps['clock'],
+    });
+    const r = await resolveNovelty(d, claimed(), outcome(SERIES), 'h1');
+    expect(r).toMatchObject({ status: 'no_comparators', reason: 'empty_pool', comparabilityKey: KEY });
   });
 });
