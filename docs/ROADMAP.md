@@ -54,7 +54,17 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   residual); P2-13 — `validate()` now rejects an unparseable or inverted `period` (`from` >= `to`) at the
   front door for every engine, and `worker.periodMs` throws instead of coercing to `{0, MAX_SAFE_INTEGER}`
   so a bad period can never be silently run full-span nor (P2-21) signed into an evidence scope window.
-  Full suite 904 passed / 89 skipped green. REMAINING review findings unaddressed.
+  Full suite 904 passed / 89 skipped green.
+- **2026-07-13 — path-validation parity + curatedBaselineRef fingerprint (P1-5 + cross-cutting)** (branch
+  `fix/path-parity-curated-fingerprint`, TDD): P1-5 — the server `validateBundle` and the SDK
+  `preflightValidateBundle` drifted (server used a naive `includes('..')` substring: wrongly rejected
+  `a..b.js`, wrongly ACCEPTED backslash/colon/NUL, and never path-checked `entry`). Extracted a single
+  `isUnsafeBundlePath` predicate into `@trading-backtester/sdk/contracts`; both validators now call it, so
+  they can never drift again (locked by a batteries-of-paths parity test). Cross-cutting — `curatedBaselineRef`
+  folded into `requestFingerprint.normalize` CONDITIONALLY: requests without it keep byte-identical
+  fingerprints (no dedup-cache churn; curated runs bypass the cache), so a `resumeToken` replay that
+  changes the baseline is no longer silently treated as identical. Full suite 1003 passed / 58 skipped
+  green. REMAINING review findings unaddressed.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

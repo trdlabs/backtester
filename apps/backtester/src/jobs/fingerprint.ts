@@ -29,6 +29,10 @@ function normalize(req: RunSubmitRequest, bundleHashValue: ContentHash | null) {
     riskProfileRef: req.riskProfileRef ?? null,
     executionProfileRef: req.executionProfileRef ?? null,
     robustnessChecks: req.robustnessChecks ?? [],
+    // curatedBaselineRef is run-affecting for strategy-evidence runs (curated twin + signed evidenceRef).
+    // Included CONDITIONALLY so requests without it keep byte-identical fingerprints (no dedup-cache
+    // churn; curated runs bypass the cache anyway) while a replay that changes it is no longer identical.
+    ...(req.curatedBaselineRef !== undefined ? { curatedBaselineRef: req.curatedBaselineRef } : {}),
   };
 }
 

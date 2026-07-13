@@ -4,7 +4,7 @@
 
 import type { ContentHash } from '@trading-backtester/sdk/artifacts';
 import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
-import { BUNDLE_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
+import { BUNDLE_CONTRACT_VERSION, isUnsafeBundlePath } from '@trading-backtester/sdk/contracts';
 import { contentRef } from '../determinism/hash';
 
 export function bundleHash(bundle: ModuleBundle): ContentHash {
@@ -38,12 +38,15 @@ export function validateBundle(input: unknown): BundleIssue[] {
   }
   if (typeof b.entry !== 'string' || b.entry.length === 0) {
     issues.push({ code: 'schema_invalid', message: 'entry is required' });
+  } else if (isUnsafeBundlePath(b.entry)) {
+    issues.push({ code: 'bundle_entrypoint_invalid', message: `invalid entry path: ${b.entry}` });
   }
   if (!b.files || typeof b.files !== 'object') {
     issues.push({ code: 'schema_invalid', message: 'files is required' });
   } else {
     for (const key of Object.keys(b.files)) {
-      if (key.includes('..') || key.startsWith('/')) {
+      // P1-5: shared predicate with the SDK preflight so the two validators can never drift.
+      if (isUnsafeBundlePath(key)) {
         issues.push({ code: 'bundle_entrypoint_invalid', message: `invalid file path: ${key}` });
       }
     }

@@ -7,29 +7,13 @@
 import type { BacktestEngine, ModuleBundle, ModuleKind } from '../contracts/module';
 import type { ValidationIssue, ValidationReport, ValidationStatus } from '../contracts/validation';
 import { BUNDLE_CONTRACT_VERSION } from '../internal/versions';
+import { isUnsafeBundlePath } from '../contracts/bundle-path';
 
 export interface PreflightOptions {
   readonly engine: BacktestEngine;
 }
 
 const SUPPORTED_KINDS: readonly ModuleKind[] = ['strategy', 'overlay'];
-
-/**
- * A file path is unsafe if it is absolute (POSIX `/...` or Windows drive `C:/...`), empty,
- * contains backslashes, a colon (drive letter / scheme), NUL bytes, or any `.`/`..` path
- * segment. The segment-exact `.`/`..` check is intentional and narrower than a naive
- * `includes('..')` substring (a filename like `a..b` is valid) — do not "simplify" it to a
- * substring match to mirror the service's older check.
- */
-function isUnsafePath(path: string): boolean {
-  if (path.length === 0) return true;
-  if (path.startsWith('/')) return true;
-  if (path.includes('\\')) return true;
-  if (path.includes('\0')) return true;
-  if (path.includes(':')) return true; // Windows drive (C:) or scheme-like absolute path
-  const segments = path.split('/');
-  return segments.some((seg) => seg === '..' || seg === '.');
-}
 
 /** The engine selected for a run must match the declared module kind. */
 function engineMatchesKind(engine: BacktestEngine, kind: ModuleKind): boolean {
@@ -93,7 +77,7 @@ export function preflightValidateBundle(input: unknown, options: PreflightOption
       severity: 'error',
       message: 'entry is required and must be a non-empty string',
     });
-  } else if (isUnsafePath(b.entry)) {
+  } else if (isUnsafeBundlePath(b.entry)) {
     issues.push({
       code: 'bundle_entrypoint_invalid',
       severity: 'error',
@@ -106,7 +90,7 @@ export function preflightValidateBundle(input: unknown, options: PreflightOption
     issues.push({ code: 'schema_invalid', severity: 'error', message: 'files is required' });
   } else {
     for (const key of Object.keys(b.files)) {
-      if (isUnsafePath(key)) {
+      if (isUnsafeBundlePath(key)) {
         issues.push({
           code: 'bundle_entrypoint_invalid',
           severity: 'error',
