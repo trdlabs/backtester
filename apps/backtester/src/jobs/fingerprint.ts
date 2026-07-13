@@ -33,6 +33,11 @@ function normalize(req: RunSubmitRequest, bundleHashValue: ContentHash | null) {
     // Included CONDITIONALLY so requests without it keep byte-identical fingerprints (no dedup-cache
     // churn; curated runs bypass the cache anyway) while a replay that changes it is no longer identical.
     ...(req.curatedBaselineRef !== undefined ? { curatedBaselineRef: req.curatedBaselineRef } : {}),
+    // walkForward (E3b) is run-affecting: it drives the tape slicing into train/test folds and produces
+    // a distinct per-fold aggregate. Included CONDITIONALLY, mirroring curatedBaselineRef above, so
+    // requests without a scheme keep byte-identical fingerprints (no dedup-cache churn for the common
+    // no-walk-forward case) while a replay that changes the scheme is no longer identical.
+    ...(req.walkForward !== undefined ? { walkForward: req.walkForward } : {}),
   };
 }
 
