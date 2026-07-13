@@ -64,6 +64,23 @@ function isBlockedIpv4(s: string): boolean {
   );
 }
 
+/** Extract the embedded dotted-quad IPv4 from an IPv4-mapped ('::ffff:…') or deprecated IPv4-compatible
+ *  ('::AABB:CCDD') IPv6 literal, or null when the host is neither. WHATWG URL normalizes these to their
+ *  hex short form (e.g. `::ffff:127.0.0.1` → `::ffff:7f00:1`), so we must parse the hex groups — a naive
+ *  dotted-quad check misses the normalized loopback/private literal entirely. */
+function embeddedMappedIpv4(h: string): string | null {
+  let tail: string | null = null;
+  if (h.startsWith('::ffff:')) tail = h.slice(7); // IPv4-mapped
+  else if (h.startsWith('::') && h.slice(2).split(':').length === 2) tail = h.slice(2); // IPv4-compatible (deprecated)
+  if (tail === null) return null;
+  if (tail.includes('.')) return tail; // already dotted-quad
+  const g = tail.split(':');
+  if (g.length !== 2) return null;
+  const hi = parseInt(g[0], 16), lo = parseInt(g[1], 16);
+  if (Number.isNaN(hi) || Number.isNaN(lo) || hi < 0 || lo < 0 || hi > 0xffff || lo > 0xffff) return null;
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
 /** True when a URL hostname is a loopback / private / link-local / metadata literal — the classic SSRF
  *  targets. Literal checks only (no DNS resolution): a DNS-rebinding host that resolves to an internal
  *  IP is a residual risk tracked separately; this closes the direct-literal vectors. */
@@ -74,7 +91,8 @@ function isBlockedWebhookHost(hostname: string): boolean {
     // IPv6 literal: loopback / unspecified / link-local (fe80::/10) / unique-local (fc00::/7).
     if (h === '::1' || h === '::') return true;
     if (h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
-    if (h.startsWith('::ffff:')) return isBlockedIpv4(h.slice(7)); // IPv4-mapped IPv6
+    const mapped = embeddedMappedIpv4(h); // IPv4-mapped / IPv4-compatible → check as IPv4
+    if (mapped !== null) return isBlockedIpv4(mapped);
     return false;
   }
   return isBlockedIpv4(h);

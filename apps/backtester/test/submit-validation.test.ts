@@ -4,6 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import { AUTH, buildTestApp, runBody, testDeps } from './helpers';
 import { assertSafeCallbackUrl, SubmitError } from '../src/jobs/submit.js';
+import { periodMs } from '../src/jobs/worker.js';
+import { RunnerError } from '../src/runner/errors.js';
 
 // ─── P1-6: SSRF guard on the completion webhook URL (unit) ──────────────────
 describe('assertSafeCallbackUrl (SSRF guard)', () => {
@@ -21,6 +23,12 @@ describe('assertSafeCallbackUrl (SSRF guard)', () => {
     'http://[::1]:8080/cb', // IPv6 loopback
     'http://[fe80::1]/cb', // IPv6 link-local
     'http://[fd00::1]/cb', // IPv6 unique-local
+    'http://[::ffff:127.0.0.1]/cb', // IPv4-mapped IPv6 loopback (Node normalizes → [::ffff:7f00:1])
+    'http://[::ffff:7f00:1]/cb', // same, hex form
+    'http://[0:0:0:0:0:ffff:127.0.0.1]/cb', // same, uncompressed
+    'http://[::ffff:10.0.0.1]/cb', // IPv4-mapped IPv6 private
+    'http://[::ffff:172.16.0.1]/cb', // IPv4-mapped IPv6 private /12
+    'http://[::127.0.0.1]/cb', // deprecated IPv4-compatible IPv6 loopback (→ [::7f00:1])
   ];
   for (const url of blocked) {
     it(`rejects ${url}`, () => {
@@ -42,12 +50,33 @@ describe('assertSafeCallbackUrl (SSRF guard)', () => {
     'http://hook.test/cb', // hostname literal — the existing completion-test callback
     'https://8.8.8.8/cb', // a public IP is fine
     'http://172.32.0.1/cb', // just outside the private /12 → allowed
+    'http://[::ffff:8.8.8.8]/cb', // IPv4-mapped IPv6 of a PUBLIC address → allowed (no over-block)
   ];
   for (const url of allowed) {
     it(`allows ${url}`, () => {
       expect(() => assertSafeCallbackUrl(url)).not.toThrow();
     });
   }
+});
+
+// ─── P2-13/P2-21: worker.periodMs is the defense-in-depth backstop ──────────
+// It must throw (not coerce to {0, MAX_SAFE_INTEGER}) on ANY invalid period, so a bad period can
+// never reach an evidence scope window even if submit validation were bypassed.
+describe('periodMs (defense-in-depth)', () => {
+  it('returns parsed ms for a valid period', () => {
+    const r = periodMs({ from: '2023-11-14T00:00:00.000Z', to: '2023-11-15T00:00:00.000Z' });
+    expect(r.tsFrom).toBe(Date.parse('2023-11-14T00:00:00.000Z'));
+    expect(r.tsTo).toBe(Date.parse('2023-11-15T00:00:00.000Z'));
+  });
+
+  it('throws on an unparseable period (never coerces to {0, MAX})', () => {
+    expect(() => periodMs({ from: 'not-a-date', to: 'also-bad' })).toThrow(RunnerError);
+  });
+
+  it('throws on an inverted period (from >= to)', () => {
+    expect(() => periodMs({ from: '2023-11-15T00:00:00.000Z', to: '2023-11-14T00:00:00.000Z' })).toThrow(RunnerError);
+    expect(() => periodMs({ from: '2023-11-14T00:00:00.000Z', to: '2023-11-14T00:00:00.000Z' })).toThrow(RunnerError);
+  });
 });
 
 // ─── P1-6 + P2-13 wired into the submit path (HTTP) ─────────────────────────

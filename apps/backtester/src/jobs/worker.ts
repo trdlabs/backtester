@@ -121,14 +121,18 @@ export interface WorkerDeps extends CompletionDeps {
   diagnostics?: { enabled: boolean; minTrades: number; concentrationPct: number };
 }
 
-function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
+export function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
   const from = Date.parse(period.from);
   const to = Date.parse(period.to);
   // Submit-time validation (submit.ts::validate) already guarantees parseable, ordered bounds. Throw
   // rather than silently coerce to {0, MAX_SAFE_INTEGER} so a bad period can never be signed into an
-  // evidence scope window (P2-13 / P2-21) even if a future caller bypasses submit validation.
+  // evidence scope window (P2-13 / P2-21) even if a future caller bypasses submit validation — mirror
+  // the same two checks (parseable AND from < to) here.
   if (Number.isNaN(from) || Number.isNaN(to)) {
     throw new RunnerError('validation_error', `unparseable period: ${period.from}..${period.to}`);
+  }
+  if (from >= to) {
+    throw new RunnerError('validation_error', `period.from must be before period.to: ${period.from}..${period.to}`);
   }
   return { tsFrom: from, tsTo: to };
 }
