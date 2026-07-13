@@ -437,6 +437,9 @@ export class PgJobStore implements JobStore {
     // double-handling; when coalesceEnabled is false that extra clause is always-true and this SQL is
     // byte-identical to the pre-Task-7 query (INV-6).
     const engineChargedFilter = coalesceEnabled ? 'AND engine_attempt_charged IS DISTINCT FROM false' : '';
+    // P2-3: under coalescing, a requeue resets the engine-commit charge (else a crash-before-charge loop
+    // never advances `attempts`). Gated on coalesceEnabled so the non-coalescing path stays byte-identical.
+    const chargedReset = coalesceEnabled ? 'engine_attempt_charged = false,' : '';
     // Poison: expired-lease running jobs at/over the attempts cap → terminal failure.
     const poisoned = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
@@ -452,6 +455,7 @@ export class PgJobStore implements JobStore {
     const attemptsRequeue = await this.pool.query(
       `UPDATE backtest_job SET
          status = 'queued', queued_at_ms = $1::bigint, leased_by = NULL, lease_expires_at = NULL,
+         ${chargedReset}
          timeline_json = timeline_json || $2::jsonb
        WHERE status = 'running' AND lease_expires_at IS NOT NULL
          AND $1::bigint > lease_expires_at AND attempts < $3

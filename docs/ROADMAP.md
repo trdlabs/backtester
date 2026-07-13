@@ -87,6 +87,17 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   bars: ~287,600 ms → ~7 ms (identical checksum); direct callers keep the self-computed form. Full suite
   1022 passed / 58 skipped, goldens byte-identical. All P0/P1 + this top perf item now closed; remaining
   review findings = the P2/P3/P4 tail.
+- **2026-07-13 — queue-hardening (P2-2 / P2-3 / P2-4)** (branch `fix/queue-hardening-p2`, TDD): P2-2 —
+  `processNextQueued` published its completion event unconditionally, so if a reaper terminalized the row
+  mid-run (worker's terminal CAS lost) the worker emitted a DUPLICATE outbox event + webhook with a fresh
+  eventUid the `ON CONFLICT(event_uid)` dedupe can't catch; now it publishes ONLY when it owns the terminal
+  transition. P2-3 — the deadline reaper's requeue didn't reset `engine_attempt_charged`, so under
+  coalescing a job that charged once then kept crashing BEFORE the next charge requeued forever (neither the
+  coalesce-requeue, which needs charged=false, nor `attempts` advanced); the requeue now resets it (gated on
+  coalesceEnabled → INV-6 byte-identical), verified against real Postgres. P2-4 — the dedup-cache populate ran
+  un-guarded on the critical path, so a cache/artifact-store hiccup failed an otherwise-successful run; now
+  best-effort (log + continue). (P2-4b trial-ledger was already guarded by the E2 advisory-safety seam — no
+  change.) Full suite 1054 passed / 59 skipped green.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

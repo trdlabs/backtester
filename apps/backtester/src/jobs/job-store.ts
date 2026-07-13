@@ -385,6 +385,11 @@ export class InMemoryJobStore implements JobStore {
             if (requeued !== undefined) {
               requeued.leasedBy = undefined;
               requeued.leaseExpiresAt = undefined;
+              // P2-3: under coalescing, a requeue must reset the engine-commit charge — else a job that
+              // charged once then keeps crashing BEFORE the next charge stays engineAttemptCharged=true,
+              // so neither the coalesce-requeue (needs false) nor `attempts` ever advances → infinite
+              // requeue. Gated on coalesceEnabled (the field is inert otherwise ⇒ INV-6 byte-identical).
+              if (coalesceEnabled) requeued.engineAttemptCharged = false;
             }
           }
         } else if (runStale) {
