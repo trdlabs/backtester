@@ -8,6 +8,7 @@ import type { ArtifactManifest, ArtifactReference, ContentHash } from '@trading-
 import type {
   BacktestRunRequest,
   HoldoutMarker,
+  Novelty,
   RunDiagnostics,
   RunPeriod,
   RunResultSummary,
@@ -64,6 +65,8 @@ import type { TrialLedger } from './ledger/trial-ledger.js';
 import { recordTrialAndComputeContext } from './ledger/record-trial.js';
 import { buildHoldoutMarker } from '../engine/holdout.js';
 import { computeRunDiagnostics } from '../engine/diagnostics.js';
+import { toDailyPnlDeltas, computeNovelty } from '../engine/novelty.js';
+import { computeComparabilityKey, type NoveltyPool } from './ledger/novelty-pool.js';
 
 export { RunnerError };
 
@@ -119,6 +122,8 @@ export interface WorkerDeps extends CompletionDeps {
   holdout?: { enabled: boolean; fraction: number };
   /** E1b: structured run diagnostics. Absent/disabled ⇒ no `diagnostics` field (byte-identical). */
   diagnostics?: { enabled: boolean; minTrades: number; concentrationPct: number };
+  /** E5a: behavioral-novelty gate. Absent/disabled ⇒ no `novelty` field (byte-identical). */
+  novelty?: { enabled: boolean; threshold: number; minOverlapDays: number; pool: NoveltyPool };
 }
 
 function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -264,6 +269,10 @@ async function finalizeResult(
   // Non-hashed; flag-OFF ⇒ field absent ⇒ byte-identical.
   const diagnostics = resolveRunDiagnostics(deps, outcome);
   if (diagnostics) summary = { ...summary, diagnostics };
+  // E5a (advisory, flag-gated): behavioral-novelty vs the prior pool (query → score → record, self-
+  // excluding this fingerprint). Non-hashed projection; flag-OFF ⇒ field absent ⇒ byte-identical.
+  const novelty = await resolveNovelty(deps, claimed, outcome, resultHash);
+  if (novelty) summary = { ...summary, novelty };
   return { summary, manifest: persisted.manifest, resultHash };
 }
 
@@ -289,6 +298,46 @@ export function resolveRunDiagnostics(
     orderCount: outcome.baseline.summary.ordersCount,
     policy: { minTrades: deps.diagnostics.minTrades, concentrationPct: deps.diagnostics.concentrationPct },
   });
+}
+
+/**
+ * E5a: compute the advisory novelty signal for a completed overlay/strategy run. `undefined` when
+ * the gate is off. Order is query → score → record; `query` self-excludes this run's fingerprint so a
+ * replay is not scored against itself (idempotent projection). A degenerate run (<2 daily deltas) is
+ * scored `no_comparators:empty_candidate` and NOT recorded, so it never pollutes the pool.
+ */
+export async function resolveNovelty(
+  deps: WorkerDeps,
+  claimed: JobRow,
+  outcome: Extract<RunOutcome, { status: 'completed' }>,
+  resultHash: string,
+): Promise<Novelty | undefined> {
+  if (!deps.novelty?.enabled) return undefined;
+  const candidateDeltas = toDailyPnlDeltas(outcome.baseline.evidence.equityCurve);
+  const comparabilityKey = computeComparabilityKey({
+    datasetRef: claimed.datasetRef,
+    symbols: claimed.request.symbols,
+    timeframe: claimed.request.timeframe,
+  });
+  const pool = await deps.novelty.pool.query(comparabilityKey, {
+    excludeRequestFingerprint: claimed.requestFingerprint,
+  });
+  const novelty = computeNovelty(
+    candidateDeltas,
+    pool.map((r) => ({ ref: r.resultHash, runId: r.runId, dailyDeltas: r.dailyDeltas })),
+    { minOverlapDays: deps.novelty.minOverlapDays, threshold: deps.novelty.threshold, comparabilityKey },
+  );
+  if (candidateDeltas.length >= 2) {
+    await deps.novelty.pool.recordIfNew({
+      comparabilityKey,
+      requestFingerprint: claimed.requestFingerprint,
+      runId: claimed.runId,
+      resultHash,
+      dailyDeltas: candidateDeltas,
+      createdAtMs: deps.clock(), // WorkerDeps.clock is `() => number` (not an object)
+    });
+  }
+  return novelty;
 }
 
 export async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
