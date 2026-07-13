@@ -105,6 +105,13 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   API and the data API compared the bearer with a plain `header !== \`Bearer ${token}\`` (short-circuits →
   timing side-channel); both now route through a shared constant-time `bearerTokenMatches` (SHA-256 both
   sides → equal-length `timingSafeEqual`, no value/length leak). Full suite 1068 passed / 61 skipped green.
+- **2026-07-14 — P3-2: deny-shim ESM coverage** (branch `fix/deny-shim-esm-p3`, TDD, Docker-verified):
+  `installDenyShims` patched the CJS `child_process` exports but never called `module.syncBuiltinESMExports()`,
+  so a bundle using an ESM named import (`import { spawn } from 'node:child_process'`) could bind to the
+  ORIGINAL `spawn` (the ESM namespace is a snapshot taken at materialization). Added the sync call after the
+  patch loop, closing the `import { spawn }` bypass. Defense-in-depth only — the container flags (net=none,
+  cap-drop ALL, pids-limit, no-new-privileges) remain the real boundary. Full suite 1071 passed / 61 skipped
+  green; Docker sandbox startup unaffected.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

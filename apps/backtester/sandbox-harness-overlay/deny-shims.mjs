@@ -9,7 +9,7 @@
 //      (sandbox_forbidden_access / sandbox_forbidden_import). node-core singleton'ы общие с ESM-импортом
 //      bundle, поэтому патч виден и коду модуля.
 
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
@@ -78,6 +78,11 @@ export function installDenyShims() {
         };
       }
     }
+    // P3-2 — ESM named imports (`import { spawn } from 'node:child_process'`) bind to the builtin's ESM
+    // namespace, a SNAPSHOT of its exports. Patching the CJS exports object above does NOT update an
+    // already-materialized ESM binding — so re-sync every builtin's ESM named exports to the (now-patched)
+    // CJS exports, closing the `import { spawn }` bypass. Cheap; runs once at harness start.
+    syncBuiltinESMExports();
   } catch {
     /* модуль недоступен — ок */
   }
