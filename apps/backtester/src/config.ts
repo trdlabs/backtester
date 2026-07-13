@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { hostname } from 'node:os';
+import { isIP } from 'node:net';
 
 import {
   DEFAULT_SANDBOX,
@@ -192,8 +193,12 @@ function nonNegNumEnv(raw: string | undefined, def: number, opts?: { int?: boole
  *  ::1, or localhost. Everything else (0.0.0.0, a concrete external address, a hostname) is treated as
  *  externally reachable and requires an explicit auth token. */
 function isLoopbackHost(host: string): boolean {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
-  return h === 'localhost' || h === '::1' || h === '127.0.0.1' || h.startsWith('127.');
+  const h = host.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  if (h === 'localhost' || h === '::1') return true; // the ONLY hostname / IPv6 literal we trust
+  // 127.0.0.0/8, but ONLY as a real IPv4 literal — a hostname like "127.attacker.internal" merely
+  // starts with "127." yet can resolve to an external interface, so a string prefix is NOT enough.
+  if (isIP(h) === 4) return Number(h.split('.')[0]) === 127;
+  return false;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -329,7 +334,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // host BACKTESTER_AUTH_TOKEN MUST be set explicitly (fail-closed, mirrors the DATA_SOURCE=real guard);
   // on loopback the dev default is allowed (a loud warning nudges non-local deployments to set one).
   const host = env.BACKTESTER_HOST ?? '127.0.0.1';
-  const authTokenSet = typeof env.BACKTESTER_AUTH_TOKEN === 'string' && env.BACKTESTER_AUTH_TOKEN.length > 0;
+  const authTokenSet = typeof env.BACKTESTER_AUTH_TOKEN === 'string' && env.BACKTESTER_AUTH_TOKEN.trim().length > 0;
   if (!authTokenSet && !isLoopbackHost(host)) {
     throw new Error(
       `BACKTESTER_AUTH_TOKEN is required when BACKTESTER_HOST (${host}) is not a loopback address — ` +

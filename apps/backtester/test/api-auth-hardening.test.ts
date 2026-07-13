@@ -36,6 +36,16 @@ describe('P2-10: auth token must not default to an insecure value on a non-loopb
     expect(() => loadConfig({ BACKTESTER_HOST: '10.0.0.5' })).toThrow(/BACKTESTER_AUTH_TOKEN/);
   });
 
+  it('treats a hostname that merely STARTS WITH "127." as external (numeric IPv4 check, not string prefix)', () => {
+    // 127.attacker.internal is a hostname (not an IPv4 literal) that can resolve to an external
+    // interface — it must NOT get the loopback dev-token allowance.
+    expect(() => loadConfig({ BACKTESTER_HOST: '127.attacker.internal' })).toThrow(/BACKTESTER_AUTH_TOKEN/);
+  });
+
+  it('treats a whitespace-only token as unset → fail-closed on an external bind', () => {
+    expect(() => loadConfig({ BACKTESTER_HOST: '0.0.0.0', BACKTESTER_AUTH_TOKEN: '   ' })).toThrow(/BACKTESTER_AUTH_TOKEN/);
+  });
+
   it('does NOT throw on a non-loopback host when the token is explicitly set', () => {
     expect(() => loadConfig({ BACKTESTER_HOST: '0.0.0.0', BACKTESTER_AUTH_TOKEN: 'secret' })).not.toThrow();
     expect(loadConfig({ BACKTESTER_HOST: '0.0.0.0', BACKTESTER_AUTH_TOKEN: 'secret' }).authToken).toBe('secret');
