@@ -46,7 +46,15 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   durable outbox each pass, so failed webhooks are actually redelivered in the multi-process topology;
   P1-3 — the deadline reaper (in-memory + Pg) times out a stranded `waiting_for_compute` follower past its
   run deadline UNCONDITIONALLY (flag-independent), closing the coalescing-rollback strand. All default
-  (flag-OFF) paths byte-identical — full suite 881 passed / 89 skipped green. REMAINING findings unaddressed.
+  (flag-OFF) paths byte-identical — full suite 881 passed / 89 skipped green.
+- **2026-07-13 — submit-validation hardening (P1-6 + P2-13/P2-21)** (branch `fix/submit-validation-p1-6-p2-13`,
+  TDD): P1-6 — `assertSafeCallbackUrl` rejects non-http(s) schemes and internal-literal webhook hosts
+  (loopback / private / link-local / `169.254.169.254` metadata, IPv4 + IPv6), wired into `submit.validate()`
+  so a submitter can't drive an SSRF POST on completion (literal-only guard; DNS-rebinding is a tracked
+  residual); P2-13 — `validate()` now rejects an unparseable or inverted `period` (`from` >= `to`) at the
+  front door for every engine, and `worker.periodMs` throws instead of coercing to `{0, MAX_SAFE_INTEGER}`
+  so a bad period can never be silently run full-span nor (P2-21) signed into an evidence scope window.
+  Full suite 904 passed / 89 skipped green. REMAINING review findings unaddressed.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

@@ -48,6 +48,73 @@ const VALID_METRICS = new Set<string>(METRIC_CATALOG);
 // (sharpe, max_drawdown, …) rather than the momentum catalog. Gate accordingly.
 const VALID_OVERLAY_METRICS = new Set<string>([...OVERLAY_METRIC_CATALOG, ...E1A_METRIC_CATALOG]);
 
+/** True when an IPv4 literal falls in a loopback / private / link-local range (incl. 169.254.169.254
+ *  cloud metadata). Returns false for anything that is not a dotted-quad literal (a real hostname is
+ *  allowed — this is a literal-only guard, not a DNS resolver). */
+function isBlockedIpv4(s: string): boolean {
+  const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = Number(m[1]), b = Number(m[2]), c = Number(m[3]), d = Number(m[4]);
+  if (a > 255 || b > 255 || c > 255 || d > 255) return false;
+  return (
+    a === 0 || a === 127 || a === 10 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
+}
+
+/** Extract the embedded dotted-quad IPv4 from an IPv4-mapped ('::ffff:…') or deprecated IPv4-compatible
+ *  ('::AABB:CCDD') IPv6 literal, or null when the host is neither. WHATWG URL normalizes these to their
+ *  hex short form (e.g. `::ffff:127.0.0.1` → `::ffff:7f00:1`), so we must parse the hex groups — a naive
+ *  dotted-quad check misses the normalized loopback/private literal entirely. */
+function embeddedMappedIpv4(h: string): string | null {
+  let tail: string | null = null;
+  if (h.startsWith('::ffff:')) tail = h.slice(7); // IPv4-mapped
+  else if (h.startsWith('::') && h.slice(2).split(':').length === 2) tail = h.slice(2); // IPv4-compatible (deprecated)
+  if (tail === null) return null;
+  if (tail.includes('.')) return tail; // already dotted-quad
+  const g = tail.split(':');
+  if (g.length !== 2) return null;
+  const hi = parseInt(g[0], 16), lo = parseInt(g[1], 16);
+  if (Number.isNaN(hi) || Number.isNaN(lo) || hi < 0 || lo < 0 || hi > 0xffff || lo > 0xffff) return null;
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
+/** True when a URL hostname is a loopback / private / link-local / metadata literal — the classic SSRF
+ *  targets. Literal checks only (no DNS resolution): a DNS-rebinding host that resolves to an internal
+ *  IP is a residual risk tracked separately; this closes the direct-literal vectors. */
+function isBlockedWebhookHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  if (h === '' || h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h.includes(':')) {
+    // IPv6 literal: loopback / unspecified / link-local (fe80::/10) / unique-local (fc00::/7).
+    if (h === '::1' || h === '::') return true;
+    if (h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
+    const mapped = embeddedMappedIpv4(h); // IPv4-mapped / IPv4-compatible → check as IPv4
+    if (mapped !== null) return isBlockedIpv4(mapped);
+    return false;
+  }
+  return isBlockedIpv4(h);
+}
+
+/** SSRF guard for the completion webhook URL (P1-6). Blocks non-http(s) schemes and internal-literal
+ *  hosts so a submitter cannot make the server POST to cloud metadata / internal ports on completion. */
+export function assertSafeCallbackUrl(raw: string): void {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new SubmitError(400, 'validation_error', 'callbackUrl must be a valid absolute URL');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new SubmitError(400, 'validation_error', 'callbackUrl must use http or https');
+  }
+  if (isBlockedWebhookHost(url.hostname)) {
+    throw new SubmitError(400, 'validation_error', `callbackUrl host not allowed: ${url.hostname}`);
+  }
+}
+
 function validate(req: RunSubmitRequest): void {
   if (!req || typeof req !== 'object') {
     throw new SubmitError(400, 'validation_error', 'request body must be an object');
@@ -66,6 +133,23 @@ function validate(req: RunSubmitRequest): void {
   }
   if (!req.period || typeof req.period.from !== 'string' || typeof req.period.to !== 'string') {
     throw new SubmitError(400, 'validation_error', 'period {from, to} is required');
+  }
+  // P2-13: from/to must be parseable timestamps with from < to. Without this an unparseable period is
+  // silently coerced to the full dataset span (momentum path) and — worse — signed into the evidence
+  // scope window as {0, MAX_SAFE_INTEGER}. Reject uniformly at the front door for every engine.
+  {
+    const fromMs = Date.parse(req.period.from);
+    const toMs = Date.parse(req.period.to);
+    if (Number.isNaN(fromMs) || Number.isNaN(toMs)) {
+      throw new SubmitError(400, 'validation_error', 'period {from, to} must be ISO-8601 timestamps');
+    }
+    if (fromMs >= toMs) {
+      throw new SubmitError(400, 'validation_error', 'period.from must be strictly before period.to');
+    }
+  }
+  // P1-6: SSRF guard — a submitter must not be able to make the server POST to an internal address.
+  if (req.callbackUrl !== undefined) {
+    assertSafeCallbackUrl(req.callbackUrl);
   }
   if (typeof req.mode !== 'string' || !VALID_MODES.has(req.mode)) {
     throw new SubmitError(400, 'validation_error', 'mode must be research|review|promotion');
