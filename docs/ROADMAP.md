@@ -76,7 +76,9 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   process.stdout.write` or a prototype-chain `write.call`) nor peek the request wire (batch/bar-major
   look-ahead); `console.*` is no-op'd. If isolation can't be installed the harness FAILS CLOSED (exits),
   never running untrusted code with real stdio exposed. Residual: an fd-level `fs.writeSync(1)` seqless
-  line — caught by the strict seq check, with the container flags as the boundary.
+  line — caught by the strict seq check, with the container flags as the boundary. Momentum one-shot
+  harness out of scope (separate hardening item). Byte-identical goldens hold (Docker N=2/3/64
+  lockstep-equivalent); full suite 1016 passed / 58 skipped green.
 - **2026-07-13 — P3-1: O(n²) per-bar market-API construction removed** (branch `perf/market-api-hoist-gridts`,
   byte-identical): `pointInTimeMarketApi` allocated a fresh `dataset.candles(symbol).map(b=>b.ts)` grid AND
   `gridTs.indexOf(t)`-scanned it on EVERY bar (quadratic in tape length, active on any OI/liq/funding/taker
@@ -84,10 +86,7 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   `gridTs[barIndex]===bar.ts`, indexOf fallback → byte-identical). Isolated idx-resolution cost on 43,200
   bars: ~287,600 ms → ~7 ms (identical checksum); direct callers keep the self-computed form. Full suite
   1022 passed / 58 skipped, goldens byte-identical. All P0/P1 + this top perf item now closed; remaining
-  review findings = the P2/P3/P4 tail. Byte-
-  identical goldens hold (Docker N=2/3/64 lockstep-equivalent); momentum one-shot harness out of scope
-  (separate hardening item). Full suite 1012 passed / 58 skipped green. REMAINING: O(n²) market-API perf
-  (P3-1) + the rest of P2/P3/P4.
+  review findings = the P2/P3/P4 tail.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
