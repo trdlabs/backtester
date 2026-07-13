@@ -30,4 +30,14 @@ describe('novelty config (E5a)', () => {
     expect(cfg.noveltyCorrThreshold).toBe(0.8);
     expect(cfg.noveltyMinOverlapDays).toBe(30);
   });
+  it('enabled without explicit thresholds falls back to defaults (no throw)', () => {
+    const cfg = loadConfig({ BACKTESTER_NOVELTY_ENABLED: 'true' } as NodeJS.ProcessEnv);
+    expect(cfg.novelty).toBe(true);
+    expect(cfg.noveltyCorrThreshold).toBe(0.8);
+    expect(cfg.noveltyMinOverlapDays).toBe(30);
+  });
+  it('does not enable for truthy-but-not-"true" values', () => {
+    expect(loadConfig({ BACKTESTER_NOVELTY_ENABLED: '1' } as NodeJS.ProcessEnv).novelty).toBe(false);
+    expect(loadConfig({ BACKTESTER_NOVELTY_ENABLED: 'TRUE' } as NodeJS.ProcessEnv).novelty).toBe(false);
+  });
 });
