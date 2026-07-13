@@ -9,6 +9,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type { HistoricalRowsPage, ReaderRow } from '@trading/research-contracts';
 import type { BacktesterDataPort } from './reader';
+import { bearerTokenMatches } from '../api/bearer-auth.js';
 
 export interface DataApiServerOptions {
   /** Optional bearer token for the data API itself (NOT exchange credentials). */
@@ -31,9 +32,10 @@ export function createDataApiServer(
   const maxPageLimit = options.maxPageLimit ?? 10_000;
 
   if (options.authToken) {
+    const authToken = options.authToken; // narrow once; the closure below captures it as `string`
     app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
       if (!req.url.startsWith('/data/')) return;
-      if (req.headers.authorization !== `Bearer ${options.authToken}`) {
+      if (!bearerTokenMatches(req.headers.authorization, authToken)) {
         return reply.code(401).send({ code: 'unauthorized', message: 'missing or invalid bearer token' });
       }
     });
