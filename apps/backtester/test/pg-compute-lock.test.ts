@@ -53,4 +53,20 @@ describe.skipIf(!PG_AVAILABLE)('PgComputeLockStore (Postgres conformance)', () =
     expect((await store.get('ci1'))?.lockExpiresAtMs).toBe(7000);
     expect(await store.acquire('ci1', 'run-C', 'w3', 7001, 100)).toBe(true); // now takeable
   });
+
+  // P3-6a: eager release DELETEs only the owner's row; sweepExpired DELETEs rows expired beyond grace.
+  it('release deletes only the owner row; sweepExpired removes rows expired beyond grace', async () => {
+    await store.acquire('rel', 'run-A', 'w1', 1000, 100);
+    await store.release('rel', 'w2'); // wrong owner → no-op
+    expect(await store.get('rel')).toBeDefined();
+    await store.release('rel', 'w1'); // owner → deleted
+    expect(await store.get('rel')).toBeUndefined();
+
+    await store.acquire('sweep-old', 'run-B', 'w1', 500, 100); // expires 600
+    await store.acquire('sweep-live', 'run-C', 'w1', 100_000, 100); // expires 100_100
+    const deleted = await store.sweepExpired(2000, 1000); // threshold 1000: 600 < 1000 → swept
+    expect(deleted).toBeGreaterThanOrEqual(1);
+    expect(await store.get('sweep-old')).toBeUndefined();
+    expect(await store.get('sweep-live')).toBeDefined();
+  });
 });

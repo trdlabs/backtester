@@ -1025,6 +1025,14 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           console.warn(JSON.stringify({ evt: 'dedup_populate_failed', runId, detail: boundedErrorDetail(cacheErr) }));
         }
       }
+
+      // P3-6a: eager release — the result is now in the cache index, so any waiting followers wake via
+      // cache_ready (wakeComputeWaiters checks the cache, never this lock). Delete the lock row instead
+      // of leaving it to lapse at TTL, so backtest_compute_lock does not accrue one dead row per
+      // successful compute. Best-effort (like expire/renew); only fires for the leader (lock owner).
+      if (leaderIdentity !== undefined && deps.computeLock !== undefined) {
+        await deps.computeLock.release(leaderIdentity, deps.lease!.workerId).catch(() => {});
+      }
     }
 
     // E3b (advisory, flag-gated): per-fold walk-forward OOS stability. Runs on both the canonical miss AND
@@ -1171,6 +1179,12 @@ export async function runWorkerLoop(
           clock: deps.clock,
           computeWaitMaxAttempts: deps.computeWaitMaxAttempts ?? 3,
         });
+        // P3-6a: sweep orphaned compute-locks expired beyond a grace window (a leader crashed with no
+        // follower to re-elect it, so the row never gets reused/released). Grace = the lock TTL, so
+        // wakeComputeWaiters above has already read any just-expired failure-lock (for its wake reason)
+        // before it is swept. Best-effort — never fails the loop.
+        const graceMs = deps.computeLockTtlMs ?? deps.lease?.ttlMs ?? 30_000;
+        await deps.computeLock.sweepExpired(deps.clock(), graceMs).catch(() => {});
       }
       if (opts.signal.aborted) break;
       if (processed === 0) {
