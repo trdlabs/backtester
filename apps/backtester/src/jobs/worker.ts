@@ -107,6 +107,8 @@ export interface WorkerDeps extends CompletionDeps {
   computeLockTtlMs?: number;
   /** P3-6b: result-cache TTL (ms). Absent ⇒ TTL eviction OFF. */
   resultCacheTtlMs?: number;
+  /** P3-6b: result-cache sweep cadence (ms). Absent ⇒ default min(ttl, 60s). */
+  resultCacheSweepIntervalMs?: number;
   computeWaitMaxAttempts?: number;
   /** Heartbeat hooks — the drain loop renews leader locks (Task 8). Here we register on lock-win and
    *  unregister in the finally; both are best-effort (absent ⇒ no-op). */
@@ -1180,7 +1182,10 @@ export async function runWorkerLoop(
   // Gated on resultCacheTtlMs (unset ⇒ OFF). Throttled + bounded, like the lock sweep.
   const resultCacheSweep =
     deps.resultCacheTtlMs !== undefined && deps.resultCache
-      ? createResultCacheSweep({ resultCache: deps.resultCache, clock: deps.clock, ttlMs: deps.resultCacheTtlMs })
+      ? createResultCacheSweep(
+          { resultCache: deps.resultCache, clock: deps.clock, ttlMs: deps.resultCacheTtlMs },
+          deps.resultCacheSweepIntervalMs !== undefined ? { sweepIntervalMs: deps.resultCacheSweepIntervalMs } : {},
+        )
       : undefined;
   try {
     while (!opts.signal.aborted) {

@@ -43,6 +43,22 @@ coalescing OFF). `createResultCacheSweep(deps, opts)` — throttled шаг (не
 `AppConfig.resultCacheTtlMs?: number` (optional; unset = OFF). Env `BACKTESTER_RESULT_CACHE_TTL_MS`.
 Проброшен в `WorkerDeps` + `buildApp` (mirror `computeLockTtlMs`).
 
+## Ревью #134 — уточнения
+
+### Sweep cadence независим от retention (High #1)
+
+Раньше default cadence = TTL → при 30-дневном TTL sweep шёл раз в 30 дней (backlog рос под нагрузкой).
+Теперь default = `min(ttlMs, 60_000)` (не реже раза в минуту, независимо от длины retention), плюс
+опциональный override `BACKTESTER_RESULT_CACHE_SWEEP_INTERVAL_MS` / `resultCacheSweepIntervalMs`. Тот же cap
+применён к compute-lock sweep. Тест: 30-дневный TTL, два истёкших batch (batchLimit 1) — второй удаляется
+через 60s cadence, НЕ через полный TTL.
+
+### Fail-fast валидация TTL из env (High #2)
+
+`BACKTESTER_RESULT_CACHE_TTL_MS` (и `_SWEEP_INTERVAL_MS`) должны быть ПОЛОЖИТЕЛЬНЫМ safe-integer (ms) —
+иначе `loadConfig` бросает (fail-fast). unset/blank ⇒ OFF; `0`/`-1`/дробное/`NaN`/`Infinity`/мусор ⇒
+throw. Config-тесты: unset, valid, blank, 0, negative, fractional, NaN, Infinity, garbage, interval-override.
+
 ## Инварианты
 
 - **Default OFF**: без `resultCacheTtlMs` sweep не создаётся/не зовётся — result-cache байт-идентичен

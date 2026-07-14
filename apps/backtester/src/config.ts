@@ -161,6 +161,9 @@ export interface AppConfig {
   readonly computeLockTtlMs: number;
   /** P3-6b: result-cache row TTL (ms). Unset ⇒ TTL eviction OFF (default) — cache grows as before. */
   readonly resultCacheTtlMs?: number;
+  /** P3-6b: result-cache sweep cadence (ms). Unset ⇒ default min(ttl, 60s). Cleanup frequency is
+   *  INDEPENDENT of the retention window so a multi-day TTL still sweeps every minute. */
+  readonly resultCacheSweepIntervalMs?: number;
   /** compute_wait_attempts poison cap. Default 3. */
   readonly computeWaitMaxAttempts: number;
   /** Queued-jobs cap; a NEW submit beyond it gets 429 queue_full. 0 = unlimited. */
@@ -428,7 +431,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       return Number.isSafeInteger(n) && n >= 1 ? n : 20;
     })(),
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
-    ...(env.BACKTESTER_RESULT_CACHE_TTL_MS ? { resultCacheTtlMs: Number(env.BACKTESTER_RESULT_CACHE_TTL_MS) } : {}),
+    ...(() => {
+      // P3-6b: TTL eviction is OFF unless a POSITIVE safe-integer ms value is given. Fail-fast on
+      // garbage (-1 / 0 / fractional / NaN / Infinity) rather than silently misbehaving.
+      const raw = env.BACKTESTER_RESULT_CACHE_TTL_MS;
+      if (raw === undefined || raw.trim() === '') return {};
+      const n = Number(raw);
+      if (!Number.isSafeInteger(n) || n <= 0) {
+        throw new Error(`BACKTESTER_RESULT_CACHE_TTL_MS must be a positive integer (ms), got "${raw}"`);
+      }
+      const out: { resultCacheTtlMs: number; resultCacheSweepIntervalMs?: number } = { resultCacheTtlMs: n };
+      const rawInterval = env.BACKTESTER_RESULT_CACHE_SWEEP_INTERVAL_MS;
+      if (rawInterval !== undefined && rawInterval.trim() !== '') {
+        const iv = Number(rawInterval);
+        if (!Number.isSafeInteger(iv) || iv <= 0) {
+          throw new Error(`BACKTESTER_RESULT_CACHE_SWEEP_INTERVAL_MS must be a positive integer (ms), got "${rawInterval}"`);
+        }
+        out.resultCacheSweepIntervalMs = iv;
+      }
+      return out;
+    })(),
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),
     queueRetryAfterS: Math.max(1, Number(env.BACKTESTER_QUEUE_RETRY_AFTER_S ?? 30) || 30),

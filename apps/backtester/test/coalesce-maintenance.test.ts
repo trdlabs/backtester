@@ -62,4 +62,19 @@ describe('createResultCacheSweep (P3-6b)', () => {
     await sweep();
     expect(spy).toHaveBeenCalledTimes(2);
   });
+
+  it("sweep cadence is INDEPENDENT of a long TTL — a second batch clears within the cadence, not after the full TTL", async () => {
+    const ttl = 30 * 24 * 60 * 60 * 1000; // 30-day retention
+    let now = ttl + 10_000_000; // both entries below the threshold (now - ttl)
+    const cache = new InMemoryResultCache();
+    await cache.put(entry("e1", 100));
+    await cache.put(entry("e2", 200));
+    const sweep = createResultCacheSweep({ resultCache: cache, clock: () => now, ttlMs: ttl }, { sweepBatchLimit: 1 });
+    await sweep(); // first pass, batchLimit 1 → oldest (e1)
+    expect(await cache.lookup("e1")).toBeUndefined();
+    expect(await cache.lookup("e2")).toBeDefined();
+    now += 60_000; // ONE default cadence (60s) — vastly less than the 30-day TTL
+    await sweep();
+    expect(await cache.lookup("e2")).toBeUndefined(); // cleared within 60s, not after 30 days
+  });
 });

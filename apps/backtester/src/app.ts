@@ -196,6 +196,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       : {}),
     computeLockTtlMs: config.computeLockTtlMs,
     ...(config.resultCacheTtlMs !== undefined ? { resultCacheTtlMs: config.resultCacheTtlMs } : {}),
+    ...(config.resultCacheSweepIntervalMs !== undefined ? { resultCacheSweepIntervalMs: config.resultCacheSweepIntervalMs } : {}),
     computeWaitMaxAttempts: config.computeWaitMaxAttempts,
     ...(obs ? { obs } : {}),
     ...(trialLedger
@@ -246,7 +247,10 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
   // P3-6b: result-cache TTL sweep (independent of coalescing; gated on resultCacheTtlMs, unset ⇒ OFF).
   const resultCacheSweep =
     config.resultCacheTtlMs !== undefined
-      ? createResultCacheSweep({ resultCache, clock, ttlMs: config.resultCacheTtlMs })
+      ? createResultCacheSweep(
+          { resultCache, clock, ttlMs: config.resultCacheTtlMs },
+          config.resultCacheSweepIntervalMs !== undefined ? { sweepIntervalMs: config.resultCacheSweepIntervalMs } : {},
+        )
       : undefined;
 
   let timer: NodeJS.Timeout | undefined;
