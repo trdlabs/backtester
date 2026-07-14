@@ -362,4 +362,29 @@ describe('SandboxSession.callHookBarMajor', () => {
     expect(envelopes[0]?.bars).toHaveLength(1); // only the healthy symbol (BBB)
     expect(envelopes[0]?.bars[0]?.snapshot.symbol).toBe('BBB');
   });
+
+  // P3-9 (review follow-up) — a CHANNEL DEATH during a LATER symbol's init (after an earlier symbol
+  // already initialized successfully) is session-fatal for the whole bar-major batch, not a per-symbol
+  // latch: ensureSymbolInit's channel-death branch calls fail(), and the init loop's this.failed guard
+  // routes to failHealthy → every symbol in the batch fails closed and the container is torn down.
+  it('a channel death during a later symbol init is session-fatal for the whole bar-major batch (P3-9)', async () => {
+    const { session, driver } = newUniverseSession();
+    const ctxAAA = makeCtx('AAA', 0);
+    const ctxBBB = makeCtx('BBB', 0);
+
+    const p = session.callHookBarMajor([ctxAAA, ctxBBB]);
+    writeOk(driver);     // init(AAA) → ok (one successful init first)
+    driver.stdout.end(); // init(BBB) never answered — channel death AFTER AAA's successful init
+    const results = await p;
+
+    expect(results).toHaveLength(2);
+    expect(results[0]?.ok).toBe(false); // both fail-closed — session-fatal, not a per-symbol latch
+    expect(results[1]?.ok).toBe(false);
+    expect(driver.disposeCount).toBe(1); // container torn down
+
+    // A subsequent call on the now-dead session fails closed too, with no new spawn.
+    const r2 = await session.callHookBarMajor([makeCtx('AAA', 60_000)]);
+    expect(r2[0]?.ok).toBe(false);
+    expect(driver.spawnCount).toBe(1);
+  });
 });
