@@ -125,6 +125,24 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   proves an evicted bundle surfaces the 409 while a recently-put one still self-heals. SDK build + consumer
   tests green (12 targeted passed); full suite green (the lone sandbox wall-timeout flake is Docker-timing,
   orthogonal to this SDK-only change, passes on isolated re-run).
+- **2026-07-14 — P3-3: sandbox stdout is capped per-frame, not lifetime-cumulative** (branch
+  `fix/sandbox-stdout-per-frame-p3`, TDD, Docker-verified; spec `docs/specs/P3-3-stdout-per-frame-cap.md`):
+  `AsyncIpcChannel` counted stdout **cumulatively over the whole session** (`stdoutTotal += chunk.length`,
+  never released) against `maxStdoutBytes`, so a long legitimate strategy emitting `decisions`/`annotate`
+  every bar (full-day = 1440 bars/symbol) tripped `sandbox_output_overflow` mid-run even though no single
+  reply was large — `EVIDENCE_LONG_SANDBOX` raised the cap to 2 MiB purely to paper over this. Replaced the
+  cumulative counter with two instantaneous limits: a **per-frame** cap (one NDJSON reply ≤ `maxDecisionBytes`,
+  already enforced) and a **per-buffer** cap on the live unparsed buffer
+  (`bufferCap = max(maxStdoutBytes, maxDecisionBytes*2)`) — each parsed frame is sliced off, releasing its
+  bytes, so cumulative session output is now unbounded while instantaneous host memory stays bounded. stderr
+  is likewise now a bounded diagnostic **tail** (first `maxStderrBytes` + `…[truncated]`), no longer a
+  cumulative `*4` overflow trigger — diagnostics can't fail a run. Taxonomy preserved: malformed JSON /
+  oversized completed frame → `malformed`; an unterminated flood past `bufferCap` → `overflow` (flood ≠ frame);
+  `ok`/`err`/`timeout`/`eof` unchanged. No policy VALUES changed (input-tuple / Docker goldens byte-identical);
+  the `evidence_long` 2 MiB is now a harmless buffer high-water. Unit tests: long run whose cumulative stdout
+  exceeds `maxStdoutBytes` never overflows, oversized frame → `malformed`, unterminated stream → `overflow`,
+  malformed taxonomy, stderr flood bounded-not-fatal. Docker N=2/3/64 equivalence + universe + base sandbox
+  green (default path byte-identical).
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

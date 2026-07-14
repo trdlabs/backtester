@@ -9,13 +9,16 @@ import type { Request, ReceiveOutcome } from './ipc.js';
 
 export class AsyncIpcChannel {
   private stdoutAcc = '';
-  private stdoutTotal = 0;
   private stderrBuf = '';
-  private stderrTotal = 0;
   private eof = false;
   private errored = false;
   private overflow = false;
   private dataWaiter?: () => void;
+  // P3-3: live-buffer high-water. stdout is bounded PER-FRAME (maxDecisionBytes, in receive) and
+  // PER-BUFFER (this), NOT cumulatively over the session — each parsed frame releases its bytes when
+  // receive() slices it off. Sized to admit one max frame plus slack, so a long legitimate run whose
+  // total emitted bytes dwarf maxStdoutBytes never trips the anti-flood overflow.
+  private readonly bufferCap: number;
 
   constructor(
     private readonly stdin: Writable,
@@ -23,33 +26,31 @@ export class AsyncIpcChannel {
     stderr: Readable,
     private readonly limits: ResourceLimits,
   ) {
+    this.bufferCap = Math.max(limits.maxStdoutBytes, limits.maxDecisionBytes * 2);
     // A fire-and-forget send() can race container teardown; without this an EBADF/EPIPE on
     // stdin would surface as an UNCAUGHT 'error' and crash the host. Swallow it (the round-trip
     // fails via receive()'s eof/timeout path, which is the real signal).
     stdin.on('error', () => { /* late write after close — already handled via receive() */ });
     stdout.on('data', (chunk: Buffer) => {
-      this.stdoutTotal += chunk.length;
-      if (this.stdoutTotal > this.limits.maxStdoutBytes) {
-        this.overflow = true;
-        this.wake();
-        return;
-      }
+      if (this.overflow) return; // already tripped — stop growing the buffer
       this.stdoutAcc += chunk.toString('utf8');
+      // Anti-flood cap on the LIVE unparsed buffer (not a lifetime total): only an unterminated flood
+      // or a single monstrous frame can breach it — normal replies are released frame-by-frame.
+      if (Buffer.byteLength(this.stdoutAcc, 'utf8') > this.bufferCap) {
+        this.overflow = true;
+      }
       this.wake();
     });
     stdout.on('end', () => { this.eof = true; this.wake(); });
     stdout.on('error', () => { this.errored = true; this.wake(); });
     stderr.on('data', (chunk: Buffer) => {
-      this.stderrTotal += chunk.length;
+      // stderr is a bounded diagnostic TAIL, never an overflow trigger — diagnostics must not fail a
+      // run. Keep the first maxStderrBytes, then mark truncation and drop the rest.
       if (this.stderrBuf.length < this.limits.maxStderrBytes) {
         this.stderrBuf += chunk.toString('utf8');
         if (this.stderrBuf.length > this.limits.maxStderrBytes) {
           this.stderrBuf = `${this.stderrBuf.slice(0, this.limits.maxStderrBytes)}…[truncated]`;
         }
-      }
-      if (this.stderrTotal > this.limits.maxStderrBytes * 4) {
-        this.overflow = true;
-        this.wake();
       }
     });
   }
@@ -80,8 +81,11 @@ export class AsyncIpcChannel {
         }
         return this.parseLine(line);
       }
-      if (this.stdoutAcc.length > this.limits.maxDecisionBytes * 2) {
-        return { kind: 'malformed', detail: 'unterminated oversized response' };
+      if (Buffer.byteLength(this.stdoutAcc, 'utf8') > this.bufferCap) {
+        // An unterminated flood is bounded here (a flood is not a frame, so it is `overflow`, not
+        // `malformed`); a completed-but-oversized frame is still caught by the maxDecisionBytes check
+        // above once its newline arrives.
+        return { kind: 'overflow' };
       }
       if (this.eof || this.errored) return { kind: 'eof' };
       const remaining = deadlineEpochMs - Date.now();

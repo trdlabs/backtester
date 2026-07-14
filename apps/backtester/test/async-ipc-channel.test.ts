@@ -77,11 +77,40 @@ describe('AsyncIpcChannel', () => {
     expect(ch.stderrText().length).toBeLessThanOrEqual('z'.repeat(256).length + '…[truncated]'.length);
   });
 
-  it('returns overflow when stderr floods beyond maxStderrBytes * 4', async () => {
-    // maxStderrBytes = 256; flood threshold = 256 * 4 = 1024; write 1025 bytes → overflow
-    const { ch, stderr } = mk();
+  // P3-3: stderr is a bounded diagnostic tail, NOT an overflow trigger. A stderr flood must be
+  // truncated to the tail and MUST NOT fail the run (was: overflow at maxStderrBytes * 4).
+  it('P3-3: stderr flood is bounded to the tail, not fatal (no overflow)', async () => {
+    const { ch, stderr, stdout } = mk();
     const p = ch.receive(Date.now() + 2000);
-    stderr.write('e'.repeat(1025));
+    stderr.write('e'.repeat(4096)); // far beyond maxStderrBytes and the old *4 threshold
+    stdout.write('{"t":"ok","seq":7,"decisions":[]}\n'); // a valid reply still arrives
+    const out = await p;
+    expect(out.kind).toBe('ok'); // the flood did not poison the round-trip
+    expect(ch.stderrText().length).toBeLessThanOrEqual(256 + '…[truncated]'.length);
+  });
+
+  // P3-3: a long legitimate run emits many small frames whose CUMULATIVE bytes far exceed
+  // maxStdoutBytes. Each frame is released after parsing, so the run must never overflow.
+  it('P3-3: a long run whose cumulative stdout exceeds maxStdoutBytes never overflows', async () => {
+    const { ch, stdout } = mk();
+    let total = 0;
+    // 200 frames × ~34 B ≈ 6.8 KiB > maxStdoutBytes (4096); each frame ≤ maxDecisionBytes (64)
+    for (let seq = 0; seq < 200; seq++) {
+      const p = ch.receive(Date.now() + 1000);
+      const frame = `{"t":"ok","seq":${seq},"decisions":[]}\n`;
+      total += Buffer.byteLength(frame, 'utf8');
+      stdout.write(frame);
+      const out = await p;
+      expect(out.kind).toBe('ok');
+    }
+    expect(total).toBeGreaterThan(4096); // proves we sailed past the OLD cumulative cap
+  });
+
+  // P3-3: an unterminated stream (no newline) past the live-buffer cap is bounded → overflow.
+  it('P3-3: an unterminated stream past the buffer cap returns overflow', async () => {
+    const { ch, stdout } = mk();
+    const p = ch.receive(Date.now() + 2000);
+    stdout.write('x'.repeat(5000)); // > bufferCap (max(4096, 64*2)=4096), no newline
     const out = await p;
     expect(out.kind).toBe('overflow');
   });
