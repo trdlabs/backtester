@@ -143,6 +143,7 @@ describe('P2-4a: a dedup-cache populate fault does not fail a successful run', (
       put: async () => {
         throw new Error('cache backend unavailable');
       },
+      sweepExpired: async () => 0,
     };
     const deps = { ...baseDeps(store), resultCache: throwingCache, dedupEnabled: true } as WorkerDeps;
 

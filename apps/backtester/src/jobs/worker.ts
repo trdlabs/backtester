@@ -61,7 +61,7 @@ import { normalize, restamp, type DedupTemplate } from './dedup/restamp.js';
 import { computeIdentity } from './dedup/compute-identity.js';
 import { type ComputeLockStore } from './coalesce/compute-lock.js';
 import { wakeComputeWaiters } from './coalesce/wake.js';
-import { createCoalesceMaintenance } from './coalesce/maintenance.js';
+import { createCoalesceMaintenance, createResultCacheSweep } from './coalesce/maintenance.js';
 import type { ResultCache } from './dedup/result-cache.js';
 import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.js';
 import { ObsRegistry, type DedupClass, type JobObsSample } from './obs-registry.js';
@@ -105,6 +105,10 @@ export interface WorkerDeps extends CompletionDeps {
   /** Master coalescing kill-switch: engages only when true AND computeLock present AND dedup on. */
   coalesceEnabled?: boolean;
   computeLockTtlMs?: number;
+  /** P3-6b: result-cache TTL (ms). Absent ⇒ TTL eviction OFF. */
+  resultCacheTtlMs?: number;
+  /** P3-6b: result-cache sweep cadence (ms). Absent ⇒ default min(ttl, 60s). */
+  resultCacheSweepIntervalMs?: number;
   computeWaitMaxAttempts?: number;
   /** Heartbeat hooks — the drain loop renews leader locks (Task 8). Here we register on lock-win and
    *  unregister in the finally; both are best-effort (absent ⇒ no-op). */
@@ -1174,6 +1178,15 @@ export async function runWorkerLoop(
           computeLockTtlMs: deps.computeLockTtlMs ?? deps.lease?.ttlMs ?? 30_000,
         })
       : undefined;
+  // P3-6b: result-cache TTL sweep — independent of coalescing (dedup can be on with coalescing off).
+  // Gated on resultCacheTtlMs (unset ⇒ OFF). Throttled + bounded, like the lock sweep.
+  const resultCacheSweep =
+    deps.resultCacheTtlMs !== undefined && deps.resultCache
+      ? createResultCacheSweep(
+          { resultCache: deps.resultCache, clock: deps.clock, ttlMs: deps.resultCacheTtlMs },
+          deps.resultCacheSweepIntervalMs !== undefined ? { sweepIntervalMs: deps.resultCacheSweepIntervalMs } : {},
+        )
+      : undefined;
   try {
     while (!opts.signal.aborted) {
       const processed = await drainQueue(deps, opts.concurrency);
@@ -1186,6 +1199,7 @@ export async function runWorkerLoop(
       // durable outbox never fires, so a webhook that failed once is never retried. Redeliver each pass.
       await deliverOutbox(deps);
       if (coalesceMaintain) await coalesceMaintain();
+      if (resultCacheSweep) await resultCacheSweep();
       if (opts.signal.aborted) break;
       if (processed === 0) {
         if (opts.waker) {

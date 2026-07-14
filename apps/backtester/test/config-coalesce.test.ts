@@ -16,3 +16,28 @@ describe('coalescing config', () => {
     expect(o.computeWaitMaxAttempts).toBe(5);
   });
 });
+
+describe('result-cache TTL config (P3-6b)', () => {
+  it('unset → resultCacheTtlMs undefined (TTL eviction OFF)', () => {
+    expect(loadConfig({} as NodeJS.ProcessEnv).resultCacheTtlMs).toBeUndefined();
+    expect(loadConfig({} as NodeJS.ProcessEnv).resultCacheSweepIntervalMs).toBeUndefined();
+  });
+  it('valid positive integer ms → parsed', () => {
+    expect(loadConfig({ BACKTESTER_RESULT_CACHE_TTL_MS: '86400000' } as NodeJS.ProcessEnv).resultCacheTtlMs).toBe(86_400_000);
+  });
+  it('blank / whitespace → OFF (not an error)', () => {
+    expect(loadConfig({ BACKTESTER_RESULT_CACHE_TTL_MS: '' } as NodeJS.ProcessEnv).resultCacheTtlMs).toBeUndefined();
+    expect(loadConfig({ BACKTESTER_RESULT_CACHE_TTL_MS: '   ' } as NodeJS.ProcessEnv).resultCacheTtlMs).toBeUndefined();
+  });
+  it.each(['0', '-1', '1.5', 'NaN', 'Infinity', 'abc'])('fail-fast on invalid TTL "%s"', (bad) => {
+    expect(() => loadConfig({ BACKTESTER_RESULT_CACHE_TTL_MS: bad } as NodeJS.ProcessEnv)).toThrow(/positive integer/);
+  });
+  it('sweep-interval override is validated the same way', () => {
+    expect(
+      loadConfig({ BACKTESTER_RESULT_CACHE_TTL_MS: '1000', BACKTESTER_RESULT_CACHE_SWEEP_INTERVAL_MS: '5000' } as NodeJS.ProcessEnv).resultCacheSweepIntervalMs,
+    ).toBe(5000);
+    expect(() =>
+      loadConfig({ BACKTESTER_RESULT_CACHE_TTL_MS: '1000', BACKTESTER_RESULT_CACHE_SWEEP_INTERVAL_MS: '-1' } as NodeJS.ProcessEnv),
+    ).toThrow(/positive integer/);
+  });
+});

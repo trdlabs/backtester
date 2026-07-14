@@ -239,6 +239,24 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   assert a successful follower-leader's lock is now gone (eager release), with the INV-4 failure test
   still pinning `expire`. Full non-Docker suite green (1139 passed); Pg release/sweep CI-validated.
 
+- **2026-07-14 — P3-6b: result-cache TTL eviction (artifacts untouched)** (branch
+  `fix/result-cache-ttl-p3-6b`, TDD; spec `docs/specs/P3-6b-result-cache-ttl.md`): `backtest_result_cache`
+  grew unbounded (no TTL/eviction). Added `ResultCache.sweepExpired(nowMs, ttlMs, batchLimit)` (InMemory +
+  Pg) — DELETE up to `batchLimit` rows older than the TTL (`created_at_ms < nowMs - ttlMs`, oldest first),
+  returns the count. Per the reviewer's frame: it removes ONLY cache rows — the content-addressed
+  artifacts they point at (`template_ref`) are NOT touched (completed jobs / signed evidence may
+  reference them; artifact GC is a separate reachability+retention slice). TTL is from the original
+  `createdAtMs` with NO refresh-on-hit. Gated by a new optional `resultCacheTtlMs` config
+  (`BACKTESTER_RESULT_CACHE_TTL_MS`, unset ⇒ OFF, cache byte-identical to before). A throttled +
+  bounded `createResultCacheSweep` maintenance step (independent of coalescing — dedup can be on with
+  coalescing off) runs in BOTH worker loops (runWorkerLoop + buildApp.tick()). Migration
+  `0011_result_cache_created_at_index.sql` indexes `created_at_ms`; the Pg sweep is a bounded
+  `DELETE ... WHERE ctid IN (SELECT ... ORDER BY created_at_ms LIMIT $2 FOR UPDATE SKIP LOCKED)` — SKIP
+  LOCKED so concurrent workers take disjoint batches (the review #133 hardening, also retrofitted into the
+  P3-6a compute-lock sweep). Tests: store sweep + no-refresh-on-hit (InMemory + Pg-gated); a
+  createResultCacheSweep unit (evict + throttle); a buildApp integration (tick() evicts an expired row,
+  keeps fresh) + default-OFF (no ttl ⇒ never sweeps). Full non-Docker suite green.
+
 ## Feature 1: Client Contract Alignment ✅ DONE
 
 **Goal:** remove the contract gap between `trading-backtester` and `trading-lab`.

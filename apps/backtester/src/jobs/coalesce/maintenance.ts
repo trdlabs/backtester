@@ -8,6 +8,11 @@
 import { wakeComputeWaiters } from './wake.js';
 import type { JobStore } from '../job-store.js';
 import type { ResultCache } from '../dedup/result-cache.js';
+
+// Default sweep cadence cap: the sweep runs at most this often even when the retention window (TTL) is
+// long. Retention (ttlMs, days) must NOT throttle cleanup frequency — otherwise a multi-day TTL would
+// delete only one batch per TTL and the table would grow under load. Overridable via opts.sweepIntervalMs.
+const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
 import type { ComputeLockStore } from './compute-lock.js';
 
 export interface CoalesceMaintenanceDeps {
@@ -37,7 +42,7 @@ export function createCoalesceMaintenance(
   opts: CoalesceMaintenanceOptions = {},
 ): () => Promise<void> {
   const batchLimit = opts.sweepBatchLimit ?? 1000;
-  const intervalMs = opts.sweepIntervalMs ?? deps.computeLockTtlMs;
+  const intervalMs = opts.sweepIntervalMs ?? Math.min(deps.computeLockTtlMs, DEFAULT_SWEEP_INTERVAL_MS);
   let lastSweepAtMs: number | undefined;
   return async () => {
     await wakeComputeWaiters({
@@ -51,6 +56,35 @@ export function createCoalesceMaintenance(
     if (lastSweepAtMs === undefined || now - lastSweepAtMs >= intervalMs) {
       lastSweepAtMs = now;
       await deps.computeLock.sweepExpired(now, deps.computeLockTtlMs, batchLimit).catch(() => {});
+    }
+  };
+}
+
+export interface ResultCacheSweepDeps {
+  resultCache: ResultCache;
+  clock: () => number;
+  /** Row TTL (ms) AND default throttle interval. */
+  ttlMs: number;
+}
+
+/**
+ * P3-6b — build a throttled, bounded result-cache TTL-sweep step (create once per loop lifetime, call
+ * each pass). Independent of coalescing (dedup can be on with coalescing off). Deletes ONLY cache rows
+ * older than `ttlMs` (from createdAtMs, no refresh-on-hit); the content-addressed artifacts they point
+ * at are NOT touched. Bounded (`sweepBatchLimit`), throttled (at most once per `sweepIntervalMs`).
+ */
+export function createResultCacheSweep(
+  deps: ResultCacheSweepDeps,
+  opts: CoalesceMaintenanceOptions = {},
+): () => Promise<void> {
+  const batchLimit = opts.sweepBatchLimit ?? 1000;
+  const intervalMs = opts.sweepIntervalMs ?? Math.min(deps.ttlMs, DEFAULT_SWEEP_INTERVAL_MS);
+  let lastSweepAtMs: number | undefined;
+  return async () => {
+    const now = deps.clock();
+    if (lastSweepAtMs === undefined || now - lastSweepAtMs >= intervalMs) {
+      lastSweepAtMs = now;
+      await deps.resultCache.sweepExpired(now, deps.ttlMs, batchLimit).catch(() => {});
     }
   };
 }

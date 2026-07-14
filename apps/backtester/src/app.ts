@@ -35,7 +35,7 @@ import { PgPromotionAttemptLedger } from './jobs/promotion/pg-attempt-ledger.js'
 import { DatasetIdentityEpochResolver } from './jobs/promotion/epoch-resolver.js';
 import { buildPromotionPolicy } from './jobs/promotion/resolve-promotion.js';
 import { wakeComputeWaiters } from './jobs/coalesce/wake.js';
-import { createCoalesceMaintenance } from './jobs/coalesce/maintenance.js';
+import { createCoalesceMaintenance, createResultCacheSweep } from './jobs/coalesce/maintenance.js';
 import { ObsRegistry } from './jobs/obs-registry.js';
 import { loadSigningKeyFromPem, type SigningKey } from './evidence/signing.js';
 import type { BundleStore } from './sandbox/bundle-store';
@@ -195,6 +195,8 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
         }
       : {}),
     computeLockTtlMs: config.computeLockTtlMs,
+    ...(config.resultCacheTtlMs !== undefined ? { resultCacheTtlMs: config.resultCacheTtlMs } : {}),
+    ...(config.resultCacheSweepIntervalMs !== undefined ? { resultCacheSweepIntervalMs: config.resultCacheSweepIntervalMs } : {}),
     computeWaitMaxAttempts: config.computeWaitMaxAttempts,
     ...(obs ? { obs } : {}),
     ...(trialLedger
@@ -242,6 +244,14 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
           computeLockTtlMs: config.computeLockTtlMs,
         })
       : undefined;
+  // P3-6b: result-cache TTL sweep (independent of coalescing; gated on resultCacheTtlMs, unset ⇒ OFF).
+  const resultCacheSweep =
+    config.resultCacheTtlMs !== undefined
+      ? createResultCacheSweep(
+          { resultCache, clock, ttlMs: config.resultCacheTtlMs },
+          config.resultCacheSweepIntervalMs !== undefined ? { sweepIntervalMs: config.resultCacheSweepIntervalMs } : {},
+        )
+      : undefined;
 
   let timer: NodeJS.Timeout | undefined;
   let busy = false;
@@ -253,6 +263,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       await reap();
       await flushOutbox();
       if (coalesceMaintain) await coalesceMaintain();
+      if (resultCacheSweep) await resultCacheSweep();
     } finally {
       busy = false;
     }
