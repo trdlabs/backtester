@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { InMemoryJobStore, type NewJob } from '../src/jobs/job-store.js';
 import { processNextQueued, runWorkerLoop, type WorkerDeps } from '../src/jobs/worker.js';
+import { InMemoryComputeLockStore } from '../src/jobs/coalesce/compute-lock.js';
+import { InMemoryResultCache } from '../src/jobs/dedup/result-cache.js';
 import { InMemoryArtifactStore } from '../src/artifacts/store.js';
 import { FixtureDataPort } from '../src/data/reader.js';
 import { FIXTURES_DIR } from './helpers.js';
@@ -64,6 +66,89 @@ describe('P3-4 — reap runs on the heartbeat timer, independent of drain comple
     const reaped = (await store.get('orphan'))!;
     expect(reaped.status).toBe('queued');
     expect(reaped.leaseExpiresAt).toBeUndefined();
+  }, 6_000);
+
+  it('wakes a parked coalescing follower on the timer while the drain is wedged', async () => {
+    const store = new InMemoryJobStore();
+    // Park a follower in waiting_for_compute (computeIdentity ci-1), the way the coalescing follower path
+    // does. Long run-timeout so the reaper never times it out — the ONLY thing that may free it is wake.
+    await store.insertOrGet({
+      jobId: 'follower', runId: 'follower', requestFingerprint: 'fp-follower',
+      request: {} as never, effectiveSeed: 1, datasetRef: 'ds', runTimeoutMs: 3_600_000, acceptedAtMs: CLOCK,
+    });
+    await store.transition('follower', 'accepted', 'queued', { atMs: CLOCK, queuedAtMs: CLOCK });
+    await store.claimNextQueued(CLOCK, { workerId: 'w-lead', ttlMs: 30_000 });
+    await store.transition('follower', 'running', 'waiting_for_compute', {
+      atMs: CLOCK, computeIdentity: 'ci-1', computeWaitAttempts: 1, engineAttemptCharged: false,
+    }, 'w-lead');
+    expect((await store.get('follower'))!.status).toBe('waiting_for_compute');
+
+    // The leader's result is now in the cache index → wake releases the follower (cache_ready → queued).
+    const cache = new InMemoryResultCache();
+    await cache.put({
+      computeIdentity: 'ci-1', requestFingerprint: 'fp-follower', datasetFingerprint: 'd',
+      computeVersion: '1', sandboxPolicyVersion: 's', templateRef: 'sha256:x', createdAtMs: CLOCK,
+    });
+
+    const ac = new AbortController();
+    // Wedge the drain so the loop body's coalesceMaintain (wake) is unreachable — only the timer can wake.
+    store.claimNextQueued = ((): Promise<undefined> =>
+      new Promise((resolve) => {
+        ac.signal.addEventListener('abort', () => resolve(undefined), { once: true });
+      })) as typeof store.claimNextQueued;
+
+    const nowMs = CLOCK + 1_000; // within the follower's run deadline ⇒ never timed out, only woken
+    const deps = {
+      store, clock: () => nowMs, uid: () => 'u', postWebhook: async () => {},
+      dataPort: {} as never, artifactStore: {} as never, overlaySandbox: {} as never,
+      lease: { workerId: 'w-live', ttlMs: 30_000, maxAttempts: 3 },
+      coalesceEnabled: true, computeLock: new InMemoryComputeLockStore(), resultCache: cache,
+      computeWaitMaxAttempts: 3,
+    } as unknown as WorkerDeps;
+
+    const loop = runWorkerLoop(deps, { concurrency: 1, heartbeatMs: 10, pollMs: 5, signal: ac.signal });
+    const deadline = Date.now() + 3_000;
+    while ((await store.get('follower'))!.status === 'waiting_for_compute' && Date.now() < deadline) await sleep(10);
+    ac.abort();
+    await loop;
+
+    // Woken by the TIMER (released cache_ready → queued) despite the wedged drain.
+    expect((await store.get('follower'))!.status).toBe('queued');
+  }, 6_000);
+});
+
+// ── Point 2: shutdown must await the genuine in-flight heartbeat ───────────────
+
+describe('runWorkerLoop shutdown awaits the live heartbeat, not a skipped-tick placeholder', () => {
+  it('does not resolve until an in-flight beat completes, even when later ticks are skipped', async () => {
+    const store = new InMemoryJobStore();
+    // Gate the beat's renewLease so the FIRST beat stays in-flight across several interval ticks (which
+    // are then skipped by the beatInFlight guard). Shutdown must still await this genuine beat.
+    let releaseRenew!: () => void;
+    const renewGate = new Promise<void>((r) => { releaseRenew = r; });
+    let beatFinished = false;
+    const origRenew = store.renewLease.bind(store);
+    store.renewLease = async (w, until) => { await renewGate; await origRenew(w, until); beatFinished = true; };
+
+    const ac = new AbortController();
+    const deps = {
+      store, clock: () => CLOCK, uid: () => 'u', postWebhook: async () => {},
+      dataPort: {} as never, artifactStore: {} as never, overlaySandbox: {} as never,
+      lease: { workerId: 'w1', ttlMs: 30_000, maxAttempts: 3 },
+    } as unknown as WorkerDeps;
+
+    const loop = runWorkerLoop(deps, { concurrency: 1, heartbeatMs: 5, pollMs: 1_000, signal: ac.signal });
+    await sleep(40); // several ticks fired: the first beat is stuck on the gate, the rest are skipped
+    ac.abort();
+    let loopResolved = false;
+    void loop.then(() => { loopResolved = true; });
+    await sleep(30);
+    expect(loopResolved).toBe(false); // must still be waiting on the live (stuck) beat
+    expect(beatFinished).toBe(false);
+
+    releaseRenew(); // let the in-flight beat complete
+    await loop;
+    expect(beatFinished).toBe(true); // maintenance finished BEFORE the loop resolved
   }, 6_000);
 });
 

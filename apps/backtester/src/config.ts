@@ -95,7 +95,16 @@ export interface AppConfig {
   readonly workerConcurrency: number;
   /** Stable id of this worker process (lease owner); default `${hostname}:${pid}`. */
   readonly workerId: string;
-  /** Lease TTL (ms) set on claim; clamped to >= 3 * workerHeartbeatMs. */
+  /**
+   * Lease TTL (ms) set on claim; clamped to >= 3 * workerHeartbeatMs.
+   *
+   * P3-5 guidance: the trusted momentum engine runs a CPU-bound synchronous section that starves the
+   * heartbeat while it runs (see processNextQueued's eager renew). That eager renew keeps the lease alive
+   * across any single sync run SHORTER than this TTL; a run that exceeds it can still lapse the lease and
+   * be re-executed by another worker (wasted work + charge — the terminal CAS still guards correctness).
+   * So keep this TTL comfortably ABOVE the longest expected single-run sync duration on the trusted path.
+   * The full close (cooperative yield / off-thread heartbeat) is a tracked follow-up.
+   */
   readonly workerLeaseTtlMs: number;
   /** Heartbeat interval (ms): workers renew their in-flight leases this often. */
   readonly workerHeartbeatMs: number;

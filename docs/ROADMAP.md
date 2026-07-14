@@ -269,11 +269,23 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   blocks the loop, starves the beat, and lets the lease lapse → another worker re-executes the engine
   (wasted work + charge; terminal CAS still guards correctness). `processNextQueued` now renews the lease
   at the last await boundary BEFORE that synchronous section, off the sync path — the lease survives any
-  block shorter than the TTL. Byte-identical: `renewLease` only moves `leaseExpiresAt` (timing), never a
-  hashed field; momentum golden `eff10116…` unmoved. INV-6 preserved (wake/compute-lock renew still gated
-  on `coalesceEnabled`); `buildApp.tick()` untouched. Tests: timer reaps a crashed orphan while the drain
-  loop is wedged (RED without the timer reap); eager renew fires before the momentum engine with no
-  heartbeat involved (RED without it). Full non-Docker suite green.
+  block shorter than the TTL. **P3-5 is MITIGATED, not fully closed** (review #137 §1): a single sync run
+  LONGER than `workerLeaseTtlMs` can still lapse (no timer fires during a single-thread sync block). Kept
+  as a documented mitigation + TTL guidance (`config.workerLeaseTtlMs` JSDoc: keep TTL above the longest
+  expected single sync run); the structural close is a tracked follow-up (below). Byte-identical:
+  `renewLease` only moves `leaseExpiresAt` (timing), never a hashed field; momentum golden `eff10116…`
+  unmoved. INV-6 preserved (wake/compute-lock renew still gated on `coalesceEnabled`); `buildApp.tick()`
+  untouched. Review #137 also fixed a **shutdown race** (§2): a skipped heartbeat tick clobbered the
+  tracked promise, so `finally` awaited a resolved placeholder and maintenance could run past
+  loop-resolve — now `activeBeat` is assigned only when a beat actually starts, and shutdown awaits the
+  genuine in-flight beat. Tests: timer reaps a crashed orphan AND wakes a parked follower while the drain
+  loop is wedged; eager renew fires before the momentum engine with no heartbeat involved; shutdown does
+  not resolve until an in-flight (gated) beat completes despite skipped ticks. Full non-Docker suite
+  green; typecheck clean.
+- **Follow-up (P3-5 full close, OPEN)** — bound heartbeat starvation on the trusted momentum path
+  regardless of run length: cooperative yield inside `runBacktest`/`simulateSymbol` (periodic `await` so
+  the beat renews) OR an off-event-loop heartbeat (worker_thread). Must keep the momentum golden
+  byte-identical. Deferred from #137 per the mitigation decision.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
