@@ -36,4 +36,14 @@ describe('evaluateWindow', () => {
     );
     expect(r.warmupSteps).toBe(1);
   });
+  it('anchor picks the LAST equity point on the max pre-window barTs (not the first)', () => {
+    // multi-symbol tape emits several points on the same pre-window barTs (day 1); the boundary anchor
+    // must be the FINAL state of that step (equity 999), else the first OOS return is computed off a
+    // stale mid-step equity and can flip the promotion verdict.
+    const r = evaluateWindow(
+      outcome([{ barIndex: 1, barTs: 1 * DAY, equity: 110 }, { barIndex: 1, barTs: 1 * DAY, equity: 999 }, pt(2, 120), pt(3, 130)], []),
+      window, ['total_trades'],
+    );
+    expect(r.equity.map((p) => p.equity)).toEqual([999, 120, 130]); // anchor = last day-1 point (999), not 110
+  });
 });

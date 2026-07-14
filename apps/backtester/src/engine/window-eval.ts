@@ -8,11 +8,14 @@ import { computeMetrics } from './metrics.js';
 export type CompletedOutcome = Extract<RunOutcome, { status: 'completed' }>;
 const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
 
-/** Anchored test-window equity: last point with barTs < fromMs (boundary anchor) + points in [fromMs, toMs). */
+/** Anchored test-window equity: last point with barTs < fromMs (boundary anchor) + points in [fromMs, toMs).
+ * `>=` (not `>`) so that when several equity points share the max pre-window barTs (multi-symbol tape emits
+ * one point per symbol per engine step), the anchor is the LAST such point — the step's final equity, not a
+ * mid-step value. Using `>` would keep the first, corrupting the first OOS return. */
 export function anchoredTestEquity(equity: readonly EquityPoint[], fromMs: number, toMs: number): EquityPoint[] {
   const within = equity.filter((p) => p.barTs >= fromMs && p.barTs < toMs);
   let anchor: EquityPoint | undefined;
-  for (const p of equity) if (p.barTs < fromMs && (anchor === undefined || p.barTs > anchor.barTs)) anchor = p;
+  for (const p of equity) if (p.barTs < fromMs && (anchor === undefined || p.barTs >= anchor.barTs)) anchor = p;
   return anchor ? [anchor, ...within] : within;
 }
 
