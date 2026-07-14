@@ -16,61 +16,66 @@ computeBarFunding({ ..., barMinutes: gridMinutes, ... })
 - **Gap в середине при удерживаемой позиции** → бар заряжается фиксированный `gridMinutes` вместо
   фактического интервала удержания `ts[t] - ts[t-1]` — систематический недочёт.
 
-## Решение
+## Решение — FORWARD-интервал (ревью #131)
 
-Заряжать per-bar минуты из ФАКТИЧЕСКОЙ дельты соседних обработанных баров, никогда не экстраполируя
-первый интервал:
+Ключ: под `next_bar_open` позиция, установленная settlement'ом бара `t` (на `open(t)` от decision
+`t-1`), удерживается от `open(t)` до `open(t+1)`. Значит end-of-bar accrual на баре `t` относится к
+интервалу ВПЕРЁД `[ts[t], ts[t+1]]`, а НЕ назад `[ts[t-1], ts[t]]`. Backward-формула переносит funding
+между периодами владения на gap-границах:
+- **pending entry через gap** переоблагается — backward начислил бы весь gap, хотя позиция открылась
+  только на `open` post-gap бара;
+- **pending exit через gap** недооблагается — позиция реально удерживалась весь gap до `open` post-gap
+  бара, но backward-заряд его теряет.
 
 ```ts
-// в processBar, внутри funding-блока (t гарантированно ≥ 1 — см. parity ниже):
-const barMinutes = t >= 1 ? (gridTs[t] - gridTs[t - 1]) / 60_000 : 0;
+// в processBar funding-блоке:
+const forwardMinutes = t + 1 < gridTs.length ? (gridTs[t + 1] - gridTs[t]) / 60_000 : timeframeMinutes;
+const barMinutes = reading.state === 'stale' ? Math.min(forwardMinutes, timeframeMinutes) : forwardMinutes;
 ```
 
-`gridMinutes` (поле `BarEnv` + его derivation) удаляется — `gridTs` уже в env.
+- **Средние бары**: `barMinutes = (ts[t+1] - ts[t])/60000` — реальный период удержания post-bar позиции.
+- **Последний бар** (`t = n-1`, нет `ts[n]`): позиция force-closed на `close(n-1)` в `finalizeSymbol`,
+  т.е. удерживалась ровно один таймфрейм → `barMinutes = timeframeMinutes`.
+- **`timeframeMinutes`** = минимальный положительный интервал между обработанными барами (нормальная
+  каденция, робастно к gaps: gap — бо́льшая дельта; fallback 1). Выводится из данных, НЕ из `request`.
 
-### Явная gap-политика
+### Явная gap / stale политика
 
-Начисление = `perMinuteFraction(rate_as_of(t)) × barMinutes × notional × sign`, где `barMinutes` —
-фактические минуты `(ts[t] - ts[t-1])/60000`, а `covered` определяет заряд:
-- **covered = false** (reading `missing` — нет снимка ≤ t ИЛИ вне stale-grace) → заряд **0**
-  (уже так в `computeBarFunding`: `if (!covered) return 0`).
-- **covered = true** (`present`/`stale` в пределах `FUNDING_STALE_GRACE_BARS = 1`) → заряд за фактические
-  минуты по ставке as-of бара t.
-
-Cap на gap НЕ нужен: stale-grace = 1 grid-бар, поэтому длинный gap за краем покрытия → `missing` → 0
-(funding не выдумывается за неизвестный период); covered остаётся только для коротких gap в пределах
-grace, где фактическая дельта мала и корректна. Политика самосогласована с 030 coverage-семантикой.
+`covered` определяет заряд: `missing` → 0 (без изменений `computeBarFunding`). Дополнительно **stale**
+reading (bounded live-forward один grace-бар за краем покрытия) НЕ должен экстраполировать gap → его
+`barMinutes` капится одним `timeframeMinutes`. Это делает stale-grace elapsed-aware по факту: длинный
+forward gap на stale-баре не превращается в произвольные N минут по устаревшей ставке. `present` бар
+заряжает полный forward (реальный hold по свежей ставке).
 
 ## Инвариант contiguous-parity (byte-identical на непрерывном тейпе)
 
-Funding-блок исполняется только под `portfolio.position !== null` (runner.ts:481). В модели
-`next_bar_open` позиция появляется лишь после `settlePending` на `open(t+1)` от decision бара `≤ t-1`,
-поэтому на end-of-bar `t = 0` позиция ВСЕГДА `null` → funding на баре 0 не начисляется, а `barMinutes(0)`
-недостижим. Для `t ≥ 1` на непрерывном тейпе `(ts[t] - ts[t-1])/60000` = const = прежний `gridMinutes`.
-Значит:
-- **contiguous тейп** → per-bar минуты идентичны прежней константе → equity/pnl/ledger **byte-identical**;
-- **gap-тейп** → per-bar минуты корректны (gap в начале больше НЕ множит весь прогон; gap в середине
-  заряжает фактический интервал, covered-gated).
+На непрерывном тейпе `forwardMinutes = (ts[t+1]-ts[t])/60000` = const = `timeframeMinutes` = прежний
+`gridMinutes` для ВСЕХ баров (включая последний). Множество заряжаемых (held) баров и per-bar минуты
+идентичны прежним → equity/funding/ledger **byte-identical**. Меняется только gapped output (корректно).
 
 ## Versioned output change
 
 P2-19 меняет engine deterministic output (funding/equity) на **gap-тейпах** (contiguous не затронут),
 поэтому **`DEDUP_COMPUTE_VERSION` bump `2`→`3`** (иначе старый result-cache вернул бы pre-fix funding для
 gapped-прогонов). `realism-gap.test.ts` тест 1 (NON-CIRCULAR guard) обновлён: его независимый inline-
-recompute теперь взвешивает каждый covered бар фактическим интервалом `(ts[t]-ts[t-1])` — guard остаётся
-независимым (не импортирует `funding.ts`), просто отражает ту же корректную per-bar-minute семантику;
-5b anchor band держится (held-окно BEATUSDT содержит малые gaps в пределах ±0.5 bps).
+recompute теперь взвешивает каждый covered бар FORWARD-интервалом `(ts[t+1]-ts[t])` до следующего
+обработанного бара — guard остаётся независимым (не импортирует `funding.ts`); held-окно BEATUSDT
+полностью funding-covered, так что stale-cap здесь не задействован; 5b anchor band держится (±0.5 bps).
 
 ## Тесты (TDD)
 
-Unit (`computeBarFunding` уже покрыт `funding.test.ts`; здесь — engine-path через `runBacktest`/ledger):
-1. **contiguous parity** — непрерывный 1m-тейп с funding: `fundingLedger` + equity byte-identical до и
-   после (та же величина, что при прежнем `gridMinutes`); заряд каждого удерживаемого бара = 1 мин.
-2. **gap в начале** — пропуск 2-й минуты: прежний код дал бы `gridMinutes = 2` и 2× заряд на КАЖДОМ
-   баре; фикс → каждый нормальный бар заряжается 1 мин (не 2×).
-3. **gap в середине при удержании** — пропущенная минута между t-1 и t: бар t заряжает фактические
-   `(ts[t]-ts[t-1])` минут (covered) ИЛИ 0 (missing за grace), не фиксированный `gridMinutes`.
-4. **multi-symbol** — разные per-symbol сетки/gaps: каждый символ считает свои per-bar минуты из
-   собственных `gridTs` (нет протечки константы между символами).
-5. **отсутствие повторных начислений** — ровно одна `fundingLedger`-запись на удерживаемый бар; gap не
-   создаёт дублей и не двоит minute-заряды.
+Engine-path (`runBacktest` через `runRealismLedger` + synthetic canonical rows; implied barMinutes
+восстанавливаются из covered ledger `cost`):
+1. **contiguous parity** — непрерывный 1m-тейп: каждый удерживаемый бар заряжает ровно 1 мин
+   (forward = timeframe), ledger byte-identical прежнему.
+2. **ENTRY pending через gap** — сигнал на баре перед gap; позиция открывается на `open` post-gap бара,
+   так что pre-fill gap НЕ начисляется (первый заряжаемый бар = реальный forward-шаг, не gap).
+3. **EXIT pending через gap** — позиция удерживается; exit на баре перед gap → pre-gap бар forward
+   охватывает gap → начислен реальный hold до `close`.
+4. **start-gap** — пропуск ранней минуты: НЕ множит каждый бар (прежний `gridMinutes = 2` → 2×; фикс → 1).
+5. **stale reading над gap** — funding-покрытие кончается: stale-бар капится одним timeframe, никаких
+   произвольных N минут по устаревшей ставке.
+6. **отсутствие повторных начислений** — ≤ одна ledger-запись на bar ts.
+
+Плюс `realism-gap` NON-CIRCULAR guard обновлён на forward-веса (независим от `funding.ts`); полный suite
+подтверждает contiguous byte-parity (execution-validation на реальном 1m slice не сдвинулся).

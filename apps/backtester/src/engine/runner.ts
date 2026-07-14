@@ -326,6 +326,8 @@ interface BarEnv {
   readonly strategyExec: ModuleExecutor;
   readonly fundingCol: ReturnType<NonNullable<MarketTapeDataset['funding']>> | undefined;
   readonly gridTs: readonly number[];
+  /** P2-19: tape's normal bar interval in minutes (min positive gap); last-bar span + stale cap. */
+  readonly timeframeMinutes: number;
   /** 17b: flat-stretch batching config, read by `runSymbol`'s loop (Task 4). Absent ⇒ lockstep. */
   readonly batch?: { readonly maxBars: number };
 }
@@ -341,7 +343,7 @@ function preBarStages(env: BarEnv, t: number): void {
 }
 
 async function processBar(env: BarEnv, t: number, base: StrategyDecision | null): Promise<void> {
-  const { symbol, candles, builder, overlays, portfolio, engine, acc, module, strategyExec, fundingCol, gridTs } = env;
+  const { symbol, candles, builder, overlays, portfolio, engine, acc, module, strategyExec, fundingCol, gridTs, timeframeMinutes } = env;
   const { router, risk, exec, composer } = engine;
   const bar = candles[t];
 
@@ -482,11 +484,15 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
     const reading = fundingReadingAt(fundingCol, gridTs, bar.ts, t);
     const covered = reading.state !== 'missing';
     const rate = covered && reading.point !== undefined ? reading.point.fundingRate : 0;
-    // P2-19: prorate over the ACTUAL interval since the previous processed bar (ts[t] - ts[t-1]), NOT a
-    // single gridMinutes extrapolated from the first two bars — a start gap must not 2× every bar, and a
-    // mid-run gap must charge its real interval. t is always ≥ 1 here (under next_bar_open a position
-    // cannot exist on bar 0), so no first-interval extrapolation is needed; covered=false still → 0.
-    const barMinutes = t >= 1 ? (gridTs[t]! - gridTs[t - 1]!) / 60_000 : 0;
+    // P2-19: accrue over the FORWARD interval [ts[t], ts[t+1]] — the span this POST-bar position is
+    // actually held. Under next_bar_open the position established by bar t's settlement is held from
+    // open(t) to open(t+1), so a pending entry through a gap is NOT charged for the pre-fill gap and a
+    // pending exit through a gap IS charged for the real hold. The last bar has no next observation —
+    // the position is force-closed at its close, i.e. held one timeframe. A `stale` reading (bounded
+    // live-forward one grace-bar past coverage) must not extrapolate a gap, so it is capped to one
+    // timeframe; covered=false ⇒ 0 (unchanged).
+    const forwardMinutes = t + 1 < gridTs.length ? (gridTs[t + 1]! - gridTs[t]!) / 60_000 : timeframeMinutes;
+    const barMinutes = reading.state === 'stale' ? Math.min(forwardMinutes, timeframeMinutes) : forwardMinutes;
     const cost = computeBarFunding({
       side: pos.side,
       size: pos.size,
@@ -502,6 +508,18 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
 
   // (5) EquityPoint — mark-to-market по close бара.
   acc.equityCurve.push({ barIndex: t, barTs: bar.ts, equity: portfolio.equityAt(bar.close) });
+}
+
+/** P2-19: normal bar interval (minutes) of a tape = the MINIMUM positive gap between consecutive
+ *  bars. Robust to gaps (a gap is a larger delta) and to duplicates; falls back to 1 when the tape
+ *  has no two distinct timestamps. Used for the last bar's forward span and to cap stale readings. */
+function deriveTimeframeMinutes(candles: readonly Readonly<Bar>[]): number {
+  let minMs = Number.POSITIVE_INFINITY;
+  for (let i = 1; i < candles.length; i += 1) {
+    const d = candles[i].ts - candles[i - 1].ts;
+    if (d > 0 && d < minMs) minMs = d;
+  }
+  return Number.isFinite(minMs) ? minMs / 60_000 : 1;
 }
 
 /** Setup half of `runSymbol` (17b/Task-3 refactor): grid/funding derivation, session init, `BarEnv` construction. Callers must ensure `candles.length >= 1`. */
@@ -521,6 +539,10 @@ async function buildBarEnv(
   const { router, risk, exec, composer } = engine;
   const fundingCol = exec.fundingEnabled() ? marketTape?.funding(symbol) : undefined;
   const gridTs = exec.fundingEnabled() ? candles.map((b) => b.ts) : [];
+  // P2-19: the tape's normal bar interval (minimum positive gap between processed bars) — used for the
+  // last bar's forward span and to cap a stale reading's reach. Derived from data (robust to gaps: a
+  // gap is a LARGER delta, so the minimum is the real cadence), never the requested timeframe.
+  const timeframeMinutes = deriveTimeframeMinutes(candles);
   const module = strategy.module;
   const strategyExec = router.forStrategy(strategy);
 
@@ -528,7 +550,7 @@ async function buildBarEnv(
   // sandbox → открыть контейнер + init-хук. Вызывается всегда (sandbox-сессия открывается и без 'init').
   await strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
 
-  return { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, fundingCol, gridTs, ...(barBatching ? { batch: barBatching } : {}) };
+  return { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, fundingCol, gridTs, timeframeMinutes, ...(barBatching ? { batch: barBatching } : {}) };
 }
 
 /** End-of-data half of `runSymbol` (17b/Task-3 refactor): expire leftover pending, forced MTM close, session dispose. Assumes `env.candles.length >= 1`. */

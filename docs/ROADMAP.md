@@ -181,24 +181,23 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   start/end, gaps, multi-symbol duplicate timestamps, <2 distinct ts ⇒ omit, an exact integration CAGR
   (100→121 over 0.5y ⇒ 0.4641, pinning the endpoint/time coupling), and the version bump. Full suite +
   Docker dedup-equivalence green.
-- **2026-07-14 — P2-19: funding prorates over the actual per-bar minute delta, not an extrapolated
+- **2026-07-14 — P2-19: funding accrues over the forward hold interval, not an extrapolated
   gridMinutes** (branch `fix/funding-gap-tape-permin-p2`, TDD; spec
   `docs/specs/P2-19-funding-gap-tape-per-bar-minutes.md`): `buildBarEnv` derived a single `gridMinutes`
-  from the first two bars (`(candles[1].ts - candles[0].ts)/60_000`) and charged it as `barMinutes` on
-  EVERY bar. On canonical tapes (which drop minutes) a gap between bars 0–1 made `gridMinutes = 2` and
-  2×-charged the whole run; a mid-run gap while holding under-charged (fixed 1 min instead of the real
-  interval). Replaced with a per-bar `barMinutes = (gridTs[t] - gridTs[t-1])/60_000` computed in
-  `processBar` (t is always ≥ 1 in the funding block — under `next_bar_open` a position cannot exist on
-  bar 0 — so no first-interval extrapolation). Gap policy is covered-gated: `covered=false` (missing /
-  past the 1-bar stale-grace) ⇒ 0 (unchanged `computeBarFunding` behavior), so long gaps beyond coverage
-  never fabricate funding; short in-grace gaps charge their real delta. Contiguous tapes stay
-  byte-identical (per-bar delta = the old constant); only gapped tapes change (correctly), so
-  `DEDUP_COMPUTE_VERSION` bumped `2`→`3`. Tests: engine-path (runBacktest via `runRealismLedger`) with
-  synthetic gapped tapes — contiguous parity (1 min/bar), start-gap not 2×, mid-run gap charges the real
-  interval, no double-charge; `realism-gap`'s NON-CIRCULAR inline guard updated to weight each covered
-  bar by its real delta (still independent of `funding.ts`); the BEATUSDT 5b anchor band holds. Full
-  suite green.
-
+  from the first two bars and charged it as `barMinutes` on EVERY bar — on canonical (minute-dropping)
+  tapes a start gap 2×-charged the whole run and a mid-run gap mis-charged. First pass used the backward
+  delta `ts[t]-ts[t-1]`; review #131 showed that under `next_bar_open` the end-of-bar accrual belongs to
+  the FORWARD interval `[ts[t], ts[t+1]]` — the span the post-bar position is actually held (it changes
+  at `open(t+1)`) — so backward mistimes pending entry/exit across a gap (entry over-charged for the
+  pre-fill gap, exit under-charged for the real hold). Final: `barMinutes = (gridTs[t+1]-gridTs[t])/60_000`
+  forward; the last bar (force-closed at its close) charges one `timeframeMinutes` (min positive
+  inter-bar gap, data-derived); a `stale` reading is capped to one timeframe so a gap can't be
+  extrapolated at a stale rate. Contiguous tapes stay byte-identical (forward = timeframe = the old
+  constant); only gapped output changes ⇒ `DEDUP_COMPUTE_VERSION` bumped `2`→`3`. Tests: engine-path
+  (runBacktest via `runRealismLedger` + synthetic tapes) — contiguous parity, entry-through-gap not
+  charged pre-fill, exit-through-gap charges the real hold, start-gap not 2×, stale-over-gap capped, no
+  double-charge; `realism-gap` NON-CIRCULAR inline guard updated to forward weights (still independent of
+  `funding.ts`), BEATUSDT 5b anchor band holds. Full suite green.
 ## Feature 1: Client Contract Alignment ✅ DONE
 
 **Goal:** remove the contract gap between `trading-backtester` and `trading-lab`.

@@ -19,13 +19,16 @@ describe('realism GAP — funding non-circular guard + sign + 5b anchor', () => 
     const { ledger, size } = await runRealismLedger(SYMBOL, rows, [trade]);
     // Inline recompute — plain arithmetic, NO import of funding.ts (independent of production code).
     // If funding.ts has a wrong divisor/sign/proration, this inline sum diverges from the engine ledger.
-    // P2-19: funding prorates over the ACTUAL per-bar minute delta (ts[t] - ts[t-1]), so the inline
-    // recompute weights each covered bar by its real interval (this fixture has real minute gaps).
+    // P2-19: funding prorates over the FORWARD interval [ts[t], ts[t+1]] — the span the post-bar
+    // position is actually held. The inline recompute weights each covered bar by its real forward step
+    // to the NEXT processed bar (this fixture has real minute gaps; the whole hold window is funding-
+    // covered, so no stale-cap is exercised here).
     const INTERVAL_MIN = 8 * 60; // 480
     const sign = trade.side === 'long' ? 1 : -1;
-    const barMinutesAt = new Map<number, number>();
-    for (let i = 1; i < rows.length; i += 1) {
-      barMinutesAt.set(rows[i].minute_ts, (rows[i].minute_ts - rows[i - 1].minute_ts) / 60_000);
+    const sortedTs = rows.map((r) => r.minute_ts).sort((a, b) => a - b);
+    const forwardMinAt = new Map<number, number>();
+    for (let i = 0; i < sortedTs.length - 1; i += 1) {
+      forwardMinAt.set(sortedTs[i], (sortedTs[i + 1] - sortedTs[i]) / 60_000);
     }
     let inline = 0;
     for (const e of ledger) {
@@ -34,7 +37,7 @@ describe('realism GAP — funding non-circular guard + sign + 5b anchor', () => 
         continue;
       }
       const row = rows.find((r) => r.minute_ts === e.ts)!; // mark = close at the funding minute
-      const barMinutes = barMinutesAt.get(e.ts) ?? 1; // actual interval since the previous processed bar
+      const barMinutes = forwardMinAt.get(e.ts) ?? 1; // forward step to the next processed bar
       inline += (e.rate / INTERVAL_MIN) * (size * row.close) * sign * barMinutes;
     }
     const engineTotal = ledger.reduce((s, e) => s + e.cost, 0);
