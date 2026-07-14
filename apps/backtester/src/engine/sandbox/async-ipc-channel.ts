@@ -9,8 +9,11 @@ import type { Request, ReceiveOutcome } from './ipc.js';
 
 export class AsyncIpcChannel {
   private stdoutAcc = '';
-  private stderrBuf = '';
-  private stderrBytes = 0; // BYTE length of stderrBuf (JS string .length counts UTF-16 units, not bytes)
+  // stderr is retained as RAW BYTES (not per-chunk decoded): a multibyte UTF-8 code point split across
+  // two data-chunks would decode to U+FFFD if each chunk were toString()'d in isolation. We concat and
+  // decode once in stderrText(), so chunk boundaries never mangle a character.
+  private readonly stderrChunks: Buffer[] = [];
+  private stderrBytes = 0; // total retained bytes (bounded by maxStderrBytes — a BYTE quota, FR-020)
   private stderrTruncated = false;
   private eof = false;
   private errored = false;
@@ -49,13 +52,14 @@ export class AsyncIpcChannel {
     stdout.on('error', () => { this.errored = true; this.wake(); });
     stderr.on('data', (chunk: Buffer) => {
       // stderr is a bounded diagnostic TAIL, never an overflow trigger — diagnostics must not fail a
-      // run. Bound by BYTES (maxStderrBytes is a byte quota): take only as many whole UTF-8 code
-      // points as fit, never splitting a multibyte sequence, then latch truncation.
+      // run. Retain RAW bytes bounded by maxStderrBytes (a byte quota); decoding to a boundary-safe
+      // string is deferred to stderrText(). A byte-cut mid-sequence is fine here — the trailing partial
+      // code point is trimmed at decode time.
       if (this.stderrTruncated) return;
       const room = this.limits.maxStderrBytes - this.stderrBytes;
       if (room <= 0) { this.stderrTruncated = true; return; }
-      const take = chunk.length <= room ? chunk : utf8ByteSlice(chunk, room);
-      this.stderrBuf += take.toString('utf8');
+      const take = chunk.length <= room ? chunk : chunk.subarray(0, room);
+      this.stderrChunks.push(take);
       this.stderrBytes += take.length;
       if (take.length < chunk.length) this.stderrTruncated = true;
     });
@@ -72,7 +76,12 @@ export class AsyncIpcChannel {
   }
 
   stderrText(): string {
-    return this.stderrTruncated ? `${this.stderrBuf}…[truncated]` : this.stderrBuf;
+    // Concat the raw chunks and decode ONCE — a code point split across chunk boundaries is now whole.
+    // Then drop a trailing partial code point left by the byte-cap cut, so the decode never yields a
+    // U+FFFD replacement and the returned tail stays within the byte quota.
+    const buf = Buffer.concat(this.stderrChunks, this.stderrBytes);
+    const text = completeUtf8Prefix(buf).toString('utf8');
+    return this.stderrTruncated ? `${text}…[truncated]` : text;
   }
 
   async receive(deadlineEpochMs: number): Promise<ReceiveOutcome> {
@@ -111,16 +120,25 @@ export class AsyncIpcChannel {
   }
 }
 
-/** Returns the largest prefix of `buf` that is at most `maxBytes` long AND ends on a UTF-8 code-point
- *  boundary (never splits a multibyte sequence). Used to bound the stderr diagnostic tail by BYTES
- *  without emitting a replacement char at the cut. */
-function utf8ByteSlice(buf: Buffer, maxBytes: number): Buffer {
-  if (buf.length <= maxBytes) return buf;
-  let end = maxBytes;
-  // If the byte at `end` is a UTF-8 continuation byte (0b10xxxxxx), the cut lands mid-sequence — walk
-  // back to the start of that code point so the prefix contains only whole characters.
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
-  return buf.subarray(0, end);
+/** Returns `buf` with a trailing INCOMPLETE UTF-8 code point (if any) dropped, so decoding the result
+ *  never emits a U+FFFD replacement at a byte-cap cut. A code point split across chunk boundaries is
+ *  already whole here (the chunks were concatenated before this call); only the final byte-capped cut
+ *  can leave a partial trailer. */
+function completeUtf8Prefix(buf: Buffer): Buffer {
+  // Count trailing continuation bytes (0b10xxxxxx), then look at the lead byte before them.
+  let cont = 0;
+  let i = buf.length - 1;
+  while (i >= 0 && (buf[i] & 0xc0) === 0x80) { cont++; i--; }
+  if (i < 0) return buf; // all continuation / empty — nothing sensible to trim
+  const lead = buf[i];
+  let expected: number;
+  if ((lead & 0x80) === 0x00) expected = 1; // ASCII
+  else if ((lead & 0xe0) === 0xc0) expected = 2;
+  else if ((lead & 0xf0) === 0xe0) expected = 3;
+  else if ((lead & 0xf8) === 0xf0) expected = 4;
+  else return buf; // invalid lead — leave as-is (harness garbage, not our concern to normalize)
+  // The final sequence is complete iff it already has all its bytes; otherwise drop the partial trailer.
+  return cont + 1 >= expected ? buf : buf.subarray(0, i);
 }
 
 /** Parses one NDJSON response line (harness → host) into a `ReceiveOutcome`. Exported (rather than

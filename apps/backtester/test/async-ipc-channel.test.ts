@@ -103,6 +103,21 @@ describe('AsyncIpcChannel', () => {
     expect(tail).toBe('€'.repeat(tail.length)); // only whole '€' characters survived
   });
 
+  // P3-3 (review 2): a valid UTF-8 code point split ACROSS two data-chunks must NOT decode to U+FFFD.
+  // Per-chunk toString() would mangle it; raw-byte retention + a single decode keeps it whole.
+  it('P3-3: a UTF-8 char split across two stderr chunks is not mangled to U+FFFD', async () => {
+    const { ch, stderr, stdout } = mk();
+    const p = ch.receive(Date.now() + 200);
+    const euro = Buffer.from('€', 'utf8'); // [0xE2, 0x82, 0xAC]
+    stderr.write(euro.subarray(0, 1)); // first byte alone
+    stderr.write(euro.subarray(1));    // remaining two bytes in a separate chunk
+    stdout.write('{"t":"ok","decisions":[]}\n');
+    await p;
+    const tail = ch.stderrText().replace('…[truncated]', '');
+    expect(tail).toBe('€');            // reassembled whole across the chunk boundary
+    expect(tail).not.toContain('\uFFFD'); // no replacement char
+  });
+
   // P3-3: stderr is a bounded diagnostic tail, NOT an overflow trigger. A stderr flood must be
   // truncated to the tail and MUST NOT fail the run (was: overflow at maxStderrBytes * 4).
   it('P3-3: stderr flood is bounded to the tail, not fatal (no overflow)', async () => {
