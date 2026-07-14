@@ -78,4 +78,28 @@ describe('P2-20 — multi-symbol trusted run requires a moduleFactory', () => {
     const out = await runBacktest(req(3), deps(withFactory as unknown as StrategyModule));
     expect(out.status).not.toBe('rejected');
   });
+
+  // Regression: provenance is metadata, not a privilege. A forged/incomplete resolved strategy claiming
+  // provenance:'bundle' but carrying NO bundle handle would run TRUSTED in-process (the router routes to
+  // the sandbox only when `provenance === 'bundle' && bundle !== undefined`), so it MUST still be
+  // rejected — the guard mirrors the router's exact predicate.
+  it('rejects a bundle-provenance strategy with NO bundle handle (guard mirrors the router predicate)', async () => {
+    const module = bareModule();
+    const forgedRegistry = {
+      resolveStrategy: () => ({ module, manifest: module.manifest, provenance: 'bundle' as const }), // no bundle handle
+      resolveOverlay: () => undefined,
+      resolveRiskProfile: () => DEFAULT_RISK,
+      resolveExecutionProfile: () => DEFAULT_EXEC,
+    };
+    const out = await runBacktest(req(3), {
+      registry: forgedRegistry as unknown as RunDeps['registry'],
+      dataset: dataset(['SYM0', 'SYM1', 'SYM2']),
+      router: createTrustedRouter(),
+    });
+    expect(out.status).toBe('rejected');
+    if (out.status === 'rejected') {
+      expect(out.validation.issues[0]?.path).toBe('/symbols');
+      expect(out.validation.issues[0]?.message).toMatch(/moduleFactory/);
+    }
+  });
 });
