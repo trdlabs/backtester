@@ -217,9 +217,10 @@ function sqn(trades: readonly Trade[]): number {
 }
 
 /**
- * `cagr = (eq_last/eq_first)^(1/years) − 1`, `years = context.elapsedYears` (календарное время из
- * `request.period`). Возвращает `null` (⇒ omit ключа, как `profit_factor`) при отсутствии времени
- * или неположительном капитале: значение не определено, а не «0».
+ * `cagr = (eq_last/eq_first)^(1/years) − 1`, `years = context.elapsedYears` (P3-7: span между двумя
+ * post-close equity-наблюдениями, `lastTs - firstTs` по обработанным барам — см. `effectiveElapsedYears`).
+ * Возвращает `null` (⇒ omit ключа, как `profit_factor`) при отсутствии времени или неположительном
+ * капитале: значение не определено, а не «0».
  */
 function cagr(equity: readonly EquityPoint[], elapsedYears: number | null): number | null {
   if (elapsedYears === null || elapsedYears <= 0) return null;
@@ -241,8 +242,40 @@ function calmar(equity: readonly EquityPoint[], elapsedYears: number | null): nu
 
 /** Контекст вычисления метрик — расширяемый seam (timeframe/periodsPerYear добавятся сюда позже). */
 export interface MetricsContext {
-  /** Календарная длительность прогона в годах (из `request.period`); `null` ⇒ cagr/calmar опускаются. */
+  /** Календарная длительность прогона в годах — span обработанных баров `lastTs - firstTs` (P3-7,
+   *  `effectiveElapsedYears`), НЕ `request.period`; `null` ⇒ cagr/calmar опускаются. */
   readonly elapsedYears: number | null;
+}
+
+const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000;
+
+/**
+ * P3-7 — эффективная длительность прогона в годах для cagr/calmar, посчитанная по РЕАЛЬНО обработанным
+ * уникальным barTs (не по запрошенному `request.period`; частичное покрытие иначе завышает знаменатель
+ * и занижает cagr/calmar).
+ *
+ * cagr использует отношение `equity[last] / equity[first]`, а КАЖДАЯ `EquityPoint` фиксируется ПОСЛЕ
+ * закрытия своего бара (`portfolio.equityAt(bar.close)` в `barTs`). Поэтому времени, за которое возникла
+ * доходность числителя, ровно `lastTs - firstTs` — расстояние между двумя post-close наблюдениями; НИКАКОГО
+ * `+ timeframe` (это приписало бы доходности ещё один ненаблюдаемый интервал и занизило CAGR; inclusive-bar
+ * семантика потребовала бы иного числителя — equity ДО первого бара, initial capital). `null` (⇒ omit
+ * cagr/calmar, как profit_factor) при < 2 уникальных временных точках.
+ *
+ * Инварианты: дубликаты ts по символам (multi-symbol) схлопываются через `Set` → период НЕ расширяют;
+ * gaps остаются в календарном времени (`max - min` охватывает пропуск).
+ */
+export function effectiveElapsedYears(equity: readonly EquityPoint[]): number | null {
+  if (equity.length === 0) return null;
+  const uniq = new Set(equity.map((p) => p.barTs));
+  if (uniq.size < 2) return null;
+  let firstTs = Number.POSITIVE_INFINITY;
+  let lastTs = Number.NEGATIVE_INFINITY;
+  for (const ts of uniq) {
+    if (ts < firstTs) firstTs = ts;
+    if (ts > lastTs) lastTs = ts;
+  }
+  const elapsedMs = lastTs - firstTs;
+  return elapsedMs > 0 ? elapsedMs / MS_PER_YEAR : null;
 }
 
 /** Вычислить запрошенные метрики (имена вне MVP-набора игнорируются — robustness обрабатывается отдельно). */

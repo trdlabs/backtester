@@ -32,7 +32,7 @@ import { type PerBarState, PointInTimeContextBuilder } from './context.js';
 import { type CandleDataset, loadCandleDataset } from './dataset.js';
 import { ExecutionSimulator } from './execution.js';
 import { computeBarFunding } from './funding.js';
-import { computeComparison, computeMetrics, INITIAL_EQUITY } from './metrics.js';
+import { computeComparison, computeMetrics, effectiveElapsedYears, INITIAL_EQUITY } from './metrics.js';
 import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter, firstDecision } from './module-executor.js';
 // Type-only (erased at runtime ⇒ 018 НЕ зависит от 019 в рантайме): форма реестра sandbox-политик
 // для additive-полей RunDeps. Sandbox-aware router передаётся явно через `deps.router` (строит 019).
@@ -800,16 +800,6 @@ async function runBarMajor(
   }
 }
 
-const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000;
-
-/** Календарная длительность окна прогона в годах для cagr/calmar; `null` при непарсимом/непозитивном окне. */
-function elapsedYearsOf(period: BacktestRunRequest['period']): number | null {
-  const fromMs = Date.parse(period.from);
-  const toMs = Date.parse(period.to);
-  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return null;
-  return (toMs - fromMs) / MS_PER_YEAR;
-}
-
 function assembleResult(
   target: RunTarget,
   request: BacktestRunRequest,
@@ -820,7 +810,9 @@ function assembleResult(
   coverage: CoverageModel | undefined,
   capitalModel?: RunEvidence['capitalModel'],
 ): BacktestRunResult {
-  const elapsedYears = elapsedYearsOf(request.period);
+  // P3-7: elapsed for cagr/calmar comes from the REALLY-PROCESSED unique bar timestamps (equity
+  // curve), not the requested period — a partially-covered window must not deflate the annualization.
+  const elapsedYears = effectiveElapsedYears(acc.equityCurve);
   const metrics = computeMetrics(request.metrics, acc.equityCurve, acc.trades, { elapsedYears });
   const overlayRefs: readonly Ref[] = target.overlays.map((o) => refOf(o.manifest.id, o.manifest.version));
 

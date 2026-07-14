@@ -3,7 +3,10 @@
 //   - engine output, the normalize/restamp shape, artifact-persistence semantics, or a sandbox-policy
 //     change that affects deterministic output.
 // A bump re-keys every cache entry (new computeIdentity space) — safe by construction.
-export const DEDUP_COMPUTE_VERSION = '1';
+//   '1' → '2' (P3-7): cagr/calmar now annualize over the really-processed unique bar timestamps
+//   instead of the requested period, so a partially-covered run yields different (correct) metrics —
+//   old cache entries would otherwise return the pre-fix values.
+export const DEDUP_COMPUTE_VERSION = '2';
 
 // Shape version of the DedupTemplate envelope itself. Bump if the envelope shape changes.
 export const DEDUP_TEMPLATE_VERSION = '1';
