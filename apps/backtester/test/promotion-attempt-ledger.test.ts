@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryPromotionAttemptLedger, type PromotionAttemptRecord } from '../src/jobs/promotion/attempt-ledger.js';
 import { createPool } from '../src/db/pool';
 import { DEFAULT_MIGRATIONS_DIR, migrate } from '../src/db/migrate';
@@ -55,6 +55,9 @@ describe.skipIf(!PG_AVAILABLE)('PgPromotionAttemptLedger — Pg concurrency (man
     await adminPool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await adminPool.end();
   });
+  // The two tests share one schema — reset BOTH tables between them so epoch 'e' starts empty each time
+  // (else the second test's attempt inherits the first's advanced counter). search_path is set on the pool.
+  beforeEach(async () => { await pool.query('TRUNCATE backtest_promotion_epoch, backtest_promotion_attempt'); });
 
   it('Promise.all of N DISTINCT attempts yields exactly {1..N} — no dup, no gap', async () => {
     const l = new PgPromotionAttemptLedger(pool);
@@ -75,11 +78,21 @@ describe.skipIf(!PG_AVAILABLE)('PgPromotionAttemptLedger — Pg concurrency (man
 
 // This third case runs WITHOUT a real DB (fake pool) so it is ALWAYS exercised — keep it OUTSIDE the skipIf block.
 describe('PgPromotionAttemptLedger — rollback/release (no DB)', () => {
-  it('a thrown query rolls back and releases the client (no leaked connection)', async () => {
+  it('a thrown query rolls back AND releases the client (no leaked connection)', async () => {
     const released = { v: false };
-    const fakeClient = { query: async (sql: string) => { if (sql.startsWith('INSERT INTO backtest_promotion_attempt')) throw new Error('boom'); return { rows: [{ next_attempt: 1 }], rowCount: 0 }; }, release: () => { released.v = true; } };
+    const seen: string[] = [];
+    const fakeClient = {
+      query: async (sql: string) => {
+        seen.push(sql);
+        if (sql.startsWith('INSERT INTO backtest_promotion_attempt')) throw new Error('boom');
+        return { rows: [{ next_attempt: 1 }], rowCount: 0 };
+      },
+      release: () => { released.v = true; },
+    };
     const fakePool = { connect: async () => fakeClient } as unknown as import('pg').Pool;
     await expect(new PgPromotionAttemptLedger(fakePool).recordIfNewAndGetAttempt(rec())).rejects.toThrow('boom');
-    expect(released.v).toBe(true); // finally released the client even on throw
+    expect(released.v).toBe(true);                 // finally released the client even on throw
+    expect(seen).toContain('ROLLBACK');            // the catch actually issued ROLLBACK (not just release)
+    expect(seen).not.toContain('COMMIT');          // and never committed a partial write
   });
 });

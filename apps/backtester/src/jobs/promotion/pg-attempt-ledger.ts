@@ -2,6 +2,14 @@
 // counter row (FOR UPDATE), so concurrent distinct attempts get distinct monotonic numbers; a replay
 // (same epoch+attemptIdentity) returns its stored number without incrementing. NOTE: the repo has no
 // transaction helper — use pool.connect() + BEGIN/COMMIT explicitly with a finally release.
+//
+// ISOLATION: correctness assumes the pg default READ COMMITTED. The no-dup/no-gap guarantee rests on
+// two READ-COMMITTED behaviours: (a) a FOR UPDATE that blocks re-reads the *latest committed* counter
+// version after the holder commits (EvalPlanQual), and (b) each statement takes a fresh snapshot, so the
+// replay SELECT (issued AFTER the lock) sees the prior holder's committed attempt row. Under REPEATABLE
+// READ / SERIALIZABLE the FOR UPDATE would instead raise a serialization error on concurrent update —
+// i.e. it fails CLOSED (throws → ROLLBACK), never a silent dup/gap. Do not pin this path to a stricter
+// isolation level expecting silent success.
 import type { Pool } from 'pg';
 import type { PromotionAttemptLedger, PromotionAttemptRecord } from './attempt-ledger.js';
 
