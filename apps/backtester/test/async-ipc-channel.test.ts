@@ -51,6 +51,17 @@ describe('AsyncIpcChannel', () => {
     expect((await p).kind).toBe('malformed');
   });
 
+  // P3-3 (review): a COMPLETED frame (newline present) larger than bufferCap must still be `malformed`
+  // (the per-frame maxDecisionBytes contract), NOT `overflow`. Only unterminated floods are overflow.
+  it('P3-3: a completed frame larger than bufferCap is malformed, not overflow', async () => {
+    const { ch, stdout } = mk();
+    const p = ch.receive(Date.now() + 1000);
+    // 5000 B > bufferCap (4096), delivered WITH its terminating newline in one write
+    stdout.write(`${'x'.repeat(5000)}\n`);
+    const out = await p;
+    expect(out.kind).toBe('malformed');
+  });
+
   it('returns eof when stdout ends before a line', async () => {
     const { ch, stdout } = mk();
     const p = ch.receive(Date.now() + 1000);
@@ -77,6 +88,21 @@ describe('AsyncIpcChannel', () => {
     expect(ch.stderrText().length).toBeLessThanOrEqual('z'.repeat(256).length + '…[truncated]'.length);
   });
 
+  // P3-3 (review): maxStderrBytes is a BYTE quota. A multibyte-UTF-8 flood must be bounded by BYTES
+  // (not JS-string .length) and must never split a code point (no U+FFFD replacement at the cut).
+  it('P3-3: stderr byte-cap holds for multibyte UTF-8 and never splits a code point', async () => {
+    const { ch, stderr, stdout } = mk();
+    const p = ch.receive(Date.now() + 200);
+    stderr.write('€'.repeat(100)); // 3 bytes each = 300 B > maxStderrBytes (256), 256 is not a multiple of 3
+    stdout.write('{"t":"ok","decisions":[]}\n');
+    await p;
+    const tail = ch.stderrText().replace('…[truncated]', '');
+    expect(ch.stderrText()).toContain('…[truncated]');
+    expect(Buffer.byteLength(tail, 'utf8')).toBeLessThanOrEqual(256); // BYTE-bounded, not char-bounded
+    expect(tail).not.toContain('�'); // no code point was split at the cut
+    expect(tail).toBe('€'.repeat(tail.length)); // only whole '€' characters survived
+  });
+
   // P3-3: stderr is a bounded diagnostic tail, NOT an overflow trigger. A stderr flood must be
   // truncated to the tail and MUST NOT fail the run (was: overflow at maxStderrBytes * 4).
   it('P3-3: stderr flood is bounded to the tail, not fatal (no overflow)', async () => {
@@ -86,7 +112,7 @@ describe('AsyncIpcChannel', () => {
     stdout.write('{"t":"ok","seq":7,"decisions":[]}\n'); // a valid reply still arrives
     const out = await p;
     expect(out.kind).toBe('ok'); // the flood did not poison the round-trip
-    expect(ch.stderrText().length).toBeLessThanOrEqual(256 + '…[truncated]'.length);
+    expect(Buffer.byteLength(ch.stderrText().replace('…[truncated]', ''), 'utf8')).toBeLessThanOrEqual(256);
   });
 
   // P3-3: a long legitimate run emits many small frames whose CUMULATIVE bytes far exceed

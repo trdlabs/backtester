@@ -10,6 +10,8 @@ import type { Request, ReceiveOutcome } from './ipc.js';
 export class AsyncIpcChannel {
   private stdoutAcc = '';
   private stderrBuf = '';
+  private stderrBytes = 0; // BYTE length of stderrBuf (JS string .length counts UTF-16 units, not bytes)
+  private stderrTruncated = false;
   private eof = false;
   private errored = false;
   private overflow = false;
@@ -34,9 +36,11 @@ export class AsyncIpcChannel {
     stdout.on('data', (chunk: Buffer) => {
       if (this.overflow) return; // already tripped — stop growing the buffer
       this.stdoutAcc += chunk.toString('utf8');
-      // Anti-flood cap on the LIVE unparsed buffer (not a lifetime total): only an unterminated flood
-      // or a single monstrous frame can breach it — normal replies are released frame-by-frame.
-      if (Buffer.byteLength(this.stdoutAcc, 'utf8') > this.bufferCap) {
+      // Anti-flood cap on the LIVE unparsed buffer (not a lifetime total): trip ONLY when the buffer
+      // exceeds bufferCap AND still has no newline — i.e. an unterminated flood. A completed frame
+      // (newline present), however oversized, is left for receive() to classify as `malformed` via
+      // the maxDecisionBytes check; a flood is not a frame, so it is `overflow`.
+      if (Buffer.byteLength(this.stdoutAcc, 'utf8') > this.bufferCap && this.stdoutAcc.indexOf('\n') < 0) {
         this.overflow = true;
       }
       this.wake();
@@ -45,13 +49,15 @@ export class AsyncIpcChannel {
     stdout.on('error', () => { this.errored = true; this.wake(); });
     stderr.on('data', (chunk: Buffer) => {
       // stderr is a bounded diagnostic TAIL, never an overflow trigger — diagnostics must not fail a
-      // run. Keep the first maxStderrBytes, then mark truncation and drop the rest.
-      if (this.stderrBuf.length < this.limits.maxStderrBytes) {
-        this.stderrBuf += chunk.toString('utf8');
-        if (this.stderrBuf.length > this.limits.maxStderrBytes) {
-          this.stderrBuf = `${this.stderrBuf.slice(0, this.limits.maxStderrBytes)}…[truncated]`;
-        }
-      }
+      // run. Bound by BYTES (maxStderrBytes is a byte quota): take only as many whole UTF-8 code
+      // points as fit, never splitting a multibyte sequence, then latch truncation.
+      if (this.stderrTruncated) return;
+      const room = this.limits.maxStderrBytes - this.stderrBytes;
+      if (room <= 0) { this.stderrTruncated = true; return; }
+      const take = chunk.length <= room ? chunk : utf8ByteSlice(chunk, room);
+      this.stderrBuf += take.toString('utf8');
+      this.stderrBytes += take.length;
+      if (take.length < chunk.length) this.stderrTruncated = true;
     });
   }
 
@@ -66,12 +72,14 @@ export class AsyncIpcChannel {
   }
 
   stderrText(): string {
-    return this.stderrBuf;
+    return this.stderrTruncated ? `${this.stderrBuf}…[truncated]` : this.stderrBuf;
   }
 
   async receive(deadlineEpochMs: number): Promise<ReceiveOutcome> {
     for (;;) {
-      if (this.overflow) return { kind: 'overflow' };
+      // A completed frame is classified FIRST — before the overflow check — so a completed-but-oversized
+      // frame (newline present, even if the whole buffer exceeds bufferCap) surfaces as `malformed` via
+      // the maxDecisionBytes check, never as `overflow`. Only an UNTERMINATED buffer reaches overflow.
       const nl = this.stdoutAcc.indexOf('\n');
       if (nl >= 0) {
         const line = this.stdoutAcc.slice(0, nl);
@@ -81,10 +89,8 @@ export class AsyncIpcChannel {
         }
         return this.parseLine(line);
       }
-      if (Buffer.byteLength(this.stdoutAcc, 'utf8') > this.bufferCap) {
-        // An unterminated flood is bounded here (a flood is not a frame, so it is `overflow`, not
-        // `malformed`); a completed-but-oversized frame is still caught by the maxDecisionBytes check
-        // above once its newline arrives.
+      if (this.overflow || Buffer.byteLength(this.stdoutAcc, 'utf8') > this.bufferCap) {
+        // Unterminated flood past bufferCap: a flood is not a frame, so it is `overflow`, not `malformed`.
         return { kind: 'overflow' };
       }
       if (this.eof || this.errored) return { kind: 'eof' };
@@ -103,6 +109,18 @@ export class AsyncIpcChannel {
   private parseLine(line: string): ReceiveOutcome {
     return parseResponseLine(line);
   }
+}
+
+/** Returns the largest prefix of `buf` that is at most `maxBytes` long AND ends on a UTF-8 code-point
+ *  boundary (never splits a multibyte sequence). Used to bound the stderr diagnostic tail by BYTES
+ *  without emitting a replacement char at the cut. */
+function utf8ByteSlice(buf: Buffer, maxBytes: number): Buffer {
+  if (buf.length <= maxBytes) return buf;
+  let end = maxBytes;
+  // If the byte at `end` is a UTF-8 continuation byte (0b10xxxxxx), the cut lands mid-sequence — walk
+  // back to the start of that code point so the prefix contains only whole characters.
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end);
 }
 
 /** Parses one NDJSON response line (harness → host) into a `ReceiveOutcome`. Exported (rather than
