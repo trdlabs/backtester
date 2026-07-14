@@ -259,6 +259,12 @@ export interface ResolvedStrategy {
   readonly module: StrategyModule;
   readonly manifest: ModuleManifest;
   /**
+   * Провенанс (опц.; проставляется 019-registry). `'bundle'` ⇒ стратегия исполняется в sandbox —
+   * КАЖДЫЙ символ в своей сессии/контейнере (изоляция per-symbol гарантирована), поэтому
+   * multi-symbol-прогон bundle НЕ требует `moduleFactory`. `'trusted'`/undefined ⇒ in-process путь.
+   */
+  readonly provenance?: 'trusted' | 'bundle';
+  /**
    * Опционально (trusted): фабрика для СВЕЖЕГО инстанса модуля per-symbol. Когда задана, runner
    * инстанцирует стратегию заново на каждый символ — так module-level FSM-state (в замыкании
    * `createStrategyModule`) НЕ протекает между символами (twin-equivalence с sandbox, где каждый

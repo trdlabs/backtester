@@ -18,7 +18,11 @@ export interface TrustedModuleRegistry {
 
 /** Вход построителя registry. */
 export interface RegistryInput {
-  readonly strategies?: readonly StrategyModule[];
+  // A trusted strategy may carry an optional `moduleFactory` (additive) — a fresh per-symbol instance
+  // so module-level state cannot leak across symbols on the in-process path (P2-20 / twin-equivalence).
+  readonly strategies?: readonly (StrategyModule & {
+    readonly moduleFactory?: (params: unknown) => StrategyModule;
+  })[];
   readonly overlays?: readonly HypothesisOverlayModule[];
   readonly riskProfiles?: readonly RiskProfile[];
   readonly executionProfiles?: readonly ExecutionProfile[];
@@ -32,7 +36,12 @@ function key(id: string, version: string): string {
 export function createTrustedRegistry(input: RegistryInput): TrustedModuleRegistry {
   const strategies = new Map<string, ResolvedStrategy>();
   for (const m of input.strategies ?? []) {
-    strategies.set(key(m.manifest.id, m.manifest.version), { module: m, manifest: m.manifest });
+    strategies.set(key(m.manifest.id, m.manifest.version), {
+      module: m,
+      manifest: m.manifest,
+      provenance: 'trusted',
+      ...(m.moduleFactory !== undefined ? { moduleFactory: m.moduleFactory } : {}),
+    });
   }
   const overlays = new Map<string, ResolvedOverlay>();
   for (const m of input.overlays ?? []) {

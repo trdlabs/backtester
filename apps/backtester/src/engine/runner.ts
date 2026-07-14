@@ -897,6 +897,23 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
   if (strategy === undefined) {
     return rejected('invalid_module_ref', `moduleRef не найден в registry: ${request.moduleRef.id}@${request.moduleRef.version}`, '/moduleRef');
   }
+  // P2-20: a multi-symbol TRUSTED in-process run reuses ONE `module` object across all symbols
+  // (simulateTarget/runBarMajor's non-factory branch), so a stateful module leaks state between symbols
+  // — diverging from the per-symbol-isolated sandbox twin, and making the barMajor flip change results.
+  // Fail-fast: N>1 requires a moduleFactory for per-symbol isolation. Bundle strategies run in isolated
+  // sandbox sessions (one per symbol), so they are exempt.
+  if (
+    request.symbols.length > 1 &&
+    strategy.moduleFactory === undefined &&
+    strategy.provenance !== 'bundle'
+  ) {
+    return rejected(
+      'invalid_module_ref',
+      `multi-symbol run (${request.symbols.length} symbols) of trusted strategy '${request.moduleRef.id}@${request.moduleRef.version}' requires a moduleFactory: without per-symbol instantiation a stateful module leaks state across symbols and diverges from the per-symbol-isolated sandbox twin`,
+      '/symbols',
+    );
+  }
+
   if (request.riskProfileRef === undefined) {
     return rejected('missing_risk_profile', 'riskProfileRef не привязан', '/riskProfileRef');
   }
