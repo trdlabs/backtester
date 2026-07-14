@@ -80,6 +80,22 @@ describe('evaluatePromotionWindow', () => {
     expect(evaluatePromotionWindow({ ...win, executedBarTimes: leadingGap, candidate: eq, curated: eq }))
       .toEqual({ outcome: 'reject', reason: 'evaluation_insufficient' });
   });
+  it('evaluation_insufficient on an INTERIOR gap (both edges present, middle bar missing)', () => {
+    // 7d,8d missing inside [6d,10d): edges 6d & 9d present but the window is not fully covered — signing
+    // metrics computed over the sparse subset as the FULL window would be a false scope claim.
+    const eq = oc([pt(1, 100), pt(6, 110), pt(9, 130)], [trd(6, 9, 5)]);
+    const interior = [[0, 1, 2, 3, 4, 5, 6, 9].map((d) => d * DAY)];
+    expect(evaluatePromotionWindow({ ...win, executedBarTimes: interior, candidate: eq, curated: eq }))
+      .toEqual({ outcome: 'reject', reason: 'evaluation_insufficient' });
+  });
+  it('evaluation_insufficient when declared timeframe is COARSER than the real tape cadence (extra in-window bars)', () => {
+    const HOUR = 3_600_000;
+    const eq = oc(warmEquity, [trd(7, 8, 5)]);
+    // hourly bars 5d..10d but timeframe declared '1d': 96 in-window bars vs 4 expected daily slots ⇒ mismatch.
+    const hourly = [Array.from({ length: 24 * 5 }, (_, i) => 5 * DAY + i * HOUR)];
+    expect(evaluatePromotionWindow({ ...win, executedBarTimes: hourly, timeframe: '1d', candidate: eq, curated: eq }))
+      .toEqual({ outcome: 'reject', reason: 'evaluation_insufficient' });
+  });
   it('evaluation_insufficient when ANY symbol is uncovered even if others are complete (per-symbol guard)', () => {
     const eq = oc(warmEquity, [trd(7, 8, 5)]);
     const mixed = [FULL_BARS, [0, 1, 2, 3, 4, 5, 6, 7, 8].map((d) => d * DAY)]; // 2nd symbol tail short

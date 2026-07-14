@@ -6,17 +6,33 @@ import { parseTimeframeMs } from '../engine/timeframe.js';
 import { decideVerdict, type EvidenceThresholds } from './verdict.js';
 import type { RunPeriod } from '@trading-backtester/sdk/contracts';
 
-/** True iff SOME bar's interval [ts, ts+interval) contains wFrom (left edge covered by a real bar) AND some
- *  bar's interval reaches wTo (right edge covered). Inspects actual bars, so a hole at either boundary fails. */
+/** True iff the tape FULLY and CONTIGUOUSLY covers the holdout window `[wFrom, wTo)` on the trusted grid:
+ *  a real bar covering the left edge, then every `interval`-spaced slot present up to `wTo`, and NO extra
+ *  in-window bars (which would mean the declared timeframe is coarser than the real cadence). This catches
+ *  a hole at either boundary, an INTERIOR gap, and a declared-vs-actual cadence mismatch — so the signed
+ *  evaluationWindow can never claim a span the executed tape didn't fully cover. */
 function symbolCoversWindow(barTimes: readonly number[], wFrom: number, wTo: number, interval: number): boolean {
-  let left = false;
-  let right = false;
+  const present = new Set(barTimes);
+  // The bar whose half-open interval [anchor, anchor+interval) contains wFrom — the grid phase + left edge.
+  let anchor: number | undefined;
   for (const ts of barTimes) {
-    if (ts <= wFrom && ts + interval > wFrom) left = true;
-    if (ts < wTo && ts + interval >= wTo) right = true;
-    if (left && right) return true;
+    if (ts <= wFrom && ts + interval > wFrom && (anchor === undefined || ts > anchor)) anchor = ts;
   }
-  return left && right;
+  if (anchor === undefined) return false; // left edge uncovered
+  // Walk the grid from the anchor to wTo; every in-window slot must be a real bar (contiguity → interior +
+  // tail coverage). Counting the slots also lets us reject EXTRA in-window bars below (coarse-cadence trap).
+  let expected = 0;
+  for (let ts = anchor; ts < wTo; ts += interval) {
+    if (ts >= wFrom) {
+      expected += 1;
+      if (!present.has(ts)) return false; // interior or tail gap on the trusted grid
+    }
+  }
+  // No extra in-window bars: declared interval coarser than the real cadence would leave more actual bars
+  // in [wFrom, wTo) than grid slots. Equality ⇒ the tape's cadence matches the trusted timeframe.
+  let actualInWindow = 0;
+  for (const ts of barTimes) if (ts >= wFrom && ts < wTo) actualInWindow += 1;
+  return actualInWindow === expected;
 }
 
 export function evaluatePromotionIntegrity(input: {
@@ -43,13 +59,13 @@ export function evaluatePromotionWindow(input: {
   const wFrom = Date.parse(w.from), wTo = Date.parse(w.to);
   const pFrom = Date.parse(input.runPeriod.from), pTo = Date.parse(input.runPeriod.to);
   if (!(pFrom <= wFrom && wTo <= pTo)) return { outcome: 'reject', reason: 'holdout_not_covered' };
-  // Completeness (fail-closed): for EVERY symbol the FROZEN executed tape must have an ACTUAL bar whose
-  // interval covers the LEFT holdout edge AND an actual bar whose interval reaches the RIGHT edge. Checking
-  // real bars (not just the [firstTs,lastTs] span) catches a hole AT a boundary; the grid step comes from
-  // the TRUSTED request.timeframe (never inferred from bar spacing — a leading gap would inflate it and
-  // mask a missing tail). Unknown timeframe, no symbols, or any uncovered boundary ⇒ evaluation_insufficient,
-  // returned BEFORE the ledger write and signing — so a signed v2 evaluationWindow always matches the
-  // executed range for every symbol.
+  // Completeness (fail-closed): for EVERY symbol the FROZEN executed tape must FULLY and CONTIGUOUSLY cover
+  // the holdout window on the trusted grid — a real bar at the left edge, every interval-spaced slot present
+  // through wTo (no interior or tail gap), and NO extra in-window bars (which would mean the declared
+  // timeframe is coarser than the real cadence). The grid step is parsed from the TRUSTED request.timeframe
+  // (never inferred from bar spacing — a leading gap would inflate it and mask a missing tail). Unknown
+  // timeframe, no symbols, or any incomplete symbol ⇒ evaluation_insufficient, returned BEFORE the ledger
+  // write and signing — so a signed v2 evaluationWindow can never claim a span the tape didn't fully cover.
   const interval = parseTimeframeMs(input.timeframe);
   const covered = interval !== null && input.executedBarTimes.length > 0 && input.executedBarTimes.every(
     (bars) => symbolCoversWindow(bars, wFrom, wTo, interval),
