@@ -19,17 +19,10 @@ describe('realism GAP — funding non-circular guard + sign + 5b anchor', () => 
     const { ledger, size } = await runRealismLedger(SYMBOL, rows, [trade]);
     // Inline recompute — plain arithmetic, NO import of funding.ts (independent of production code).
     // If funding.ts has a wrong divisor/sign/proration, this inline sum diverges from the engine ledger.
-    // P2-19: funding prorates over the FORWARD interval [ts[t], ts[t+1]] — the span the post-bar
-    // position is actually held. The inline recompute weights each covered bar by its real forward step
-    // to the NEXT processed bar (this fixture has real minute gaps; the whole hold window is funding-
-    // covered, so no stale-cap is exercised here).
+    // P2-19: each covered bar realizes ONE funding snapshot = one server-cadence period (this fixture
+    // is a 1m tape, so 1 minute per covered bar). The inline recompute is independent of funding.ts.
     const INTERVAL_MIN = 8 * 60; // 480
     const sign = trade.side === 'long' ? 1 : -1;
-    const sortedTs = rows.map((r) => r.minute_ts).sort((a, b) => a - b);
-    const forwardMinAt = new Map<number, number>();
-    for (let i = 0; i < sortedTs.length - 1; i += 1) {
-      forwardMinAt.set(sortedTs[i], (sortedTs[i + 1] - sortedTs[i]) / 60_000);
-    }
     let inline = 0;
     for (const e of ledger) {
       if (!e.covered) {
@@ -37,8 +30,7 @@ describe('realism GAP — funding non-circular guard + sign + 5b anchor', () => 
         continue;
       }
       const row = rows.find((r) => r.minute_ts === e.ts)!; // mark = close at the funding minute
-      const barMinutes = forwardMinAt.get(e.ts) ?? 1; // forward step to the next processed bar
-      inline += (e.rate / INTERVAL_MIN) * (size * row.close) * sign * barMinutes;
+      inline += (e.rate / INTERVAL_MIN) * (size * row.close) * sign; // one 1m cadence period
     }
     const engineTotal = ledger.reduce((s, e) => s + e.cost, 0);
     expect(Math.abs(engineTotal - inline)).toBeLessThan(1e-10);

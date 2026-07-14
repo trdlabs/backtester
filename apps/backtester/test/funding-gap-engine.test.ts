@@ -1,7 +1,7 @@
-// P2-19 — funding must prorate over the FORWARD interval [ts[t], ts[t+1]] (the span the post-bar
-// position is actually held under next_bar_open), not a single gridMinutes extrapolated from the first
-// two bars, and not the backward ts[t]-ts[t-1] (which mis-times pending entry/exit across a gap).
-// These drive the ENGINE path (runBacktest via runRealismLedger) with synthetic canonical rows.
+// P2-19 — funding cadence must come from the SERVER-validated dataset timeframe (one snapshot per bar),
+// NOT inferred from observed bar gaps, and each covered bar realizes exactly ONE cadence period. A gap
+// must never be extrapolated at a single rate. These drive the ENGINE path (runBacktest via
+// runRealismLedger) with synthetic canonical rows on a 1m tape (cadence = 1 minute).
 import { describe, expect, it } from 'vitest';
 import type { CanonicalRowV2 } from '@trading/research-contracts/research';
 import { type PaperTrade, runRealismLedger } from './helpers-replay.js';
@@ -11,7 +11,7 @@ const MIN = 60_000;
 const RATE = 0.0008; // constant 8h-equivalent funding rate
 const INTERVAL_MIN = 8 * 60; // 480 — REALISM_EXEC funding interval
 
-/** One synthetic canonical row at `minuteTs`, flat OHLC at `close`. `hasFunding` toggles coverage. */
+/** One synthetic 1m canonical row at `minuteTs`, flat OHLC at `close`. `hasFunding` toggles coverage. */
 function row(minuteTs: number, close: number, hasFunding = true): CanonicalRowV2 {
   return {
     schema_version: 2,
@@ -27,8 +27,8 @@ function row(minuteTs: number, close: number, hasFunding = true): CanonicalRowV2
   } as unknown as CanonicalRowV2;
 }
 
-/** Build rows at the given minute-offsets from T0 (a missing offset = a gap). `fundingUntil` (offset,
- *  exclusive of larger offsets) lets a tape lose funding coverage partway through for the stale test. */
+/** Rows at the given minute-offsets from T0 (a missing offset = a gap). `fundingUntilOffset` lets a tape
+ *  lose funding coverage partway through (offsets beyond it carry has_funding=false) for the stale test. */
 function tape(offsets: readonly number[], fundingUntilOffset = Infinity): CanonicalRowV2[] {
   return offsets.map((m) => row(T0 + m * MIN, 100, m <= fundingUntilOffset));
 }
@@ -41,42 +41,21 @@ function longTrade(openOffset: number, closeOffset: number): PaperTrade {
   };
 }
 
-/** barMinutes charged, backed out of a covered ledger entry's cost:
+/** Minutes charged, backed out of a covered ledger entry's cost:
  *  cost = (rate/480) * (size*close) * sign * barMinutes ⇒ barMinutes = cost / (perMin*notional). */
 function impliedMinutes(cost: number, size: number, close: number): number {
   return cost / ((RATE / INTERVAL_MIN) * (size * close) * 1); // long sign = +1
 }
 
-const covEntries = (ledger: { covered: boolean; cost: number; ts: number; barIndex: number }[]) =>
+const covEntries = (ledger: { covered: boolean; cost: number; ts: number }[]) =>
   ledger.filter((e) => e.covered && e.cost !== 0);
 
-describe('P2-19 — funding prorates over the forward hold interval', () => {
-  it('contiguous tape: every held bar charges exactly ONE minute (forward = timeframe)', async () => {
+describe('P2-19 — funding charges one server-cadence period per covered bar', () => {
+  it('contiguous 1m tape: every held bar charges exactly ONE minute', async () => {
     const { ledger, size } = await runRealismLedger('SYNTH', tape([0, 1, 2, 3, 4, 5, 6]), [longTrade(1, 5)]);
     const covered = covEntries(ledger);
     expect(covered.length).toBeGreaterThan(0);
     for (const e of covered) expect(impliedMinutes(e.cost, size, 100)).toBeCloseTo(1, 9);
-  });
-
-  it('ENTRY pending through a gap is NOT charged for the pre-fill gap (forward, not backward)', async () => {
-    // minute 1 missing → open decision on bar 0 (offset 0) fills at open of the NEXT bar (offset 2).
-    // The position exists only from offset 2 onward; the 2-minute gap [0,2] must NOT be charged.
-    // Backward (buggy) would charge the first held bar 2 minutes; forward charges its real 1 minute.
-    const { ledger, size } = await runRealismLedger('SYNTH', tape([0, 2, 3, 4, 5]), [longTrade(0, 4)]);
-    const covered = covEntries(ledger);
-    expect(covered.length).toBeGreaterThan(0);
-    // no held bar is charged the 2-minute entry gap; every charge is the real 1-minute forward step
-    for (const e of covered) expect(impliedMinutes(e.cost, size, 100)).toBeCloseTo(1, 9);
-  });
-
-  it('EXIT pending through a gap IS charged for the real hold across the gap', async () => {
-    // minute 4 missing → exit decision on bar at offset 3 closes at the open of the next bar (offset 5).
-    // The position is held from offset 3 to offset 5 = 2 minutes across the gap, so the bar at offset 3
-    // (its forward interval spans the gap) must charge 2 minutes. Backward would drop this to 1.
-    const { ledger, size } = await runRealismLedger('SYNTH', tape([0, 1, 2, 3, 5, 6]), [longTrade(1, 3)]);
-    const exitBar = ledger.find((e) => e.covered && e.ts === T0 + 3 * MIN);
-    expect(exitBar).toBeDefined();
-    expect(impliedMinutes(exitBar!.cost, size, 100)).toBeCloseTo(2, 9); // real 2-minute hold to the close
   });
 
   it('start-gap does NOT inflate every bar (was: gridMinutes = 2 ⇒ 2× on every bar)', async () => {
@@ -86,20 +65,55 @@ describe('P2-19 — funding prorates over the forward hold interval', () => {
     for (const e of covered) expect(impliedMinutes(e.cost, size, 100)).toBeCloseTo(1, 9);
   });
 
-  it('a STALE reading over a gap is capped to one timeframe — no arbitrary long stale charge', async () => {
-    // Funding coverage ends after offset 2; the bar at offset 62 has NO snapshot but the previous
-    // covered bar keeps it `stale` (1-bar grace). Its forward step to offset 63 is normal, but even if
-    // it spanned a gap the stale cap bounds it to one timeframe — never the 60-minute gap.
-    const rows = tape([0, 1, 2, 62, 63], /* fundingUntilOffset */ 2);
-    const { ledger, size } = await runRealismLedger('SYNTH', rows, [longTrade(0, 63)]);
-    for (const e of ledger) {
-      if (!e.covered) { expect(e.cost).toBe(0); continue; }
-      // no covered bar is charged more than the real forward step, and never a fabricated 60 minutes
-      expect(impliedMinutes(e.cost, size, 100)).toBeLessThanOrEqual(60 + 1e-9);
-    }
-    // specifically: the stale bar at offset 62 charges at most one timeframe (1 minute), not the gap
-    const staleBar = ledger.find((e) => e.ts === T0 + 62 * MIN && e.covered);
-    if (staleBar) expect(impliedMinutes(staleBar.cost, size, 100)).toBeLessThanOrEqual(1 + 1e-9);
+  it('ENTRY pending through a gap is not charged for the pre-fill gap — held bars charge one cadence', async () => {
+    // minute 1 missing → open decision on bar 0 fills at the open of the next bar (offset 2); the
+    // position exists only from offset 2 and each held bar charges 1 minute, never the 2-minute gap.
+    const { ledger, size } = await runRealismLedger('SYNTH', tape([0, 2, 3, 4, 5]), [longTrade(0, 4)]);
+    const covered = covEntries(ledger);
+    expect(covered.length).toBeGreaterThan(0);
+    for (const e of covered) expect(impliedMinutes(e.cost, size, 100)).toBeCloseTo(1, 9);
+  });
+
+  it('EXIT pending through a gap charges one cadence per snapshot, not the extrapolated gap span', async () => {
+    // minute 4 missing → exit decision on the bar at offset 3 closes at the next bar (offset 5). The
+    // bar at offset 3 realizes its single snapshot = 1 minute; the missing gap minute has no snapshot.
+    const { ledger, size } = await runRealismLedger('SYNTH', tape([0, 1, 2, 3, 5, 6]), [longTrade(1, 3)]);
+    const exitBar = ledger.find((e) => e.covered && e.ts === T0 + 3 * MIN)!;
+    expect(exitBar).toBeDefined();
+    expect(impliedMinutes(exitBar.cost, size, 100)).toBeCloseTo(1, 9);
+  });
+
+  it('sparse 1m tape [0, 60] with entry on the final bar charges 1 minute, NOT 60 (server cadence, not min-gap)', async () => {
+    // Two bars 60 minutes apart on a 1m tape. Open decision on bar 0 fills at open(bar 60) and is
+    // force-closed at its close — the position was held one real 1-minute candle. Inferring the
+    // timeframe from the observed 60-minute gap (the old min-gap logic) would wrongly charge 60 minutes.
+    const { ledger, size } = await runRealismLedger('SYNTH', tape([0, 60]), [longTrade(0, 9999)]);
+    const covered = covEntries(ledger);
+    expect(covered.length).toBe(1); // exactly the final held bar
+    expect(impliedMinutes(covered[0].cost, size, 100)).toBeCloseTo(1, 9); // 1 minute, not 60
+  });
+
+  it('present bar before a coverage gap charges ONE minute, not the whole gap (freshness bounds the interval)', async () => {
+    // Funding coverage ends after offset 2, then a 60-minute jump to offset 62. The present bar at
+    // offset 2 must charge only its single cadence period (1 min) — never live-forward the last rate
+    // across the 60-minute gap. The stale bar at offset 62 (1-bar grace) also charges just 1 minute,
+    // and the bar at offset 63 (past grace) charges 0.
+    const { ledger, size } = await runRealismLedger('SYNTH', tape([0, 1, 2, 62, 63], /* fundingUntil */ 2), [longTrade(0, 9999)]);
+    const at = (off: number) => ledger.find((e) => e.ts === T0 + off * MIN)!;
+    const presentBar = at(2);
+    expect(presentBar).toBeDefined();
+    expect(presentBar.covered).toBe(true);
+    expect(impliedMinutes(presentBar.cost, size, 100)).toBeCloseTo(1, 9); // NOT 60
+
+    const staleBar = at(62);
+    expect(staleBar).toBeDefined();
+    expect(staleBar.covered).toBe(true);
+    expect(impliedMinutes(staleBar.cost, size, 100)).toBeCloseTo(1, 9); // bounded 1-bar grace, NOT 60
+
+    const beyondGrace = at(63);
+    expect(beyondGrace).toBeDefined();
+    expect(beyondGrace.covered).toBe(false);
+    expect(beyondGrace.cost).toBe(0);
   });
 
   it('no double-charge: at most one ledger entry per bar ts', async () => {
