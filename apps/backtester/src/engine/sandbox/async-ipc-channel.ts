@@ -51,10 +51,10 @@ export class AsyncIpcChannel {
     stdout.on('end', () => { this.eof = true; this.wake(); });
     stdout.on('error', () => { this.errored = true; this.wake(); });
     stderr.on('data', (chunk: Buffer) => {
-      // stderr is a bounded diagnostic TAIL, never an overflow trigger — diagnostics must not fail a
-      // run. Retain RAW bytes bounded by maxStderrBytes (a byte quota); decoding to a boundary-safe
-      // string is deferred to stderrText(). A byte-cut mid-sequence is fine here — the trailing partial
-      // code point is trimmed at decode time.
+      // stderr is a bounded diagnostic HEAD (the first maxStderrBytes retained; the rest dropped),
+      // never an overflow trigger — diagnostics must not fail a run. Retain RAW bytes bounded by
+      // maxStderrBytes (a byte quota); decoding to a boundary-safe string is deferred to stderrText().
+      // A byte-cut mid-sequence is fine here — the trailing partial code point is trimmed at decode time.
       if (this.stderrTruncated) return;
       const room = this.limits.maxStderrBytes - this.stderrBytes;
       if (room <= 0) { this.stderrTruncated = true; return; }
