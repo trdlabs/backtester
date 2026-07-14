@@ -143,6 +143,22 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   exceeds `maxStdoutBytes` never overflows, oversized frame → `malformed`, unterminated stream → `overflow`,
   malformed taxonomy, stderr flood bounded-not-fatal. Docker N=2/3/64 equivalence + universe + base sandbox
   green (default path byte-identical).
+- **2026-07-14 — P3-9: universe init failure soft-latches one symbol, not the whole session** (branch
+  `fix/universe-init-soft-latch-p3`, TDD, Docker-verified; spec `docs/specs/P3-9-universe-init-soft-latch.md`):
+  in universe mode ONE container serves N symbols. A per-hook failure already split into harness-`err`
+  (container alive → soft-latch only that symbol via `failedSymbols`) vs channel-death (session-fatal
+  `fail()`), but `ensureSymbolInit` escalated ANY non-ok init outcome to `fail()` — so a harness `err` on
+  one symbol's per-symbol init tore down the shared container and killed every other symbol. Applied the
+  same split to init: a harness `err` latches only the offending symbol (session stays up, others run);
+  a channel death (eof/timeout/overflow/malformed) stays session-fatal. `callHookBarMajor` now drops an
+  init-latched symbol from the batch (like a pre-latched one) and remaps healthy symbols to their
+  original ctx indices, so bar-major alignment is preserved and no re-init is sent on later bars.
+  Non-universe init (one container per symbol) stays `fail()` — unchanged. Success paths untouched →
+  goldens byte-identical. Unit: init `err` latches one symbol (container alive, other runs), no re-init
+  on later bars, channel-death-in-init still session-fatal, bar-major init-`err` drops only that symbol
+  (alignment). Docker N=2/3/64 equivalence + universe + executor-universe + base sandbox green (golden
+  0be9931c, byte-identical). Also folds a non-blocking #127 tidy-up (stderr comment: bounded "tail" →
+  "head", the first maxStderrBytes retained — behavior unchanged).
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

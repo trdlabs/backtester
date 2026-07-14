@@ -207,7 +207,18 @@ export class SandboxSession {
       this.profOpenMs += performance.now() - profT0;
       this.profInitCalls += 1;
     }
-    if (outcome.kind !== 'ok') return this.fail(this.mapFailure(outcome, 'init', 'bundle_load_failed'));
+    if (outcome.kind !== 'ok') {
+      const error = this.mapFailure(outcome, 'init', 'bundle_load_failed');
+      // P3-9 — mirror callHook's universe split: a harness `err` (the sandboxed bundle threw during
+      // THIS symbol's init; the shared container is still alive) latches ONLY this symbol, leaving the
+      // session up for the others. A channel-level death (eof/timeout/overflow/malformed) means the
+      // shared container is gone → session-fatal (fail(), as before).
+      if (outcome.kind === 'err') {
+        this.failedSymbols.set(ctx.symbol, error);
+        return { ok: false, decisions: [], error };
+      }
+      return this.fail(error);
+    }
     this.initializedSymbols.add(ctx.symbol);
     return undefined;
   }
@@ -519,15 +530,23 @@ export class SandboxSession {
       const opened = await this.open();
       if (!opened.ok) return failHealthy(this.lastError);
     }
-    // Per-symbol lazy init handshakes (universe): one per not-yet-initialized HEALTHY symbol, in order.
+    // Per-symbol lazy init handshakes (universe): init each not-yet-initialized HEALTHY symbol, in
+    // order. P3-9 — a per-symbol init SOFT failure latches only that symbol and drops it from THIS
+    // batch (its result resolved locally from the latch, mirroring a pre-latched symbol); healthy
+    // symbols continue, so the batch alignment is preserved via the original ctx index. A channel
+    // death inside init is session-fatal (fail() set this.failed) → fail the whole batch.
+    const sendable: { ctx: StrategyContext; idx: number }[] = [];
     for (const h of healthy) {
       const f = await this.ensureSymbolInit(h.ctx);
-      if (f !== undefined) return failHealthy(this.lastError);
+      if (f === undefined) { sendable.push(h); continue; }
+      if (this.failed) return failHealthy(this.lastError); // channel death in init → session-fatal
+      out[h.idx] = { ok: false, decisions: [], error: f.error }; // soft-latched on init → drop from batch
     }
+    if (sendable.length === 0) return out; // every remaining symbol latched on init → no IPC send
     const channel = this.channel;
     if (channel === undefined) return failHealthy(this.lastError);
 
-    const bars = healthy.map((h) => this.buildHookPayload(h.ctx)); // only healthy symbols' bookkeeping advances
+    const bars = sendable.map((h) => this.buildHookPayload(h.ctx)); // only sendable symbols' bookkeeping advances
     this.seq += 1;
     channel.send({ t: 'hookBarMajor', seq: this.seq, hook: 'onBarClose', bars });
 
@@ -535,7 +554,7 @@ export class SandboxSession {
     const outcome = this.assertSeq(await channel.receive(this.callDeadline()), this.seq);
     if (SandboxSession.profileEnabled) {
       this.profIpcWaitMs += performance.now() - profT0;
-      this.profHookCalls += healthy.length; // logical hooks actually executed (latched excluded → parity with lockstep)
+      this.profHookCalls += sendable.length; // logical hooks actually executed (latched/init-dropped excluded)
       this.profBarMajorBatches += 1; // one hookBarMajor round-trip (the collapse)
     }
 
@@ -545,18 +564,18 @@ export class SandboxSession {
       this.fail(error);
       return failHealthy(error);
     }
-    if (outcome.results.length !== healthy.length) {
+    if (outcome.results.length !== sendable.length) {
       const error = this.mapFailure(
-        { kind: 'malformed', detail: `okBarMajor results length ${outcome.results.length} != ${healthy.length}` },
+        { kind: 'malformed', detail: `okBarMajor results length ${outcome.results.length} != ${sendable.length}` },
         'onBarClose',
         'sandbox_crashed',
       );
       this.fail(error);
       return failHealthy(error);
     }
-    for (let j = 0; j < healthy.length; j += 1) {
+    for (let j = 0; j < sendable.length; j += 1) {
       const r = outcome.results[j]!;
-      const h = healthy[j]!;
+      const h = sendable[j]!;
       if (r.ok) {
         out[h.idx] = { ok: true, decisions: r.decisions };
         continue;

@@ -389,4 +389,60 @@ describe('SandboxSession universe mode', () => {
     ).length;
     expect(hookLikeAfterLatch).toBe(hookLikeAfterErr);
   });
+
+  // P3-9 — a per-symbol INIT soft failure (harness caught an exception in this symbol's init; the
+  // shared container is alive) must degrade ONLY that symbol, exactly like the per-hook err path —
+  // NOT tear down the shared container (pre-fix ensureSymbolInit called fail() on any non-ok init).
+  it('an init err for symbol AAA fails-closed AAA only — container stays up and BBB still runs (P3-9)', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
+    writeErr(driver, 'per-symbol init threw'); // reply to init(AAA) — harness-caught, init carries NO seq, container alive
+    const r1 = await p1;
+    expect(r1.ok).toBe(false);
+    expect(r1.error?.code).toBe('sandbox_crashed');
+    expect(driver.disposeCount).toBe(0); // container NOT torn down on a soft init failure
+
+    // BBB initializes and runs on the SAME (alive) container.
+    const p2 = session.callHook('onBarClose', makeCtx('BBB', 0));
+    writeOk(driver); // reply to init(BBB)
+    writeOk(driver, 1); // reply to hook(BBB, bar0) — seq 1 (AAA's hook never sent, so seq did not advance)
+    const r2 = await p2;
+    expect(r2.ok).toBe(true);
+    expect(driver.spawnCount).toBe(1);
+    expect(driver.disposeCount).toBe(0);
+  });
+
+  it('an init-latched symbol stays fail-closed without re-sending init on later bars (P3-9)', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
+    writeErr(driver, 'init threw'); // init(AAA) soft err → latch AAA
+    expect((await p1).ok).toBe(false);
+
+    const sentAfterErr = driver.sent.length; // one init(AAA) envelope, no hook
+    // AAA's later bars fail-closed IMMEDIATELY — no re-init, no hook reaches the harness.
+    const r2 = await session.callHook('onBarClose', makeCtx('AAA', 60_000));
+    expect(r2.ok).toBe(false);
+    expect(r2.error?.code).toBe('sandbox_crashed');
+    expect(driver.sent.length).toBe(sentAfterErr); // nothing new sent
+
+    const inits = driver.sent.filter((m) => (m as { t?: string }).t === 'init');
+    expect(inits).toHaveLength(1); // AAA's init was NOT re-sent
+  });
+
+  it('a channel death during init is session-fatal — subsequent symbols also fail-closed (P3-9)', async () => {
+    const { session, driver } = newUniverseSession();
+
+    const p1 = session.callHook('onBarClose', makeCtx('AAA', 0));
+    driver.stdout.end(); // container "exited" before replying to init(AAA) — channel death, not a harness err
+    const r1 = await p1;
+    expect(r1.ok).toBe(false);
+    expect(driver.disposeCount).toBe(1); // session-fatal: container torn down
+
+    const r2 = await session.callHook('onBarClose', makeCtx('BBB', 0));
+    expect(r2.ok).toBe(false);
+    expect(driver.spawnCount).toBe(1);
+    expect(driver.disposeCount).toBe(1);
+  });
 });

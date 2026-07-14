@@ -329,4 +329,37 @@ describe('SandboxSession.callHookBarMajor', () => {
     expect(r2[0]?.ok).toBe(false);
     expect(driver.spawnCount).toBe(1);
   });
+
+  // P3-9 — a per-symbol INIT soft failure inside a bar-major batch must drop ONLY that symbol from the
+  // envelope (like a pre-latched symbol), keep the shared container alive, and remap the healthy
+  // symbols back to their ORIGINAL ctx indices (alignment preserved). Pre-fix, ensureSymbolInit's
+  // fail() on the init err would tear the whole session down and fail every symbol in the batch.
+  it('an init err drops only that symbol from the batch — healthy symbols keep their alignment (P3-9)', async () => {
+    const { session, driver } = newUniverseSession();
+    const ctxAAA = makeCtx('AAA', 0);
+    const ctxBBB = makeCtx('BBB', 0);
+
+    const p = session.callHookBarMajor([ctxAAA, ctxBBB]);
+    // init(AAA) → harness err (no seq — init carries none): AAA soft-latched, dropped from the batch.
+    driver.stdout.write(`${JSON.stringify({ t: 'err', code: 'sandbox_crashed', detail: 'init threw', hook: 'onBarClose' })}
+`);
+    writeOk(driver); // init(BBB) → ok
+    // hookBarMajor is sent for BBB ONLY → exactly one result.
+    driver.stdout.write(`${JSON.stringify({ t: 'okBarMajor', seq: 1, results: [{ ok: true, decisions: ['SIG'] }] })}
+`);
+    const results = await p;
+
+    expect(results).toHaveLength(2);
+    expect(results[0]?.ok).toBe(false); // AAA — fail-closed from the init latch, at its original index 0
+    expect(results[0]?.error?.code).toBe('sandbox_crashed');
+    expect(results[1]).toEqual({ ok: true, decisions: ['SIG'] }); // BBB — healthy, aligned to index 1
+    expect(driver.disposeCount).toBe(0); // container alive — NOT session-fatal
+
+    const envelopes = driver.sent.filter(
+      (m): m is { t: string; bars: { snapshot: { symbol: string } }[] } => (m as { t?: string }).t === 'hookBarMajor',
+    );
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0]?.bars).toHaveLength(1); // only the healthy symbol (BBB)
+    expect(envelopes[0]?.bars[0]?.snapshot.symbol).toBe('BBB');
+  });
 });
