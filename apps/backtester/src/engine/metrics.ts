@@ -217,9 +217,10 @@ function sqn(trades: readonly Trade[]): number {
 }
 
 /**
- * `cagr = (eq_last/eq_first)^(1/years) − 1`, `years = context.elapsedYears` (календарное время из
- * `request.period`). Возвращает `null` (⇒ omit ключа, как `profit_factor`) при отсутствии времени
- * или неположительном капитале: значение не определено, а не «0».
+ * `cagr = (eq_last/eq_first)^(1/years) − 1`, `years = context.elapsedYears` (P3-7: span между двумя
+ * post-close equity-наблюдениями, `lastTs - firstTs` по обработанным барам — см. `effectiveElapsedYears`).
+ * Возвращает `null` (⇒ omit ключа, как `profit_factor`) при отсутствии времени или неположительном
+ * капитале: значение не определено, а не «0».
  */
 function cagr(equity: readonly EquityPoint[], elapsedYears: number | null): number | null {
   if (elapsedYears === null || elapsedYears <= 0) return null;
@@ -241,7 +242,8 @@ function calmar(equity: readonly EquityPoint[], elapsedYears: number | null): nu
 
 /** Контекст вычисления метрик — расширяемый seam (timeframe/periodsPerYear добавятся сюда позже). */
 export interface MetricsContext {
-  /** Календарная длительность прогона в годах (из `request.period`); `null` ⇒ cagr/calmar опускаются. */
+  /** Календарная длительность прогона в годах — span обработанных баров `lastTs - firstTs` (P3-7,
+   *  `effectiveElapsedYears`), НЕ `request.period`; `null` ⇒ cagr/calmar опускаются. */
   readonly elapsedYears: number | null;
 }
 
