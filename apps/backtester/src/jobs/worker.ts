@@ -61,6 +61,7 @@ import { normalize, restamp, type DedupTemplate } from './dedup/restamp.js';
 import { computeIdentity } from './dedup/compute-identity.js';
 import { type ComputeLockStore } from './coalesce/compute-lock.js';
 import { wakeComputeWaiters } from './coalesce/wake.js';
+import { createCoalesceMaintenance } from './coalesce/maintenance.js';
 import type { ResultCache } from './dedup/result-cache.js';
 import { DEDUP_COMPUTE_VERSION, DEDUP_TEMPLATE_VERSION } from './dedup/version.js';
 import { ObsRegistry, type DedupClass, type JobObsSample } from './obs-registry.js';
@@ -1025,6 +1026,14 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           console.warn(JSON.stringify({ evt: 'dedup_populate_failed', runId, detail: boundedErrorDetail(cacheErr) }));
         }
       }
+
+      // P3-6a: eager release — the result is now in the cache index, so any waiting followers wake via
+      // cache_ready (wakeComputeWaiters checks the cache, never this lock). Delete the lock row instead
+      // of leaving it to lapse at TTL, so backtest_compute_lock does not accrue one dead row per
+      // successful compute. Best-effort (like expire/renew); only fires for the leader (lock owner).
+      if (leaderIdentity !== undefined && deps.computeLock !== undefined) {
+        await deps.computeLock.release(leaderIdentity, deps.lease!.workerId, runId).catch(() => {});
+      }
     }
 
     // E3b (advisory, flag-gated): per-fold walk-forward OOS stability. Runs on both the canonical miss AND
@@ -1152,6 +1161,19 @@ export async function runWorkerLoop(
       }
     }
   }, opts.heartbeatMs);
+  // P3-6a: one coalescing-maintenance step (wake followers + throttled, bounded orphan-lock sweep),
+  // shared with buildApp.tick() so orphan locks are cleaned in BOTH topologies. Gated on coalescing.
+  const coalesceMaintain =
+    deps.coalesceEnabled && deps.computeLock && deps.resultCache
+      ? createCoalesceMaintenance({
+          store: deps.store,
+          resultCache: deps.resultCache,
+          computeLock: deps.computeLock,
+          clock: deps.clock,
+          computeWaitMaxAttempts: deps.computeWaitMaxAttempts ?? 3,
+          computeLockTtlMs: deps.computeLockTtlMs ?? deps.lease?.ttlMs ?? 30_000,
+        })
+      : undefined;
   try {
     while (!opts.signal.aborted) {
       const processed = await drainQueue(deps, opts.concurrency);
@@ -1163,15 +1185,7 @@ export async function runWorkerLoop(
       // P1-2: in the multi-process topology ONLY this loop runs — the app-level tick() that flushes the
       // durable outbox never fires, so a webhook that failed once is never retried. Redeliver each pass.
       await deliverOutbox(deps);
-      if (deps.coalesceEnabled && deps.computeLock && deps.resultCache) {
-        await wakeComputeWaiters({
-          store: deps.store,
-          resultCache: deps.resultCache,
-          computeLock: deps.computeLock,
-          clock: deps.clock,
-          computeWaitMaxAttempts: deps.computeWaitMaxAttempts ?? 3,
-        });
-      }
+      if (coalesceMaintain) await coalesceMaintain();
       if (opts.signal.aborted) break;
       if (processed === 0) {
         if (opts.waker) {

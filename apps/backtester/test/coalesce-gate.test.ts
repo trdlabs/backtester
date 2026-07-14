@@ -206,8 +206,11 @@ describe('coalescing gate — momentum', () => {
     await enqueue(store, 'run-follower-after-throw');
     const followerResult = await processNextQueued(deps);
     expect(followerResult?.status).toBe('completed');
+    // P3-6a: the follower won the fresh election, became leader, and COMPLETED — a successful leader
+    // now EAGERLY RELEASES (deletes) its compute-lock (waiting followers wake via the cache index), so
+    // the row is gone rather than lingering until TTL.
     const lockAfterFollower = await lock.get(identity);
-    expect(lockAfterFollower?.leaderRunId).toBe('run-follower-after-throw');
+    expect(lockAfterFollower).toBeUndefined();
   });
 
   it('bypassCache=true bypasses coalescing: even with an ACTIVE lock the run does NOT defer — engine runs fresh', async () => {

@@ -35,6 +35,7 @@ import { PgPromotionAttemptLedger } from './jobs/promotion/pg-attempt-ledger.js'
 import { DatasetIdentityEpochResolver } from './jobs/promotion/epoch-resolver.js';
 import { buildPromotionPolicy } from './jobs/promotion/resolve-promotion.js';
 import { wakeComputeWaiters } from './jobs/coalesce/wake.js';
+import { createCoalesceMaintenance } from './jobs/coalesce/maintenance.js';
 import { ObsRegistry } from './jobs/obs-registry.js';
 import { loadSigningKeyFromPem, type SigningKey } from './evidence/signing.js';
 import type { BundleStore } from './sandbox/bundle-store';
@@ -64,6 +65,8 @@ export interface AppHandles {
   drain: () => Promise<number>;
   reap: () => Promise<unknown>;
   deliverOutbox: () => Promise<number>;
+  /** Run one worker pass (drain + reap + outbox + coalescing maintenance). Exposed for deterministic tests. */
+  tick: () => Promise<void>;
   startWorker: () => void;
   stopWorker: () => void;
   dispose: () => Promise<void>;
@@ -225,6 +228,21 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     });
   const flushOutbox = (): Promise<number> => deliverOutbox(completionDeps);
 
+  // P3-6a: shared coalescing maintenance (wake followers + throttled orphan-lock sweep) — the SAME
+  // step the multi-process runWorkerLoop uses, so orphan compute-locks are cleaned in the single-process
+  // autoWorker too (tick() previously woke followers but never swept).
+  const coalesceMaintain =
+    config.coalesceEnabled && computeLock
+      ? createCoalesceMaintenance({
+          store,
+          resultCache,
+          computeLock,
+          clock,
+          computeWaitMaxAttempts: config.computeWaitMaxAttempts,
+          computeLockTtlMs: config.computeLockTtlMs,
+        })
+      : undefined;
+
   let timer: NodeJS.Timeout | undefined;
   let busy = false;
   const tick = async (): Promise<void> => {
@@ -234,15 +252,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       await drain();
       await reap();
       await flushOutbox();
-      if (config.coalesceEnabled && computeLock) {
-        await wakeComputeWaiters({
-          store,
-          resultCache,
-          computeLock,
-          clock,
-          computeWaitMaxAttempts: config.computeWaitMaxAttempts,
-        });
-      }
+      if (coalesceMaintain) await coalesceMaintain();
     } finally {
       busy = false;
     }
@@ -294,6 +304,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     drain,
     reap,
     deliverOutbox: flushOutbox,
+    tick,
     startWorker,
     stopWorker,
     dispose,

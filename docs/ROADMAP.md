@@ -220,6 +220,25 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   relative (ON==OFF, factory applied to both sides) structure confirm equivalence. Full non-Docker suite
   green (1136 passed).
 
+- **2026-07-14 — P3-6a: compute-lock eager release + orphan sweep** (branch
+  `fix/compute-lock-eager-release-p3-6a`, TDD; spec `docs/specs/P3-6a-compute-lock-eager-release.md`):
+  `backtest_compute_lock` (coalescing) grew unbounded — the success path never released the lock (the
+  leader held it until TTL) and `expire()` only stamps `lock_expires_at_ms = now` (the row, and the
+  InMemory Map entry, are never deleted), so one dead row accrued per distinct computeIdentity. Added
+  two store ops: `release(ci, workerId)` (DELETE the owner's row) and `sweepExpired(nowMs, olderThanMs)`
+  (DELETE rows expired beyond a grace window; returns the count) — on both InMemoryComputeLockStore and
+  PgComputeLockStore. The worker now EAGERLY RELEASES on the leader's success path (right after the
+  result is written to the cache index — waiting followers wake via `cache_ready`, which reads the cache,
+  never the lock — so deleting the row is safe). The FAILURE path keeps `expire()` (wakeComputeWaiters
+  reads the expired row + leader job to distinguish `leader_failed` from `lock_expired`; a DELETE would
+  collapse the reason), and the worker loop sweeps orphaned expired locks next to wakeComputeWaiters with
+  grace = the lock TTL (so a just-expired failure-lock is read for its reason before it is swept).
+  INV-6 holds: release is gated on `leaderIdentity` and sweep on `coalesceEnabled && computeLock`, so
+  the coalescing-OFF loop is byte-identical. Tests: store unit (release deletes only the owner row; sweep
+  removes only beyond-grace rows) on InMemory + Pg-gated; the coalesce-gate integration test updated to
+  assert a successful follower-leader's lock is now gone (eager release), with the INV-4 failure test
+  still pinning `expire`. Full non-Docker suite green (1139 passed); Pg release/sweep CI-validated.
+
 ## Feature 1: Client Contract Alignment ✅ DONE
 
 **Goal:** remove the contract gap between `trading-backtester` and `trading-lab`.

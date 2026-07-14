@@ -65,6 +65,33 @@ export class PgComputeLockStore implements ComputeLockStore {
     );
   }
 
+  async release(computeIdentity: string, workerId: string, leaderRunId: string): Promise<void> {
+    // Eager release: delete ONLY this exact generation (owner AND leader_run_id) so a stale leader
+    // cannot delete a re-elected lock a new run acquired under the same workerId. Idempotent.
+    await this.pool.query(
+      `DELETE FROM backtest_compute_lock
+         WHERE compute_identity = $1 AND lock_owner_worker_id = $2 AND leader_run_id = $3`,
+      [computeIdentity, workerId, leaderRunId],
+    );
+  }
+
+  async sweepExpired(nowMs: number, olderThanMs: number, batchLimit: number): Promise<number> {
+    // Bounded DELETE (oldest expired first, LIMIT batchLimit) over the lock_expires_at_ms index — avoids
+    // a hot full-table scan/WAL spike. The grace lets wakeComputeWaiters read an expired failure-lock
+    // (for its wake reason) before it is swept.
+    const r = await this.pool.query(
+      `DELETE FROM backtest_compute_lock
+         WHERE ctid IN (
+           SELECT ctid FROM backtest_compute_lock
+           WHERE lock_expires_at_ms < $1::bigint
+           ORDER BY lock_expires_at_ms
+           LIMIT $2
+         )`,
+      [nowMs - olderThanMs, batchLimit],
+    );
+    return r.rowCount ?? 0;
+  }
+
   async get(computeIdentity: string): Promise<ComputeLock | undefined> {
     const r = await this.pool.query<LockRow>(
       'SELECT * FROM backtest_compute_lock WHERE compute_identity = $1',
