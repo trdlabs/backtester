@@ -537,6 +537,15 @@ interface Materialized {
   marketTape?: MarketTapeDataset;
   /** momentum dataset (absent for overlay/strategy). */
   dataset?: MaterializedDataset;
+  /**
+   * E4b: the dataset coverage span captured HERE — before the engine runs — so the held-out promotion
+   * qualification window is an IMMUTABLE pre-execution context (spec requirement). Resolved only for a
+   * `mode:'promotion'` run with the gate on; `RunPeriod` if the dataset is known, `null` if not,
+   * `undefined` (absent) otherwise. Reading it here (not post-run) means a concurrent ingest/tape-cache
+   * refresh can't move the window under an already-executed snapshot; a stale-vs-fresh mismatch can only
+   * shift the window OUT of the executed tape ⇒ not_covered ⇒ not_qualified (fail-closed, never a false pass).
+   */
+  coverage?: RunPeriod | null;
 }
 
 /**
@@ -585,7 +594,15 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
       metrics: r.metrics,
       ...(r.robustnessChecks !== undefined ? { robustnessChecks: r.robustnessChecks } : {}),
     };
-    return { engine, datasetFingerprint: dsFingerprint, engineRequest, marketTape };
+    // E4b: freeze the coverage span BEFORE the engine runs (immutable qualification context). Only for a
+    // gated promotion run — a no-op read otherwise. Resolved from the same dataPort as the tape above.
+    const coverage = (deps.promotion?.enabled && r.mode === 'promotion')
+      ? ((await deps.dataPort.listDatasets().catch(() => [])).find((d) => d.datasetRef === r.datasetRef)?.period ?? null)
+      : undefined;
+    return {
+      engine, datasetFingerprint: dsFingerprint, engineRequest, marketTape,
+      ...(coverage !== undefined ? { coverage } : {}),
+    };
   }
   // ===== MOMENTUM =====
   const { tsFrom, tsTo } = periodMs(claimed.request.period);
@@ -928,15 +945,15 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
             curated = c.status === 'completed' ? c : null;
           } catch { curated = null; }
         }
+        // E4b: the qualification coverage was frozen in materializeFor BEFORE the engine ran — use that
+        // immutable snapshot, never a post-run re-read (which a concurrent ingest could move).
+        const coverage = materialized.coverage ?? null;
         try {
-          // bundleBytes + coverage are read INSIDE the try so a transient FS/data fault becomes a typed
-          // internal_error verdict, never a failed run (honors "never fails the run"; only load-bearing
-          // in resolvePromotionGate's passed branch anyway).
+          // bundleBytes is read INSIDE the try so a transient FS fault becomes a typed internal_error
+          // verdict, never a failed run (honors "never fails the run"; only load-bearing in the passed branch).
           const bundleBytes = (claimed.request.curatedBaselineRef !== undefined && sandboxBundle)
             ? readFileSync(join(sandboxBundle.bundle.bundleDir, sandboxBundle.bundle.descriptor.entryPoint))
             : new Uint8Array();
-          const coverage = (await deps.dataPort.listDatasets().catch(() => []))
-            .find((d) => d.datasetRef === claimed.datasetRef)?.period ?? null;
           const pr = await workerInternals.resolvePromotionGate(deps.promotion, claimed, {
             candidate: outcome, curated, signingKey: deps.evidenceSigningKey,
             bundle: sandboxBundle!.bundle, bundleBytes, datasetFingerprint: dsFingerprint,

@@ -231,6 +231,39 @@ describe('E4b — worker promotion-gate wiring', () => {
     expect(gateSpy).not.toHaveBeenCalled();
   });
 
+  it('coverage is frozen BEFORE the engine runs (immutable qualification context, blocker #1)', async () => {
+    const { deps, store, bundleStore } = await makeDeps({
+      promotion: promotionDepsField(),
+      evidenceSigningKey: generateSigningKey(),
+    });
+    const bundleHash = await bundleStore.put(STRATEGY_BUNDLE);
+    const COVERAGE = { from: '2024-01-01T00:00:00.000Z', to: '2024-02-01T00:00:00.000Z' };
+    // Spy the coverage source and the engine call so we can prove ORDER: the coverage read must happen
+    // BEFORE the engine runs (pre-execution snapshot), not after (which a concurrent ingest could move).
+    const dsSpy = vi.spyOn(deps.dataPort, 'listDatasets').mockResolvedValue([
+      { datasetRef: STRATEGY_REQ_BASE.datasetRef, symbols: STRATEGY_REQ_BASE.symbols, timeframe: STRATEGY_REQ_BASE.timeframe, period: COVERAGE, rowCount: 0 },
+    ] as never);
+    const runSpy = vi.spyOn(runStrategyModule, 'runStrategyBacktest').mockResolvedValue(cannedOutcome() as never);
+    vi.spyOn(runOverlayModule, 'runOverlayBacktest').mockResolvedValue(cannedOutcome() as never);
+    const gateSpy = vi.spyOn(workerInternals, 'resolvePromotionGate').mockResolvedValue({
+      promotion: { verdict: 'not_qualified', reason: 'holdout_not_covered', evaluatedOn: 'holdout' },
+    } as never);
+
+    const runId = 'run-promo-frozen-coverage';
+    await store.insertOrGet(
+      strategyJob(runId, bundleHash, { curatedBaselineRef: { id: 'short_after_pump', version: '0.1.0' } }),
+    );
+    await store.transition(runId, 'accepted', 'queued', { atMs: CLOCK, queuedAtMs: CLOCK });
+
+    await processNextQueued(deps);
+    expect(gateSpy).toHaveBeenCalledTimes(1);
+    // (a) the gate received the frozen coverage
+    const ctx = gateSpy.mock.calls[0][2] as { coverage: unknown };
+    expect(ctx.coverage).toEqual(COVERAGE);
+    // (b) coverage was read BEFORE the engine ran — the timing invariant the spec requires
+    expect(dsSpy.mock.invocationCallOrder[0]).toBeLessThan(runSpy.mock.invocationCallOrder[0]);
+  });
+
   it('resolvePromotionGate THROWS ⇒ promotion={verdict:not_qualified, reason:internal_error}; run still completes', async () => {
     const { deps, store, bundleStore } = await makeDeps({ promotion: promotionDepsField() });
     const bundleHash = await bundleStore.put(STRATEGY_BUNDLE);
