@@ -92,12 +92,13 @@ export const TINY_MEM_SANDBOX: SandboxPolicy = {
 
 /**
  * Evidence-прогон политика `evidence_long@1.0.0`: реальные long_oi-прогоны идут на полном дне (1440
- * баров/символ) и эмитят `annotate` почти на каждом баре, так что кумулятивный сессионный stdout
- * (default 64KiB) и `wallTimeMsPerSession` (30с) дефолтной политики переполняются. Поднимаем ТОЛЬКО
- * эти два лимита; вся изоляция (net=none, ro-rootfs, cap-drop, 128MiB, no-new-privs, pids=64) и
- * `maxDecisionBytes` (одна строка-ответа) — БЕЗ изменений. `maxStdoutBytes` остаётся тесной анти-flood
- * DoS-границей (2MiB ≈ 6–7× от наблюдаемого peak ~300KB, НЕ безразмерный буфер). Кумулятивный cap
- * сохранён намеренно (per-bar reset = регрессия безопасности; per-bar limit допустим только ВДОБАВОК).
+ * баров/символ) и эмитят `annotate` почти на каждом баре, так что `wallTimeMsPerSession` (30с)
+ * дефолтной политики не хватает. Поднимаем `wallTimeMsPerSession` (30с → 300с — сессионный бюджет
+ * времени на полный день; per-call остаётся 2с); вся изоляция (net=none, ro-rootfs, cap-drop, 128MiB,
+ * no-new-privs, pids=64) и `maxDecisionBytes` — БЕЗ изменений. `maxStdoutBytes` (2MiB): с P3-3 это НЕ
+ * кумулятивный сессионный cap, а high-water ЖИВОГО stdout-буфера (async-ipc-channel: stdout ограничен
+ * per-frame + per-buffer, каждый разобранный frame освобождает байты — длинный легитимный прогон больше
+ * не переполняет). 2MiB исторически поднято как обход прежнего кумулятива; оставлено как есть (безвредно).
  */
 export const EVIDENCE_LONG_SANDBOX: SandboxPolicy = {
   id: 'evidence_long',
