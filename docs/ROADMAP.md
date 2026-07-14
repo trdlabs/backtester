@@ -159,6 +159,24 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   (alignment). Docker N=2/3/64 equivalence + universe + executor-universe + base sandbox green (golden
   0be9931c, byte-identical). Also folds a non-blocking #127 tidy-up (stderr comment: bounded "tail" →
   "head", the first maxStderrBytes retained — behavior unchanged).
+- **2026-07-14 — P3-7: cagr/calmar annualize over processed bars, not the requested period** (branch
+  `fix/cagr-calmar-processed-bars-p3`, TDD; spec `docs/specs/P3-7-cagr-calmar-processed-bars.md`):
+  `assembleResult` derived the cagr/calmar denominator from `elapsedYearsOf(request.period)` — under
+  partial coverage (warmup skips, a short/gapped tape that is NOT rejected) the window was over-long, so
+  cagr/calmar came out understated (they feed qualification surfaces). Replaced with
+  `effectiveElapsedYears(acc.equityCurve)` — computed from the REALLY-PROCESSED unique bar timestamps:
+  `(lastTs + step) - firstTs` where `step` is the minimum gap between consecutive unique ts (the bar
+  timeframe; each bar covers `[ts, ts+step)`). Duplicate timestamps across symbols (multi-symbol)
+  collapse via a `Set` and do NOT widen the window; gaps stay in calendar time; fewer than two distinct
+  timestamps ⇒ `null` ⇒ cagr/calmar omitted (as `profit_factor`). This is a **versioned correctness fix,
+  NOT flag-gated** (a flag would make the result env-dependent): partial-coverage results change by
+  design, so `DEDUP_COMPUTE_VERSION` bumped `1`→`2` (old cache would otherwise return the pre-fix
+  metrics). `computeMetrics`/`MetricsContext` unchanged (elapsedYears was already a parameter). Blast
+  radius is minimal: no fixture requests cagr/calmar through a full run, so the equivalence golden
+  0be9931c and the dedup restamp goldens stay byte-identical; unit `metrics.test.ts` drives
+  `computeMetrics` with an explicit elapsedYears and is unaffected. Tests: full coverage, truncated
+  start/end, gaps, multi-symbol duplicate timestamps, <2 distinct ts ⇒ omit, and the version bump. Full
+  suite + Docker dedup-equivalence green.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

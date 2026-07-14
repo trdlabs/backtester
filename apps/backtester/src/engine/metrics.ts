@@ -245,6 +245,31 @@ export interface MetricsContext {
   readonly elapsedYears: number | null;
 }
 
+const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000;
+
+/**
+ * P3-7 — эффективная длительность прогона в годах для cagr/calmar, посчитанная по РЕАЛЬНО обработанным
+ * уникальным barTs (не по запрошенному `request.period`; частичное покрытие иначе завышает знаменатель
+ * и занижает cagr/calmar). Каждый обработанный бар покрывает свой интервал таймфрейма `[ts, ts+step)`;
+ * последний бар добавляет ещё один шаг → эффективное календарное время = `(lastTs + step) - firstTs`.
+ * `null` (⇒ omit cagr/calmar, как profit_factor) при < 2 уникальных временных точках.
+ *
+ * Инварианты: дубликаты ts по символам (multi-symbol) схлопываются через `Set` → период НЕ расширяют;
+ * gaps остаются в календарном времени (min..max охватывает пропуск), `step` = минимальный интервал
+ * между соседними уникальными ts (нормальный бар), поэтому пропущенные бары не добавляют лишний шаг.
+ */
+export function effectiveElapsedYears(equity: readonly EquityPoint[]): number | null {
+  if (equity.length === 0) return null;
+  const uniq = Array.from(new Set(equity.map((p) => p.barTs))).sort((a, b) => a - b);
+  if (uniq.length < 2) return null;
+  let step = Number.POSITIVE_INFINITY;
+  for (let i = 1; i < uniq.length; i += 1) step = Math.min(step, uniq[i]! - uniq[i - 1]!);
+  const firstTs = uniq[0]!;
+  const lastTs = uniq[uniq.length - 1]!;
+  const elapsedMs = lastTs + step - firstTs;
+  return elapsedMs > 0 ? elapsedMs / MS_PER_YEAR : null;
+}
+
 /** Вычислить запрошенные метрики (имена вне MVP-набора игнорируются — robustness обрабатывается отдельно). */
 export function computeMetrics(
   requested: readonly string[],
