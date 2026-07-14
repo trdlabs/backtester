@@ -98,4 +98,40 @@ describe('SDK bundle-ref', () => {
     await expect(c.submitRun({ resumeToken: 'tok', bundleRef: H2 } as never)).rejects.toBeTruthy();
     expect(putCalls).toBe(0); // no cache hit ⇒ no re-PUT attempted
   });
+
+  it('bundle cache is a bounded LRU — an evicted bundle surfaces the 409, a recently-put one still self-heals', async () => {
+    // Distinct server hash per bundle (derived from the posted body's `id`); run 409s on the FIRST
+    // attempt per ref then 202, so the client only succeeds when it still has the bytes cached.
+    const hashOf = (id: string): string => 'sha256:' + id.repeat(64).slice(0, 64);
+    let putCalls = 0;
+    const runAttempts = new Map<string, number>();
+    const fetchImpl = mockFetch({
+      'POST /v1/bundles': (init) => {
+        putCalls++;
+        const id = String(JSON.parse(String(init.body)).id);
+        return new Response(JSON.stringify({ hash: hashOf(id) }), { status: 200 });
+      },
+      'POST /v1/runs': (init) => {
+        const ref = String(JSON.parse(String(init.body)).bundleRef);
+        const n = (runAttempts.get(ref) ?? 0) + 1;
+        runAttempts.set(ref, n);
+        return n === 1
+          ? new Response(JSON.stringify({ code: 'unknown_bundle', message: 'x' }), { status: 409 })
+          : new Response(JSON.stringify({ runId: 'r', status: 'accepted' }), { status: 202 });
+      },
+    });
+    // capacity 1 → putting B evicts A.
+    const c = new BacktesterClient({ baseUrl: 'http://x', token: 't', fetchImpl: fetchImpl as never, bundleCacheCapacity: 1 });
+    const hA = await c.putBundle({ id: 'a' } as never); // cached
+    const hB = await c.putBundle({ id: 'b' } as never); // evicts A; B is now the only cached bundle
+    expect(putCalls).toBe(2);
+
+    // B is still cached → its 409 self-heals (re-PUT + retry).
+    await c.submitRun({ resumeToken: 't1', bundleRef: hB } as never);
+    expect(putCalls).toBe(3); // one self-heal re-PUT for B
+
+    // A was evicted → no bytes to re-PUT → the 409 surfaces, and NO extra put happens.
+    await expect(c.submitRun({ resumeToken: 't2', bundleRef: hA } as never)).rejects.toBeTruthy();
+    expect(putCalls).toBe(3); // unchanged — A was not re-PUT
+  });
 });

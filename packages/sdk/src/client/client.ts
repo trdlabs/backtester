@@ -30,6 +30,7 @@ import {
   BacktesterRateLimitError,
   BacktesterValidationError,
 } from './errors';
+import { LruCache } from '../internal/lru-cache.js';
 
 /** True when `err` is a client error thrown by `raise()` carrying the given HTTP status. */
 function isStatus(err: unknown, status: number): boolean {
@@ -72,6 +73,8 @@ export interface BacktesterClientOptions {
   readonly token: string;
   /** Defaults to the global `fetch`. */
   readonly fetchImpl?: FetchLike;
+  /** Max entries in the by-ref self-heal bundle-bytes cache (LRU). Default 64. */
+  readonly bundleCacheCapacity?: number;
   /** Safe-retry policy (429 always; network/5xx only when idempotent). Default ON (3 attempts). */
   readonly retry?: RetryOptions;
 }
@@ -113,10 +116,11 @@ export class BacktesterClient {
   private readonly fetchImpl: FetchLike;
   private readonly retry: RetryOptions;
   /** Bytes cache keyed by content hash, populated by putBundle() — backs submitRun's by-ref self-heal. */
-  private readonly bundleCache = new Map<ContentHash, ModuleBundle>();
+  private readonly bundleCache: LruCache<ContentHash, ModuleBundle>;
 
   constructor(opts: BacktesterClientOptions) {
     this.base = opts.baseUrl.replace(/\/+$/, '');
+    this.bundleCache = new LruCache(opts.bundleCacheCapacity ?? 64);
     this.token = opts.token;
     this.fetchImpl = opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
     this.retry = opts.retry ?? {};

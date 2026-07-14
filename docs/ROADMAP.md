@@ -112,6 +112,19 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   patch loop, closing the `import { spawn }` bypass. Defense-in-depth only — the container flags (net=none,
   cap-drop ALL, pids-limit, no-new-privileges) remain the real boundary. Full suite 1071 passed / 61 skipped
   green; Docker sandbox startup unaffected.
+- **2026-07-14 — P3-8: SDK bundleCache is a bounded LRU** (branch `fix/sdk-bundlecache-lru-p3`, TDD): the
+  client's `bundleCache` was an unbounded `Map<ContentHash, ModuleBundle>` — a long-lived `BacktesterClient`
+  submitting many distinct bundles would retain every one forever (each holds the full bundle bytes). Replaced
+  it with a `LruCache<K,V>` (`packages/sdk/src/internal/lru-cache.ts` — insertion-order Map, `get`/`set`
+  promote to most-recently-used, `set` past capacity evicts the LRU entry), bounded by a new
+  `bundleCacheCapacity?: number` option (default 64). Dedupe semantics preserved: `putBundle` still keys by the
+  server-returned content hash and the 409 `unknown_bundle` self-heal still reads it back — an evicted bundle
+  simply re-surfaces the 409 and is re-put on the next submit. No change to bundle hash / validation (the hash
+  is still assigned by `POST /v1/bundles`). Unit tests cover eviction order, refresh-on-hit, refresh-on-set
+  (dedupe), get-miss ordering, capacity validation; a client integration test with `bundleCacheCapacity: 1`
+  proves an evicted bundle surfaces the 409 while a recently-put one still self-heals. SDK build + consumer
+  tests green (12 targeted passed); full suite green (the lone sandbox wall-timeout flake is Docker-timing,
+  orthogonal to this SDK-only change, passes on isolated re-run).
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
