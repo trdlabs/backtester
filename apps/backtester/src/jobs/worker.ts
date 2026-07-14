@@ -928,12 +928,15 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
             curated = c.status === 'completed' ? c : null;
           } catch { curated = null; }
         }
-        const bundleBytes = (claimed.request.curatedBaselineRef !== undefined && sandboxBundle)
-          ? readFileSync(join(sandboxBundle.bundle.bundleDir, sandboxBundle.bundle.descriptor.entryPoint))
-          : new Uint8Array();
-        const coverage = (await deps.dataPort.listDatasets().catch(() => []))
-          .find((d) => d.datasetRef === claimed.datasetRef)?.period ?? null;
         try {
+          // bundleBytes + coverage are read INSIDE the try so a transient FS/data fault becomes a typed
+          // internal_error verdict, never a failed run (honors "never fails the run"; only load-bearing
+          // in resolvePromotionGate's passed branch anyway).
+          const bundleBytes = (claimed.request.curatedBaselineRef !== undefined && sandboxBundle)
+            ? readFileSync(join(sandboxBundle.bundle.bundleDir, sandboxBundle.bundle.descriptor.entryPoint))
+            : new Uint8Array();
+          const coverage = (await deps.dataPort.listDatasets().catch(() => []))
+            .find((d) => d.datasetRef === claimed.datasetRef)?.period ?? null;
           const pr = await workerInternals.resolvePromotionGate(deps.promotion, claimed, {
             candidate: outcome, curated, signingKey: deps.evidenceSigningKey,
             bundle: sandboxBundle!.bundle, bundleBytes, datasetFingerprint: dsFingerprint,
