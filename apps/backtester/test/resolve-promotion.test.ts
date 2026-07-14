@@ -221,4 +221,14 @@ describe('resolvePromotionGate (E4b)', () => {
     expect(r?.promotion.verdict).not.toBe('passed');
     expect(r?.evidenceRef).toBeUndefined();
   });
+
+  it('ctx.writeArtifact resolves an EMPTY id ⇒ internal_error, NOT passed (passed ⟺ a real persisted artifact)', async () => {
+    const deps = baseDeps();
+    const writeArtifact = vi.fn(async () => ''); // persisted "successfully" but no id — must NOT mint a passed verdict
+    const r = await resolvePromotionGate(deps, makeClaimed(), baseCtx({ writeArtifact }));
+    expect(writeArtifact).toHaveBeenCalledTimes(1);
+    expect(r?.promotion).toMatchObject({ verdict: 'not_qualified', reason: 'internal_error' });
+    expect(r?.promotion.verdict).not.toBe('passed');
+    expect(r?.evidenceRef).toBeUndefined();
+  });
 });

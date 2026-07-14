@@ -24,7 +24,9 @@ export function buildPromotionPolicy(cfg: { holdoutFraction: number }) {
   const thresholds = DEFAULT_THRESHOLDS;
   const metrics = ['sharpe', 'max_drawdown', 'win_rate', 'total_trades'] as const;
   const minWarmupBars = 1, minTrades = 1, fraction = cfg.holdoutFraction;
-  const policyVersion = sha256Hex(canonicalJson({ fraction, thresholds, minWarmupBars, minTrades }));
+  // metrics is in the preimage so a future configurable metric set auto-bumps the epoch regime
+  // (two materially different gate policies must never collide on one policyVersion).
+  const policyVersion = sha256Hex(canonicalJson({ fraction, thresholds, metrics: [...metrics], minWarmupBars, minTrades }));
   return { policyVersion, thresholds, metrics: [...metrics], minWarmupBars, minTrades, fraction };
 }
 export type PromotionPolicy = ReturnType<typeof buildPromotionPolicy>;
@@ -99,6 +101,7 @@ export async function resolvePromotionGate(
           fraction: deps.policy.fraction, policyVersion: deps.policy.policyVersion, datasetFingerprint: ctx.datasetFingerprint } });
       const artifact = signEvidence(body, ctx.signingKey.privateKey);
       const artifactId = await ctx.writeArtifact(artifact);
+      if (!artifactId) throw new Error('promotion evidence write returned an empty artifact id'); // passed ⟺ a real persisted artifact
       return { promotion: { verdict: 'passed', attemptNumber: rec.attemptNumber, evaluationWindow: window, evaluatedOn: 'holdout' },
         evidenceRef: { artifactId: artifactId as ContentHash, artifactType: 'backtest-evidence/v2', availability: 'available' } };
     } catch {
