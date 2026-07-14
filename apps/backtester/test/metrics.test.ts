@@ -155,34 +155,35 @@ describe('computeMetrics — expanded catalog (E1a)', () => {
 });
 
 // P3-7 — effective elapsed time is derived from the REALLY-PROCESSED unique bar timestamps
-// (acc.equityCurve[].barTs), not the requested period. Each bar covers its timeframe interval
-// [ts, ts+step); the last bar contributes one more step, so elapsed = (lastTs + step) - firstTs.
+// (acc.equityCurve[].barTs), not the requested period. cagr uses equity[last]/equity[first], and each
+// EquityPoint is recorded AFTER its bar closes (at barTs), so the return's elapsed time is exactly the
+// span between the two post-close observations: lastTs - firstTs (no +timeframe).
 const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000;
 const eqTs = (tss: readonly number[]) => tss.map((barTs, i) => ({ barIndex: i, barTs, equity: 100 }));
 
 describe('effectiveElapsedYears (P3-7 — processed bars, not requested period)', () => {
-  it('full coverage: (lastTs + step) - firstTs over unique bar timestamps', () => {
-    // 3 contiguous bars at 0/60k/120k → step 60k → (120k + 60k) - 0 = 180k ms
-    expect(effectiveElapsedYears(eqTs([0, 60_000, 120_000]))).toBeCloseTo(180_000 / MS_PER_YEAR, 12);
+  it('full coverage: lastTs - firstTs over unique bar timestamps', () => {
+    // observations at 0/60k/120k → span = 120k - 0 = 120k ms (NOT 180k — no synthetic +timeframe)
+    expect(effectiveElapsedYears(eqTs([0, 60_000, 120_000]))).toBeCloseTo(120_000 / MS_PER_YEAR, 12);
   });
 
   it('truncated start: denominator uses firstTs of processed data, not request.from', () => {
     // processed bars begin 10 min into the window → firstTs = 600k, NOT the requested from
-    expect(effectiveElapsedYears(eqTs([600_000, 660_000, 720_000]))).toBeCloseTo(180_000 / MS_PER_YEAR, 12);
+    expect(effectiveElapsedYears(eqTs([600_000, 660_000, 720_000]))).toBeCloseTo(120_000 / MS_PER_YEAR, 12);
   });
 
-  it('truncated end: last processed bar + timeframe, not request.to', () => {
-    expect(effectiveElapsedYears(eqTs([0, 60_000]))).toBeCloseTo(120_000 / MS_PER_YEAR, 12); // (60k+60k)-0
+  it('truncated end: uses lastTs of processed data, not request.to', () => {
+    expect(effectiveElapsedYears(eqTs([0, 60_000]))).toBeCloseTo(60_000 / MS_PER_YEAR, 12); // 60k - 0
   });
 
-  it('gaps count as calendar time; step is the normal (minimum) bar interval', () => {
-    // 0, 60k, [120k missing], 180k, 240k → step = min diff = 60k, elapsed = (240k + 60k) - 0 = 300k
-    expect(effectiveElapsedYears(eqTs([0, 60_000, 180_000, 240_000]))).toBeCloseTo(300_000 / MS_PER_YEAR, 12);
+  it('gaps count as calendar time (max - min spans the gap)', () => {
+    // 0, 60k, [120k missing], 180k, 240k → span = 240k - 0 = 240k
+    expect(effectiveElapsedYears(eqTs([0, 60_000, 180_000, 240_000]))).toBeCloseTo(240_000 / MS_PER_YEAR, 12);
   });
 
   it('multi-symbol duplicate timestamps do NOT widen the window', () => {
-    // two symbols, same three timestamps each → unique {0,60k,120k} → 180k, not six points
-    expect(effectiveElapsedYears(eqTs([0, 60_000, 120_000, 0, 60_000, 120_000]))).toBeCloseTo(180_000 / MS_PER_YEAR, 12);
+    // two symbols, same three timestamps each → unique {0,60k,120k} → 120k, not six points
+    expect(effectiveElapsedYears(eqTs([0, 60_000, 120_000, 0, 60_000, 120_000]))).toBeCloseTo(120_000 / MS_PER_YEAR, 12);
   });
 
   it('omits (null) when fewer than two DISTINCT timestamps', () => {
@@ -191,17 +192,29 @@ describe('effectiveElapsedYears (P3-7 — processed bars, not requested period)'
     expect(effectiveElapsedYears([])).toBeNull();
   });
 
-  it('feeds cagr via computeMetrics — the smaller REAL processed window yields a higher annualized cagr', () => {
-    // Two bars a tenth of a year apart → effective window = (0.1y + 0.1y) - 0 = 0.2y. Dividing by the
-    // real 0.2y (instead of a requested full year) raises the annualized cagr — the P3-7 correction.
+  it('integration — exact CAGR from the processed-bar span (endpoint/time coupling)', () => {
+    // Two post-close observations exactly half a year apart, equity 100 → 121. The window is
+    // lastTs - firstTs = 0.5y, so cagr = (121/100)^(1/0.5) - 1 = 1.21^2 - 1 = 0.4641 EXACTLY.
+    const e = [
+      { barIndex: 0, barTs: 0, equity: 100 },
+      { barIndex: 1, barTs: 0.5 * MS_PER_YEAR, equity: 121 },
+    ];
+    expect(effectiveElapsedYears(e)).toBeCloseTo(0.5, 12);
+    const m = computeMetrics(['cagr'], e, [], { elapsedYears: effectiveElapsedYears(e) });
+    expect(m.cagr).toBeCloseTo(0.4641, 6); // 1.21^2 - 1, pinned exactly
+  });
+
+  it('a smaller REAL processed window yields a higher annualized cagr than a full-year denominator', () => {
+    // Two observations a tenth of a year apart → window = 0.1y (lastTs - firstTs). Dividing by the real
+    // 0.1y (instead of a requested full year) raises the annualized cagr — the P3-7 correction.
     const e = [
       { barIndex: 0, barTs: 0, equity: 100 },
       { barIndex: 1, barTs: 0.1 * MS_PER_YEAR, equity: 121 },
     ];
-    const y = effectiveElapsedYears(e)!;
-    const partial = computeMetrics(['cagr'], e, [], { elapsedYears: y }).cagr; // 0.2y denominator
-    const asIfFullYear = computeMetrics(['cagr'], e, [], { elapsedYears: 1 }).cagr; // requested-period style
+    expect(effectiveElapsedYears(e)).toBeCloseTo(0.1, 12);
+    const partial = computeMetrics(['cagr'], e, [], { elapsedYears: effectiveElapsedYears(e) }).cagr;
+    const asIfFullYear = computeMetrics(['cagr'], e, [], { elapsedYears: 1 }).cagr;
     expect(Number.isFinite(partial)).toBe(true);
-    expect(partial).toBeGreaterThan(asIfFullYear!); // shorter real window → higher annualized return
+    expect(partial).toBeGreaterThan(asIfFullYear!);
   });
 });

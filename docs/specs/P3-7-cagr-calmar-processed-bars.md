@@ -24,32 +24,32 @@ qualification-поверхности, поэтому это correctness-баг, 
 
 ### Семантика (зафиксировано)
 
+Числитель CAGR — `equity[last] / equity[first]`, а КАЖДАЯ `EquityPoint` пишется ПОСЛЕ закрытия своего
+бара (`portfolio.equityAt(bar.close)` в `barTs`). Значит время, за которое возникла доходность числителя,
+— расстояние между двумя post-close наблюдениями: **`lastTs - firstTs`**. Никакого `+ timeframe` (это
+приписало бы доходности ещё один ненаблюдаемый интервал и занизило CAGR; inclusive-bar семантика
+`lastTs + timeframe` потребовала бы иного числителя — equity ДО первого бара, initial capital — и
+доверенного timeframe, а НЕ выведенного из наблюдаемых gaps, который ненадёжен: завышен при пропусках,
+занижен при смещённых multi-symbol сетках). Поэтому timeframe/step вообще не участвует.
+
 ```ts
 function effectiveElapsedYears(equity: readonly EquityPoint[]): number | null {
   if (equity.length === 0) return null;
-  // Уникальные обработанные barTs: дубликаты ts по символам (multi-symbol) схлопываются → НЕ расширяют
-  // период; gaps остаются в календарном времени (min..max охватывает пропуск).
-  const uniq = Array.from(new Set(equity.map((p) => p.barTs))).sort((a, b) => a - b);
-  if (uniq.length < 2) return null; // < 2 временных точек → cagr/calmar не определены → omit
-  let step = Number.POSITIVE_INFINITY; // timeframe = минимальный шаг между соседними уникальными ts
-  for (let i = 1; i < uniq.length; i += 1) step = Math.min(step, uniq[i] - uniq[i - 1]);
-  const firstTs = uniq[0];
-  const lastTs = uniq[uniq.length - 1];
-  // Каждый бар покрывает свой интервал [ts, ts+step); последний бар добавляет ещё один шаг →
-  // effective calendar time = (lastTs + step) - firstTs.
-  const elapsedMs = lastTs + step - firstTs;
+  const uniq = new Set(equity.map((p) => p.barTs)); // дубликаты ts (multi-symbol) схлопываются
+  if (uniq.size < 2) return null;                   // < 2 временных точек → cagr/calmar не определены → omit
+  let firstTs = Infinity, lastTs = -Infinity;
+  for (const ts of uniq) { if (ts < firstTs) firstTs = ts; if (ts > lastTs) lastTs = ts; }
+  const elapsedMs = lastTs - firstTs;               // span между двумя post-close наблюдениями
   return elapsedMs > 0 ? elapsedMs / MS_PER_YEAR : null;
 }
 ```
 
 Зафиксированные решения:
-- **effective elapsed** = по реально обработанным уникальным barTs (не по `request.period`).
-- **семантика последнего бара** = `lastTs + timeframe` (бар = интервал `[ts, ts+T)`; N баров = N·T
-  времени — корректнее для CAGR, чем `lastTs`). `timeframe` выводится как минимальный шаг между
-  соседними уникальными ts (самодостаточно, не зависит от request-поля, которое может врать про данные).
+- **effective elapsed** = `lastTs - firstTs` по реально обработанным уникальным barTs (не по `request.period`).
+- **семантика последнего бара** = `lastTs` (equity-point-to-equity-point span; endpoint/time coupling с
+  числителем `eq_last/eq_first`). НЕ `lastTs + timeframe`.
 - **< 2 уникальных ts** → `null` → omit `cagr`/`calmar` (как `profit_factor`).
-- **gaps** учитывают календарное время: `min..max` охватывает пропуск, `step` = нормальный бар-интервал
-  (минимальный diff), пропущенные бары НЕ добавляют лишний step.
+- **gaps** учитывают календарное время: `max - min` охватывает пропуск.
 - **multi-symbol duplicate timestamps** НЕ расширяют период (`Set` схлопывает; N символов на одном ts = 1).
 - **partial-coverage результаты меняются** — ожидаемо (versioned fix).
 
@@ -71,11 +71,12 @@ function effectiveElapsedYears(equity: readonly EquityPoint[]): number | null {
 ## Тесты (TDD)
 
 Unit для `effectiveElapsedYears` (либо через `assembleResult`/`runBacktest` результат):
-1. **full coverage** — непрерывные бары → elapsed = `(lastTs+step) - firstTs`; cagr/calmar определены.
-2. **обрезанное начало** — данные начинаются позже `period.from` → знаменатель по firstTs, НЕ по from
-   (cagr выше, чем при старой формуле).
-3. **обрезанное окончание** — данные кончаются раньше `period.to` → по lastTs+step, НЕ по to.
-4. **gaps** — пропущенный бар: elapsed охватывает gap календарно, step = нормальный интервал.
+1. **full coverage** — непрерывные бары → elapsed = `lastTs - firstTs`; cagr/calmar определены.
+2. **обрезанное начало** — данные начинаются позже `period.from` → знаменатель по firstTs, НЕ по from.
+3. **обрезанное окончание** — данные кончаются раньше `period.to` → по lastTs, НЕ по to.
+4. **gaps** — пропущенный бар: elapsed охватывает gap календарно (`max - min`).
 5. **multi-symbol duplicate timestamps** — 2 символа на одних ts → период НЕ удваивается (уникальные ts).
 6. **< 2 уникальных ts** (1 бар / 1 ts) → cagr/calmar опущены.
-7. **DEDUP_COMPUTE_VERSION** = `'2'`.
+7. **точный интеграционный CAGR** — 100→121 за ровно 0.5y → cagr = `1.21^2 - 1 = 0.4641` (endpoint/time
+   coupling закреплён).
+8. **DEDUP_COMPUTE_VERSION** = `'2'`.

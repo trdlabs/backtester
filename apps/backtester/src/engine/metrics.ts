@@ -250,23 +250,29 @@ const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000;
 /**
  * P3-7 — эффективная длительность прогона в годах для cagr/calmar, посчитанная по РЕАЛЬНО обработанным
  * уникальным barTs (не по запрошенному `request.period`; частичное покрытие иначе завышает знаменатель
- * и занижает cagr/calmar). Каждый обработанный бар покрывает свой интервал таймфрейма `[ts, ts+step)`;
- * последний бар добавляет ещё один шаг → эффективное календарное время = `(lastTs + step) - firstTs`.
- * `null` (⇒ omit cagr/calmar, как profit_factor) при < 2 уникальных временных точках.
+ * и занижает cagr/calmar).
+ *
+ * cagr использует отношение `equity[last] / equity[first]`, а КАЖДАЯ `EquityPoint` фиксируется ПОСЛЕ
+ * закрытия своего бара (`portfolio.equityAt(bar.close)` в `barTs`). Поэтому времени, за которое возникла
+ * доходность числителя, ровно `lastTs - firstTs` — расстояние между двумя post-close наблюдениями; НИКАКОГО
+ * `+ timeframe` (это приписало бы доходности ещё один ненаблюдаемый интервал и занизило CAGR; inclusive-bar
+ * семантика потребовала бы иного числителя — equity ДО первого бара, initial capital). `null` (⇒ omit
+ * cagr/calmar, как profit_factor) при < 2 уникальных временных точках.
  *
  * Инварианты: дубликаты ts по символам (multi-symbol) схлопываются через `Set` → период НЕ расширяют;
- * gaps остаются в календарном времени (min..max охватывает пропуск), `step` = минимальный интервал
- * между соседними уникальными ts (нормальный бар), поэтому пропущенные бары не добавляют лишний шаг.
+ * gaps остаются в календарном времени (`max - min` охватывает пропуск).
  */
 export function effectiveElapsedYears(equity: readonly EquityPoint[]): number | null {
   if (equity.length === 0) return null;
-  const uniq = Array.from(new Set(equity.map((p) => p.barTs))).sort((a, b) => a - b);
-  if (uniq.length < 2) return null;
-  let step = Number.POSITIVE_INFINITY;
-  for (let i = 1; i < uniq.length; i += 1) step = Math.min(step, uniq[i]! - uniq[i - 1]!);
-  const firstTs = uniq[0]!;
-  const lastTs = uniq[uniq.length - 1]!;
-  const elapsedMs = lastTs + step - firstTs;
+  const uniq = new Set(equity.map((p) => p.barTs));
+  if (uniq.size < 2) return null;
+  let firstTs = Number.POSITIVE_INFINITY;
+  let lastTs = Number.NEGATIVE_INFINITY;
+  for (const ts of uniq) {
+    if (ts < firstTs) firstTs = ts;
+    if (ts > lastTs) lastTs = ts;
+  }
+  const elapsedMs = lastTs - firstTs;
   return elapsedMs > 0 ? elapsedMs / MS_PER_YEAR : null;
 }
 
