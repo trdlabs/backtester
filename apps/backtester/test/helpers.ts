@@ -52,6 +52,7 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     trialEmpiricalMinN: 5,
     holdout: false,
     holdoutFraction: 0.2,
+    promotionHoldoutGate: false,
     runDiagnostics: false,
     diagMinTrades: 30,
     diagConcentrationPct: 80,
