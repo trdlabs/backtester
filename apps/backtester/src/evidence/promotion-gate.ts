@@ -2,8 +2,22 @@
 // (canonical order gate→twin→holdout). No I/O — ledger/sign/resolver live in the worker (Task 7).
 import { compareBacktestRuns } from '../engine/equivalence.js';
 import { evaluateWindow, type CompletedOutcome } from '../engine/window-eval.js';
+import { parseTimeframeMs } from '../engine/timeframe.js';
 import { decideVerdict, type EvidenceThresholds } from './verdict.js';
 import type { RunPeriod } from '@trading-backtester/sdk/contracts';
+
+/** True iff SOME bar's interval [ts, ts+interval) contains wFrom (left edge covered by a real bar) AND some
+ *  bar's interval reaches wTo (right edge covered). Inspects actual bars, so a hole at either boundary fails. */
+function symbolCoversWindow(barTimes: readonly number[], wFrom: number, wTo: number, interval: number): boolean {
+  let left = false;
+  let right = false;
+  for (const ts of barTimes) {
+    if (ts <= wFrom && ts + interval > wFrom) left = true;
+    if (ts < wTo && ts + interval >= wTo) right = true;
+    if (left && right) return true;
+  }
+  return left && right;
+}
 
 export function evaluatePromotionIntegrity(input: {
   readonly candidate: CompletedOutcome; readonly curated: CompletedOutcome; readonly bundleGateRejected: boolean;
@@ -18,10 +32,10 @@ export function evaluatePromotionWindow(input: {
   readonly holdoutWindow: RunPeriod;   // non-null: the worker handled holdout_unavailable already
   readonly runPeriod: RunPeriod; readonly thresholds: EvidenceThresholds;
   readonly policyMetrics: readonly string[]; readonly minWarmupBars: number; readonly minTrades: number;
-  /** Per-symbol [firstTs,lastTs] of the FROZEN executed tape + its bar interval — used for the fail-closed
-   *  completeness guard below. */
-  readonly executedSpans: ReadonlyArray<{ readonly firstTs: number; readonly lastTs: number }>;
-  readonly barIntervalMs: number;
+  /** Per-symbol ACTUAL bar start-timestamps of the FROZEN executed tape + the TRUSTED request timeframe —
+   *  inputs to the fail-closed completeness guard below. */
+  readonly executedBarTimes: ReadonlyArray<readonly number[]>;
+  readonly timeframe: string;
 }):
   | { outcome: 'reject'; reason: 'holdout_not_covered' | 'warmup_insufficient' | 'evaluation_insufficient' }
   | { outcome: 'evaluated'; verdict: 'passed' | 'failed'; candidateHoldoutMetrics: Record<string, number>; curatedHoldoutMetrics: Record<string, number> } {
@@ -29,13 +43,16 @@ export function evaluatePromotionWindow(input: {
   const wFrom = Date.parse(w.from), wTo = Date.parse(w.to);
   const pFrom = Date.parse(input.runPeriod.from), pTo = Date.parse(input.runPeriod.to);
   if (!(pFrom <= wFrom && wTo <= pTo)) return { outcome: 'reject', reason: 'holdout_not_covered' };
-  // Completeness (fail-closed): the FROZEN executed tape must cover BOTH holdout boundaries for EVERY
-  // symbol — first bar on/before wFrom AND last bar (+ one interval) reaching wTo. Without this, a
-  // stale/short tape ending inside the window lets a profitable sub-portion qualify while the v2 evidence
-  // signs its metrics as spanning the FULL evaluationWindow — a false, signed scope claim. Any uncovered
-  // symbol ⇒ evaluation_insufficient (returned BEFORE the ledger write and signing).
-  const covered = input.executedSpans.length > 0 && input.executedSpans.every(
-    (s) => Number.isFinite(s.firstTs) && Number.isFinite(s.lastTs) && s.firstTs <= wFrom && s.lastTs + input.barIntervalMs >= wTo,
+  // Completeness (fail-closed): for EVERY symbol the FROZEN executed tape must have an ACTUAL bar whose
+  // interval covers the LEFT holdout edge AND an actual bar whose interval reaches the RIGHT edge. Checking
+  // real bars (not just the [firstTs,lastTs] span) catches a hole AT a boundary; the grid step comes from
+  // the TRUSTED request.timeframe (never inferred from bar spacing — a leading gap would inflate it and
+  // mask a missing tail). Unknown timeframe, no symbols, or any uncovered boundary ⇒ evaluation_insufficient,
+  // returned BEFORE the ledger write and signing — so a signed v2 evaluationWindow always matches the
+  // executed range for every symbol.
+  const interval = parseTimeframeMs(input.timeframe);
+  const covered = interval !== null && input.executedBarTimes.length > 0 && input.executedBarTimes.every(
+    (bars) => symbolCoversWindow(bars, wFrom, wTo, interval),
   );
   if (!covered) return { outcome: 'reject', reason: 'evaluation_insufficient' };
   const evalC = evaluateWindow(input.candidate, w, input.policyMetrics);

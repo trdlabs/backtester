@@ -45,10 +45,10 @@ export interface PromotionCtx {
   readonly bundleBytes: Uint8Array;
   readonly datasetFingerprint: string;
   readonly coverage: RunPeriod | null;
-  /** Per-symbol [firstTs,lastTs] of the FROZEN executed tape + bar interval — the completeness guard's
-   *  input, so a partial/short tail can't sign a full-window scope claim. */
-  readonly executedSpans: ReadonlyArray<{ readonly firstTs: number; readonly lastTs: number }>;
-  readonly barIntervalMs: number;
+  /** Per-symbol ACTUAL bar start-times of the FROZEN executed tape — the completeness guard's input, so a
+   *  partial/short/gappy tape can't sign a full-window scope claim. (The trusted grid step is derived from
+   *  claimed.request.timeframe inside resolvePromotionGate.) */
+  readonly executedBarTimes: ReadonlyArray<readonly number[]>;
   readonly runId: string;
   readonly clock: () => number;
   readonly writeArtifact: (artifact: { body: unknown; signature: string }) => Promise<string>;
@@ -79,7 +79,7 @@ export async function resolvePromotionGate(
     const w = evaluatePromotionWindow({ candidate: ctx.candidate, curated: ctx.curated, holdoutWindow: window,
       runPeriod: claimed.request.period, thresholds: deps.policy.thresholds, policyMetrics: deps.policy.metrics,
       minWarmupBars: deps.policy.minWarmupBars, minTrades: deps.policy.minTrades,
-      executedSpans: ctx.executedSpans, barIntervalMs: ctx.barIntervalMs });
+      executedBarTimes: ctx.executedBarTimes, timeframe: claimed.request.timeframe });
     if (w.outcome === 'reject') return nq(w.reason, { evaluationWindow: window });
     // record REGARDLESS of pass/fail (counter advances for failed too) — verdict computed BEFORE ledger
     const epochKey = computeQualificationEpochKey(

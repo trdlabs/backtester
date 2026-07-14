@@ -55,7 +55,7 @@ function makeClaimed(over: Partial<RunSubmitRequest> = {}): JobRow {
     curatedBaselineRef: { id: 'base', version: '1' },
     period: RUN_PERIOD,
     symbols: ['BTCUSDT'],
-    timeframe: '1m',
+    timeframe: '1d',
     ...over,
   });
   return {
@@ -107,8 +107,7 @@ describe('resolvePromotionGate (E4b)', () => {
       bundleBytes: new TextEncoder().encode('x'),
       datasetFingerprint: 'dsf',
       coverage: COVERAGE,
-      executedSpans: [{ firstTs: 0, lastTs: 10 * DAY }], // full coverage of the [6d,10d) window
-      barIntervalMs: DAY,
+      executedBarTimes: [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => d * DAY)], // full daily grid covers [6d,10d)
       runId: 'run-1',
       clock: () => 1,
       writeArtifact: vi.fn(async () => 'sha256:art'),
@@ -184,7 +183,7 @@ describe('resolvePromotionGate (E4b)', () => {
     const writeArtifact = vi.fn(async () => 'sha256:art');
     // Frozen tape ends at 8d, INSIDE the [6d,10d) holdout window — a profitable sub-portion must NOT qualify.
     const r = await resolvePromotionGate(deps, makeClaimed(), baseCtx({
-      executedSpans: [{ firstTs: 0, lastTs: 8 * DAY }], barIntervalMs: DAY, writeArtifact,
+      executedBarTimes: [[0, 1, 2, 3, 4, 5, 6, 7, 8].map((d) => d * DAY)], writeArtifact, // tail ends 8d, no bar reaches 10d
     }));
     expect(r?.promotion).toMatchObject({ verdict: 'not_qualified', reason: 'evaluation_insufficient' });
     expect(spy).not.toHaveBeenCalled();            // fail-closed: no ledger row
