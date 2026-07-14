@@ -29,6 +29,32 @@ describe('InMemoryResultCache', () => {
     await c.put({ ...entry('k'), templateRef: 'sha256:other' });
     expect((await c.lookup('k'))?.templateRef).toBe('sha256:abc');
   });
+
+  // P3-6b: TTL sweep removes entries older than ttl (from createdAtMs), oldest-first, bounded by
+  // batchLimit; fresh entries stay. Artifacts (templateRef) are NOT touched — the sweep only takes the
+  // cache store, never an artifact store.
+  it('sweepExpired removes entries older than the TTL, oldest-first, bounded by batchLimit', async () => {
+    const c = new InMemoryResultCache();
+    await c.put({ ...entry('old1'), createdAtMs: 100 });
+    await c.put({ ...entry('old2'), createdAtMs: 200 });
+    await c.put({ ...entry('fresh'), createdAtMs: 10_000 });
+    // now 10_500, ttl 1000 → threshold 9_500: old1/old2 eligible; batchLimit 1 → oldest only.
+    expect(await c.sweepExpired(10_500, 1000, 1)).toBe(1);
+    expect(await c.lookup('old1')).toBeUndefined();
+    expect(await c.lookup('old2')).toBeDefined();
+    expect(await c.sweepExpired(10_500, 1000, 10)).toBe(1); // old2
+    expect(await c.lookup('fresh')).toBeDefined();
+  });
+
+  // P3-6b: TTL is from the ORIGINAL createdAtMs — lookup must NOT refresh it (no refresh-on-hit).
+  it('lookup does not refresh createdAtMs (TTL from original createdAtMs)', async () => {
+    const c = new InMemoryResultCache();
+    await c.put({ ...entry('k'), createdAtMs: 100 });
+    await c.lookup('k'); // a hit must not bump createdAtMs
+    expect((await c.lookup('k'))?.createdAtMs).toBe(100);
+    expect(await c.sweepExpired(2000, 1000, 10)).toBe(1); // still evicted by its original time
+    expect(await c.lookup('k')).toBeUndefined();
+  });
 });
 
 // Postgres conformance — same gating (BACKTESTER_TEST_DATABASE_URL / DATABASE_URL, probed once in
@@ -64,5 +90,14 @@ describe.skipIf(!PG_AVAILABLE)('PgResultCache (Postgres conformance)', () => {
     await cache.put(entry('k2'));
     await cache.put({ ...entry('k2'), templateRef: 'sha256:other' });
     expect((await cache.lookup('k2'))?.templateRef).toBe('sha256:abc');
+  });
+
+  it('sweepExpired removes entries older than the TTL, bounded; keeps fresh', async () => {
+    await cache.put({ ...entry('sw-old'), createdAtMs: 100 });
+    await cache.put({ ...entry('sw-fresh'), createdAtMs: 10_000 });
+    const n = await cache.sweepExpired(10_500, 1000, 100); // threshold 9_500 → old removed
+    expect(n).toBeGreaterThanOrEqual(1);
+    expect(await cache.lookup('sw-old')).toBeUndefined();
+    expect(await cache.lookup('sw-fresh')).toBeDefined();
   });
 });

@@ -159,6 +159,8 @@ export interface AppConfig {
   readonly walkForwardMaxFolds: number;
   /** Compute-lock TTL (ms). Default = workerLeaseTtlMs. */
   readonly computeLockTtlMs: number;
+  /** P3-6b: result-cache row TTL (ms). Unset ⇒ TTL eviction OFF (default) — cache grows as before. */
+  readonly resultCacheTtlMs?: number;
   /** compute_wait_attempts poison cap. Default 3. */
   readonly computeWaitMaxAttempts: number;
   /** Queued-jobs cap; a NEW submit beyond it gets 429 queue_full. 0 = unlimited. */
@@ -426,6 +428,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       return Number.isSafeInteger(n) && n >= 1 ? n : 20;
     })(),
     computeLockTtlMs: env.BACKTESTER_COMPUTE_LOCK_TTL_MS ? Number(env.BACKTESTER_COMPUTE_LOCK_TTL_MS) : leaseTtl,
+    ...(env.BACKTESTER_RESULT_CACHE_TTL_MS ? { resultCacheTtlMs: Number(env.BACKTESTER_RESULT_CACHE_TTL_MS) } : {}),
     computeWaitMaxAttempts: env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS ? Number(env.BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS) : 3,
     queueMaxDepth: Math.max(0, Number(env.BACKTESTER_QUEUE_MAX_DEPTH ?? 0) || 0),
     queueRetryAfterS: Math.max(1, Number(env.BACKTESTER_QUEUE_RETRY_AFTER_S ?? 30) || 30),

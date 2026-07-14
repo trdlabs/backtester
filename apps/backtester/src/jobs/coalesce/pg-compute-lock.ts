@@ -86,6 +86,7 @@ export class PgComputeLockStore implements ComputeLockStore {
            WHERE lock_expires_at_ms < $1::bigint
            ORDER BY lock_expires_at_ms
            LIMIT $2
+           FOR UPDATE SKIP LOCKED
          )`,
       [nowMs - olderThanMs, batchLimit],
     );

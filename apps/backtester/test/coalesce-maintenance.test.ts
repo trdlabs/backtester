@@ -4,7 +4,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { InMemoryComputeLockStore } from '../src/jobs/coalesce/compute-lock.js';
 import { InMemoryResultCache } from '../src/jobs/dedup/result-cache.js';
-import { createCoalesceMaintenance, type CoalesceMaintenanceDeps } from '../src/jobs/coalesce/maintenance.js';
+import { createCoalesceMaintenance, createResultCacheSweep, type CoalesceMaintenanceDeps } from '../src/jobs/coalesce/maintenance.js';
 
 function makeDeps(clock: () => number): CoalesceMaintenanceDeps {
   return {
@@ -43,5 +43,23 @@ describe('createCoalesceMaintenance', () => {
     now += 10_000; // interval elapsed
     await maintain();
     expect(sweepSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createResultCacheSweep (P3-6b)', () => {
+  const entry = (id: string, createdAtMs: number) => ({ computeIdentity: id, requestFingerprint: 'f', datasetFingerprint: 'd', computeVersion: '1', sandboxPolicyVersion: 's', templateRef: 'sha256:x', createdAtMs });
+  it('evicts expired cache rows on a pass and throttles to once per interval', async () => {
+    let now = 1_000_000;
+    const cache = new InMemoryResultCache();
+    await cache.put(entry('old', 100));
+    const spy = vi.spyOn(cache, 'sweepExpired');
+    const sweep = createResultCacheSweep({ resultCache: cache, clock: () => now, ttlMs: 1000 }, { sweepIntervalMs: 10_000 });
+    await sweep();
+    expect(await cache.lookup('old')).toBeUndefined();
+    await sweep();
+    expect(spy).toHaveBeenCalledTimes(1);
+    now += 10_000;
+    await sweep();
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 });

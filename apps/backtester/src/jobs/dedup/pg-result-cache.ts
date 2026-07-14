@@ -54,4 +54,22 @@ export class PgResultCache implements ResultCache {
       ],
     );
   }
+
+  async sweepExpired(nowMs: number, ttlMs: number, batchLimit: number): Promise<number> {
+    // Bounded, index-backed TTL eviction (oldest first, LIMIT batchLimit) over the created_at_ms index.
+    // FOR UPDATE SKIP LOCKED so concurrent worker processes each take a DISJOINT batch instead of
+    // contending on the same rows. Deletes ONLY cache rows — the template_ref artifacts stay.
+    const r = await this.pool.query(
+      `DELETE FROM backtest_result_cache
+         WHERE ctid IN (
+           SELECT ctid FROM backtest_result_cache
+           WHERE created_at_ms < $1::bigint
+           ORDER BY created_at_ms
+           LIMIT $2
+           FOR UPDATE SKIP LOCKED
+         )`,
+      [nowMs - ttlMs, batchLimit],
+    );
+    return r.rowCount ?? 0;
+  }
 }

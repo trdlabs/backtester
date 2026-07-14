@@ -54,3 +54,32 @@ export function createCoalesceMaintenance(
     }
   };
 }
+
+export interface ResultCacheSweepDeps {
+  resultCache: ResultCache;
+  clock: () => number;
+  /** Row TTL (ms) AND default throttle interval. */
+  ttlMs: number;
+}
+
+/**
+ * P3-6b — build a throttled, bounded result-cache TTL-sweep step (create once per loop lifetime, call
+ * each pass). Independent of coalescing (dedup can be on with coalescing off). Deletes ONLY cache rows
+ * older than `ttlMs` (from createdAtMs, no refresh-on-hit); the content-addressed artifacts they point
+ * at are NOT touched. Bounded (`sweepBatchLimit`), throttled (at most once per `sweepIntervalMs`).
+ */
+export function createResultCacheSweep(
+  deps: ResultCacheSweepDeps,
+  opts: CoalesceMaintenanceOptions = {},
+): () => Promise<void> {
+  const batchLimit = opts.sweepBatchLimit ?? 1000;
+  const intervalMs = opts.sweepIntervalMs ?? deps.ttlMs;
+  let lastSweepAtMs: number | undefined;
+  return async () => {
+    const now = deps.clock();
+    if (lastSweepAtMs === undefined || now - lastSweepAtMs >= intervalMs) {
+      lastSweepAtMs = now;
+      await deps.resultCache.sweepExpired(now, deps.ttlMs, batchLimit).catch(() => {});
+    }
+  };
+}
