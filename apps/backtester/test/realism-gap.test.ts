@@ -19,8 +19,14 @@ describe('realism GAP — funding non-circular guard + sign + 5b anchor', () => 
     const { ledger, size } = await runRealismLedger(SYMBOL, rows, [trade]);
     // Inline recompute — plain arithmetic, NO import of funding.ts (independent of production code).
     // If funding.ts has a wrong divisor/sign/proration, this inline sum diverges from the engine ledger.
+    // P2-19: funding prorates over the ACTUAL per-bar minute delta (ts[t] - ts[t-1]), so the inline
+    // recompute weights each covered bar by its real interval (this fixture has real minute gaps).
     const INTERVAL_MIN = 8 * 60; // 480
     const sign = trade.side === 'long' ? 1 : -1;
+    const barMinutesAt = new Map<number, number>();
+    for (let i = 1; i < rows.length; i += 1) {
+      barMinutesAt.set(rows[i].minute_ts, (rows[i].minute_ts - rows[i - 1].minute_ts) / 60_000);
+    }
     let inline = 0;
     for (const e of ledger) {
       if (!e.covered) {
@@ -28,7 +34,8 @@ describe('realism GAP — funding non-circular guard + sign + 5b anchor', () => 
         continue;
       }
       const row = rows.find((r) => r.minute_ts === e.ts)!; // mark = close at the funding minute
-      inline += (e.rate / INTERVAL_MIN) * (size * row.close) * sign;
+      const barMinutes = barMinutesAt.get(e.ts) ?? 1; // actual interval since the previous processed bar
+      inline += (e.rate / INTERVAL_MIN) * (size * row.close) * sign * barMinutes;
     }
     const engineTotal = ledger.reduce((s, e) => s + e.cost, 0);
     expect(Math.abs(engineTotal - inline)).toBeLessThan(1e-10);

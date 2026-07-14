@@ -324,7 +324,6 @@ interface BarEnv {
   readonly acc: RunAccumulators;
   readonly module: ResolvedStrategy['module'];
   readonly strategyExec: ModuleExecutor;
-  readonly gridMinutes: number;
   readonly fundingCol: ReturnType<NonNullable<MarketTapeDataset['funding']>> | undefined;
   readonly gridTs: readonly number[];
   /** 17b: flat-stretch batching config, read by `runSymbol`'s loop (Task 4). Absent ⇒ lockstep. */
@@ -342,7 +341,7 @@ function preBarStages(env: BarEnv, t: number): void {
 }
 
 async function processBar(env: BarEnv, t: number, base: StrategyDecision | null): Promise<void> {
-  const { symbol, candles, builder, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs } = env;
+  const { symbol, candles, builder, overlays, portfolio, engine, acc, module, strategyExec, fundingCol, gridTs } = env;
   const { router, risk, exec, composer } = engine;
   const bar = candles[t];
 
@@ -483,13 +482,18 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
     const reading = fundingReadingAt(fundingCol, gridTs, bar.ts, t);
     const covered = reading.state !== 'missing';
     const rate = covered && reading.point !== undefined ? reading.point.fundingRate : 0;
+    // P2-19: prorate over the ACTUAL interval since the previous processed bar (ts[t] - ts[t-1]), NOT a
+    // single gridMinutes extrapolated from the first two bars — a start gap must not 2× every bar, and a
+    // mid-run gap must charge its real interval. t is always ≥ 1 here (under next_bar_open a position
+    // cannot exist on bar 0), so no first-interval extrapolation is needed; covered=false still → 0.
+    const barMinutes = t >= 1 ? (gridTs[t]! - gridTs[t - 1]!) / 60_000 : 0;
     const cost = computeBarFunding({
       side: pos.side,
       size: pos.size,
       mark: bar.close,
       rate8h: rate,
       covered,
-      barMinutes: gridMinutes,
+      barMinutes,
       intervalHours: exec.fundingIntervalHours(),
     }).toNumber();
     portfolio.chargeFunding(cost);
@@ -515,7 +519,6 @@ async function buildBarEnv(
 ): Promise<BarEnv> {
   const n = candles.length;
   const { router, risk, exec, composer } = engine;
-  const gridMinutes = n > 1 ? (candles[1].ts - candles[0].ts) / 60_000 : 1;
   const fundingCol = exec.fundingEnabled() ? marketTape?.funding(symbol) : undefined;
   const gridTs = exec.fundingEnabled() ? candles.map((b) => b.ts) : [];
   const module = strategy.module;
@@ -525,7 +528,7 @@ async function buildBarEnv(
   // sandbox → открыть контейнер + init-хук. Вызывается всегда (sandbox-сессия открывается и без 'init').
   await strategyExec.initStrategy?.(module, builder.build(0, stateAt(portfolio, candles[0].close)));
 
-  return { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, gridMinutes, fundingCol, gridTs, ...(barBatching ? { batch: barBatching } : {}) };
+  return { symbol, candles, builder, strategy, overlays, portfolio, engine, acc, module, strategyExec, fundingCol, gridTs, ...(barBatching ? { batch: barBatching } : {}) };
 }
 
 /** End-of-data half of `runSymbol` (17b/Task-3 refactor): expire leftover pending, forced MTM close, session dispose. Assumes `env.candles.length >= 1`. */
