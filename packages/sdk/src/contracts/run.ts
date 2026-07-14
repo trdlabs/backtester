@@ -83,6 +83,46 @@ export type WalkForward =
       readonly insufficientFolds: readonly number[];
     };
 
+// E4b — held-out promotion enforcement (advisory feedback + signed-evidence gate; NOT hashed).
+export type PromotionFailureReason =
+  | 'signing_unavailable' | 'curated_unavailable' | 'gate_rejected' | 'twin_divergent'
+  | 'holdout_unavailable' | 'holdout_not_covered' | 'warmup_insufficient'
+  | 'evaluation_insufficient' | 'attempt_record_failed' | 'metrics_failed' | 'internal_error';
+// Discriminated union: `passed` NEVER carries a reason and ALWAYS has attemptNumber + evaluationWindow
+// (it was recorded and evaluated); `not_qualified` ALWAYS carries exactly one reason.
+export type PromotionResult =
+  | { readonly verdict: 'passed'; readonly reason?: never; readonly attemptNumber: number;
+      readonly evaluationWindow: RunPeriod; readonly evaluatedOn: 'holdout' }
+  | { readonly verdict: 'not_qualified'; readonly reason: PromotionFailureReason;
+      readonly attemptNumber?: number; readonly evaluationWindow?: RunPeriod; readonly evaluatedOn: 'holdout' };
+export interface EvidenceThresholdsV2 {
+  readonly minSharpe: number; readonly maxDrawdown: number; readonly minWinRate: number; readonly minTrades: number;
+}
+// The signed promotion body. FLAT v1 fields (schema/backtesterRunId/bundleHash/verdict/datasetRef/window/
+// symbols/timeframe/keyId) + the E4b held-out binding. Signed only when verdict === 'passed'.
+export interface EvidenceBodyV2 {
+  readonly schema: 'backtest-evidence/v2';
+  readonly backtesterRunId: string;
+  readonly bundleHash: string;
+  readonly verdict: 'passed';
+  readonly datasetRef: string;
+  readonly window: { readonly fromMs: number; readonly toMs: number };  // EXECUTION window
+  readonly symbols: readonly string[];
+  readonly timeframe: string;
+  readonly keyId: string;
+  readonly mode: 'promotion';
+  readonly evaluationWindow: { readonly fromMs: number; readonly toMs: number };  // holdout window
+  readonly candidateHoldoutMetrics: Record<string, number>;
+  readonly curatedHoldoutMetrics: Record<string, number>;
+  readonly thresholds: EvidenceThresholdsV2;
+  readonly attemptNumber: number;
+  readonly qualificationEpochKey: string;
+  readonly candidateResultHash: string;
+  readonly curatedResultHash: string;
+  readonly curatedBaselineRef: string;
+  readonly qualification: { readonly coverage: RunPeriod; readonly fraction: number; readonly policyVersion: string; readonly datasetFingerprint: string };
+}
+
 // E4a — held-out OOS qualification marker (advisory; NOT part of the hashed result). A run's
 // `holdout` marker records whether the run touched the server-reserved OOS window, with provenance
 // (the window drifts as coverage grows). Present only when BACKTESTER_HOLDOUT_ENABLED.
@@ -304,6 +344,8 @@ export interface RunResultSummary {
   readonly novelty?: Novelty;
   /** E3b: advisory per-fold walk-forward OOS-stability summary; NOT covered by `resultHash`. */
   readonly walkForward?: WalkForward;
+  /** E4b: advisory promotion verdict (held-out gate); NOT covered by `resultHash`. */
+  readonly promotion?: PromotionResult;
 }
 
 export type CompletionEventType =

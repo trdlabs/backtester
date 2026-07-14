@@ -139,6 +139,8 @@ export interface AppConfig {
   readonly holdout: boolean;
   /** E4a: held-out window = last `holdoutFraction` of coverage. Only read when `holdout` is on. */
   readonly holdoutFraction: number;
+  /** E4b: held-out promotion enforcement gate enabled. Requires `holdout` + a valid fraction (fail-fast). Default off (dark launch). */
+  readonly promotionHoldoutGate: boolean;
   /** E1b: structured run diagnostics enabled. Default off (dark launch). */
   readonly runDiagnostics: boolean;
   /** E1b: `underpowered` flag threshold (trades). Default 30. */
@@ -243,6 +245,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const f = Number(env.BACKTESTER_HOLDOUT_FRACTION);
     if (!Number.isFinite(f) || f <= 0 || f >= 1) {
       throw new Error('BACKTESTER_HOLDOUT_FRACTION must be a finite number in (0,1) when BACKTESTER_HOLDOUT_ENABLED');
+    }
+  }
+  // Fail-fast (E4b): the promotion gate reuses the E4a holdout policy — it never runs on a mismatched
+  // or unvalidated holdout configuration.
+  if (env.BACKTESTER_PROMOTION_HOLDOUT_GATE === 'true') {
+    if (env.BACKTESTER_HOLDOUT_ENABLED !== 'true') {
+      throw new Error('BACKTESTER_PROMOTION_HOLDOUT_GATE requires BACKTESTER_HOLDOUT_ENABLED=true (the gate reuses the E4a holdout policy)');
+    }
+    const f = Number(env.BACKTESTER_HOLDOUT_FRACTION);
+    if (!Number.isFinite(f) || f <= 0 || f >= 1) {
+      throw new Error('BACKTESTER_PROMOTION_HOLDOUT_GATE requires a valid BACKTESTER_HOLDOUT_FRACTION in (0,1)');
     }
   }
   // Fail-fast (E5a): thresholds only meaningful in-range; validate only when the gate is on. When off,
@@ -394,6 +407,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     trialEmpiricalMinN: Math.max(2, Math.floor(Number(env.BACKTESTER_TRIAL_EMPIRICAL_MIN_N ?? 5))) || 5,
     holdout: env.BACKTESTER_HOLDOUT_ENABLED === 'true',
     holdoutFraction: Number(env.BACKTESTER_HOLDOUT_FRACTION) || 0.2,
+    promotionHoldoutGate: env.BACKTESTER_PROMOTION_HOLDOUT_GATE === 'true',
     runDiagnostics: env.BACKTESTER_RUN_DIAGNOSTICS === 'true',
     diagMinTrades: nonNegNumEnv(env.BACKTESTER_DIAG_MIN_TRADES, 30, { int: true }),
     diagConcentrationPct: nonNegNumEnv(env.BACKTESTER_DIAG_CONCENTRATION_PCT, 80),

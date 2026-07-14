@@ -8,9 +8,9 @@ import type {
   RunPeriod, WalkForward, WalkForwardFailure, WalkForwardFailureCode, WalkForwardFoldResult,
   WalkForwardScheme, FoldWindow,
 } from '@trading-backtester/sdk/contracts';
-import type { EquityPoint, RunOutcome, Trade } from './artifacts.js';
-import { computeMetrics } from './metrics.js';
+import type { RunOutcome } from './artifacts.js';
 import { aggregateFolds, splitWalkForward } from './walk-forward.js';
+import { evaluateWindow } from './window-eval.js';
 
 export type CompletedOutcome = Extract<RunOutcome, { status: 'completed' }>;
 
@@ -30,16 +30,6 @@ export interface WalkForwardExecInput {
   readonly requestedMetrics: readonly string[];
   readonly maxFolds: number;
   readonly deadlineExceeded: () => boolean;
-}
-
-const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
-
-/** Anchored test-window equity: last point before test.from (boundary anchor) + points in [from,to). */
-function anchoredTestEquity(equity: readonly EquityPoint[], fromMs: number, toMs: number): EquityPoint[] {
-  const within = equity.filter((p) => p.barTs >= fromMs && p.barTs < toMs);
-  let anchor: EquityPoint | undefined;
-  for (const p of equity) if (p.barTs < fromMs && (anchor === undefined || p.barTs > anchor.barTs)) anchor = p;
-  return anchor ? [anchor, ...within] : within;
 }
 
 export async function runWalkForward(input: WalkForwardExecInput, runFold: RunFold): Promise<WalkForward> {
@@ -74,19 +64,11 @@ export async function runWalkForward(input: WalkForwardExecInput, runFold: RunFo
         failedFolds.push({ index: fold.index, code });
         continue;
       }
-      const fromMs = Date.parse(fold.test.from);
-      const toMs = Date.parse(fold.test.to);
-      const equity = anchoredTestEquity(ran.outcome.baseline.evidence.equityCurve, fromMs, toMs);
+      const { equity, carryInClosedTradeCount, metrics } = evaluateWindow(ran.outcome, fold.test, requestedMetrics);
       if (equity.length < 2) {
         insufficientFolds.push(fold.index);
         continue;
       }
-      const allTrades = ran.outcome.baseline.trades;
-      const inTest = allTrades.filter((t: Trade) => t.entryTs >= fromMs && t.exitTs < toMs);
-      const carryInClosedTradeCount = allTrades.filter(
-        (t: Trade) => t.entryTs < fromMs && t.exitTs >= fromMs && t.exitTs < toMs,
-      ).length;
-      const metrics = computeMetrics(requestedMetrics, equity, inTest, { elapsedYears: (toMs - fromMs) / YEAR_MS });
       folds.push({ index: fold.index, train: fold.train, test: fold.test, foldOutcomeHash: ran.hash, metrics, carryInClosedTradeCount });
     }
 

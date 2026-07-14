@@ -9,6 +9,7 @@ import type {
   BacktestRunRequest,
   HoldoutMarker,
   Novelty,
+  PromotionResult,
   RunDiagnostics,
   RunPeriod,
   RunResultSummary,
@@ -70,6 +71,11 @@ import { computeRunDiagnostics } from '../engine/diagnostics.js';
 import { toDailyPnlDeltas, computeNovelty } from '../engine/novelty.js';
 import { computeComparabilityKey, type NoveltyPool } from './ledger/novelty-pool.js';
 import { runWalkForward, WalkForwardFoldError, type RunFold } from '../engine/walk-forward-exec.js';
+import { resolvePromotionGate } from './promotion/resolve-promotion.js';
+import type { PromotionPolicy } from './promotion/resolve-promotion.js';
+import type { PromotionAttemptLedger } from './promotion/attempt-ledger.js';
+import type { QualificationEpochResolver } from './promotion/epoch-resolver.js';
+import type { CompletedOutcome } from '../engine/window-eval.js';
 
 export { RunnerError };
 
@@ -129,6 +135,8 @@ export interface WorkerDeps extends CompletionDeps {
   novelty?: { enabled: boolean; threshold: number; minOverlapDays: number; pool: NoveltyPool };
   /** E3b: walk-forward per-fold execution. Absent/disabled ⇒ no `walkForward` field (byte-identical). */
   walkForward?: { enabled: boolean; maxFolds: number };
+  /** E4b: held-out promotion gate. Absent/disabled ⇒ no `promotion` field (byte-identical). */
+  promotion?: { enabled: boolean; ledger: PromotionAttemptLedger; epochResolver: QualificationEpochResolver; policy: PromotionPolicy };
 }
 
 export function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
@@ -285,7 +293,7 @@ function makeWalkForwardRunFold(
  * object so tests can `vi.spyOn(workerInternals, 'sandboxBundleFor')` and prove a dedup HIT performs
  * NONE of them (a bare intra-module call would not be interceptable by the spy). Compute-skip proof.
  */
-export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor, makeWalkForwardRunFold };
+export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor, makeWalkForwardRunFold, resolvePromotionGate };
 
 /**
  * P0-1: a sandboxed run degrades internal hook failures to `idle` and only RECORDS them on the router
@@ -322,6 +330,7 @@ async function finalizeResult(
   claimed: JobRow,
   datasetFingerprint: string,
   evidenceRef?: ArtifactReference,
+  promotion?: PromotionResult,
 ): Promise<Finalized> {
   const resultHash = contentRef(payload);
   if (engine === 'momentum') {
@@ -383,6 +392,9 @@ async function finalizeResult(
   // excluding this fingerprint). Non-hashed projection; flag-OFF ⇒ field absent ⇒ byte-identical.
   const novelty = await resolveNovelty(deps, claimed, outcome, resultHash);
   if (novelty) summary = { ...summary, novelty };
+  // E4b (advisory, flag-gated): held-out promotion verdict. Non-hashed; flag-OFF ⇒ field absent ⇒
+  // byte-identical.
+  if (promotion) summary = { ...summary, promotion };
   return { summary, manifest: persisted.manifest, resultHash };
 }
 
@@ -525,6 +537,18 @@ interface Materialized {
   marketTape?: MarketTapeDataset;
   /** momentum dataset (absent for overlay/strategy). */
   dataset?: MaterializedDataset;
+  /**
+   * E4b: the dataset coverage span captured HERE — before the engine runs — so the held-out promotion
+   * qualification window is an IMMUTABLE pre-execution context (spec requirement). Resolved only for a
+   * `mode:'promotion'` run with the gate on; `RunPeriod` if the dataset is known, `null` if not,
+   * `undefined` (absent) otherwise. Reading it here (not post-run) means a concurrent ingest/tape-cache
+   * refresh can't move the window under an already-executed snapshot; a stale-vs-fresh mismatch can only
+   * shift the window OUT of the executed tape ⇒ not_covered ⇒ not_qualified (fail-closed, never a false pass).
+   */
+  coverage?: RunPeriod | null;
+  /** E4b: server-derived dataset timeframe, frozen alongside coverage (same descriptor). The completeness
+   *  guard builds its grid from this and requires request.timeframe to equal it. */
+  datasetTimeframe?: string | null;
 }
 
 /**
@@ -573,7 +597,22 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
       metrics: r.metrics,
       ...(r.robustnessChecks !== undefined ? { robustnessChecks: r.robustnessChecks } : {}),
     };
-    return { engine, datasetFingerprint: dsFingerprint, engineRequest, marketTape };
+    // E4b: freeze the coverage span AND the server-derived dataset timeframe BEFORE the engine runs
+    // (immutable qualification context). Only for a gated promotion run — a no-op read otherwise. Both come
+    // from the SAME descriptor read on the same dataPort as the tape above, so the grid step used by the
+    // completeness guard is the dataset's real cadence, never the client's declared timeframe.
+    let coverage: RunPeriod | null | undefined;
+    let datasetTimeframe: string | null | undefined;
+    if (deps.promotion?.enabled && r.mode === 'promotion') {
+      const descriptor = (await deps.dataPort.listDatasets().catch(() => [])).find((d) => d.datasetRef === r.datasetRef);
+      coverage = descriptor?.period ?? null;
+      datasetTimeframe = descriptor?.timeframe ?? null;
+    }
+    return {
+      engine, datasetFingerprint: dsFingerprint, engineRequest, marketTape,
+      ...(coverage !== undefined ? { coverage } : {}),
+      ...(datasetTimeframe !== undefined ? { datasetTimeframe } : {}),
+    };
   }
   // ===== MOMENTUM =====
   const { tsFrom, tsTo } = periodMs(claimed.request.period);
@@ -864,7 +903,8 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       // Any failure leaves evidenceRef undefined — the run still completes with resultHash.
       // curatedBaselineRef is NOT added to engineRequest (never reaches the 017 validator).
       let evidenceRef: ArtifactReference | undefined;
-      if (claimed.request.curatedBaselineRef !== undefined && deps.evidenceSigningKey !== undefined) {
+      if (claimed.request.curatedBaselineRef !== undefined && deps.evidenceSigningKey !== undefined
+          && !(deps.promotion?.enabled && claimed.request.mode === 'promotion')) {
         try {
           await chargeEngineAttempt(); // INV-5: engine-commit charge (curated-evidence baseline run; idempotent)
           const curated = await runOverlayBacktest(
@@ -900,8 +940,51 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         }
       }
 
+      // ── E4b: held-out promotion gate (advisory field + v2 evidence; flag-gated) ──────────────
+      let promotionResult: PromotionResult | undefined;
+      if (deps.promotion?.enabled && claimed.request.mode === 'promotion') {
+        // curated run iff a baseline ref is present; else curated:null → curated_unavailable
+        let curated: CompletedOutcome | null = null;
+        if (claimed.request.curatedBaselineRef !== undefined) {
+          try {
+            await chargeEngineAttempt(); // INV-5: engine-commit charge (curated baseline run; idempotent)
+            const c = await runOverlayBacktest(
+              { ...engineRequest, moduleRef: claimed.request.curatedBaselineRef },
+              { registry: buildTrustedRegistry(), marketTape },
+            );
+            curated = c.status === 'completed' ? c : null;
+          } catch { curated = null; }
+        }
+        // E4b: the qualification coverage was frozen in materializeFor BEFORE the engine ran — use that
+        // immutable snapshot, never a post-run re-read (which a concurrent ingest could move).
+        const coverage = materialized.coverage ?? null;
+        try {
+          // bundleBytes is read INSIDE the try so a transient FS fault becomes a typed internal_error
+          // verdict, never a failed run (honors "never fails the run"; only load-bearing in the passed branch).
+          const bundleBytes = (claimed.request.curatedBaselineRef !== undefined && sandboxBundle)
+            ? readFileSync(join(sandboxBundle.bundle.bundleDir, sandboxBundle.bundle.descriptor.entryPoint))
+            : new Uint8Array();
+          // E4b completeness guard input: per-symbol ACTUAL bar start-times of the FROZEN executed tape.
+          // The gate checks real bars at BOTH holdout boundaries (grid step from the trusted timeframe), so
+          // a partial/short/gappy tape fails closed instead of signing a false full-window scope claim.
+          const executedBarTimes = claimed.request.symbols.map((s) => marketTape.candles(s).map((b) => b.ts));
+          const pr = await workerInternals.resolvePromotionGate(deps.promotion, claimed, {
+            candidate: outcome, curated, signingKey: deps.evidenceSigningKey,
+            bundle: sandboxBundle!.bundle, bundleBytes, datasetFingerprint: dsFingerprint,
+            coverage, datasetTimeframe: materialized.datasetTimeframe ?? null, executedBarTimes,
+            runId, clock: deps.clock, writeArtifact: (a) => deps.artifactStore.write(a),
+          });
+          promotionResult = pr?.promotion;
+          if (pr?.evidenceRef) evidenceRef = pr.evidenceRef;   // v2 evidenceRef (artifactType 'backtest-evidence/v2')
+        } catch {
+          // resolvePromotionGate is internally fault-tolerant; belt-and-suspenders: a fault yields a typed
+          // verdict, NEVER a missing field (which would read as flag-off). Never fails the run.
+          promotionResult = { verdict: 'not_qualified', reason: 'internal_error', evaluatedOn: 'holdout' };
+        }
+      }
+
       payload = outcome;
-      finalized = await finalizeResult(deps, 'strategy', outcome, claimed, dsFingerprint, evidenceRef);
+      finalized = await finalizeResult(deps, 'strategy', outcome, claimed, dsFingerprint, evidenceRef, promotionResult);
     } else {
       // ===== MOMENTUM PATH — unchanged (golden eff10116… must not move) =====
       executor = await workerInternals.executorFor(deps, claimed);

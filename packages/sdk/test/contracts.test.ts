@@ -8,6 +8,7 @@ import {
 } from '../src/contracts/index';
 import type { Novelty } from '../src/contracts/run.js';
 import type { WalkForward } from '../src/contracts/run.js';
+import type { PromotionResult } from '../src/contracts/run.js';
 
 describe('public contracts', () => {
   it('pins the current contract versions', () => {
@@ -59,5 +60,20 @@ describe('public contracts', () => {
     };
     expect(resolved.status).toBe('partial');
     expect(none.status).toBe('unavailable');
+  });
+
+  it('PromotionResult carries passed + not_qualified shapes with a single reason', () => {
+    const passed: PromotionResult = { verdict: 'passed', evaluatedOn: 'holdout', attemptNumber: 3, evaluationWindow: { from: 'a', to: 'b' } };
+    const failed: PromotionResult = { verdict: 'not_qualified', reason: 'holdout_not_covered', evaluatedOn: 'holdout' };
+    expect(passed.verdict).toBe('passed');
+    expect(failed.reason).toBe('holdout_not_covered');
+
+    // @ts-expect-error — 'passed' must NOT carry a reason
+    const bad1: PromotionResult = { verdict: 'passed', reason: 'gate_rejected', attemptNumber: 1, evaluationWindow: { from: 'a', to: 'b' }, evaluatedOn: 'holdout' };
+    // @ts-expect-error — 'not_qualified' REQUIRES a reason
+    const bad2: PromotionResult = { verdict: 'not_qualified', evaluatedOn: 'holdout' };
+    // @ts-expect-error — 'passed' REQUIRES attemptNumber
+    const bad3: PromotionResult = { verdict: 'passed', evaluationWindow: { from: 'a', to: 'b' }, evaluatedOn: 'holdout' };
+    void bad1; void bad2; void bad3;
   });
 });

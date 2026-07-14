@@ -30,6 +30,10 @@ import { InMemoryNoveltyPool } from './jobs/ledger/novelty-pool';
 import { PgNoveltyPool } from './jobs/ledger/pg-novelty-pool';
 import { InMemoryComputeLockStore } from './jobs/coalesce/compute-lock.js';
 import { PgComputeLockStore } from './jobs/coalesce/pg-compute-lock.js';
+import { InMemoryPromotionAttemptLedger } from './jobs/promotion/attempt-ledger.js';
+import { PgPromotionAttemptLedger } from './jobs/promotion/pg-attempt-ledger.js';
+import { DatasetIdentityEpochResolver } from './jobs/promotion/epoch-resolver.js';
+import { buildPromotionPolicy } from './jobs/promotion/resolve-promotion.js';
 import { wakeComputeWaiters } from './jobs/coalesce/wake.js';
 import { ObsRegistry } from './jobs/obs-registry.js';
 import { loadSigningKeyFromPem, type SigningKey } from './evidence/signing.js';
@@ -107,6 +111,10 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     ? ownedPool
       ? new PgNoveltyPool(ownedPool)
       : new InMemoryNoveltyPool()
+    : undefined;
+  // E4b: construct the promotion attempt ledger only when enabled — flag-OFF stays fully inert.
+  const promotionLedger = config.promotionHoldoutGate
+    ? (ownedPool ? new PgPromotionAttemptLedger(ownedPool) : new InMemoryPromotionAttemptLedger())
     : undefined;
 
   const dataPort =
@@ -197,6 +205,11 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       ? { novelty: { enabled: true, threshold: config.noveltyCorrThreshold, minOverlapDays: config.noveltyMinOverlapDays, pool: noveltyPool } }
       : {}),
     ...(config.walkForward ? { walkForward: { enabled: true, maxFolds: config.walkForwardMaxFolds } } : {}),
+    ...(config.promotionHoldoutGate && promotionLedger
+      ? { promotion: { enabled: true, ledger: promotionLedger,
+          epochResolver: new DatasetIdentityEpochResolver(dataPort),
+          policy: buildPromotionPolicy({ holdoutFraction: config.holdoutFraction }) } }
+      : {}),
     ...(overrides.evidenceSigningKey
       ? { evidenceSigningKey: overrides.evidenceSigningKey }
       : config.evidenceSigningKeyPem
