@@ -107,6 +107,8 @@ describe('resolvePromotionGate (E4b)', () => {
       bundleBytes: new TextEncoder().encode('x'),
       datasetFingerprint: 'dsf',
       coverage: COVERAGE,
+      executedSpans: [{ firstTs: 0, lastTs: 10 * DAY }], // full coverage of the [6d,10d) window
+      barIntervalMs: DAY,
       runId: 'run-1',
       clock: () => 1,
       writeArtifact: vi.fn(async () => 'sha256:art'),
@@ -174,6 +176,20 @@ describe('resolvePromotionGate (E4b)', () => {
     expect(r?.promotion).toMatchObject({ verdict: 'not_qualified', reason: 'holdout_not_covered' });
     expect(r?.promotion.evaluationWindow).toBeDefined();
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('partial holdout tape (tail inside window) ⇒ evaluation_insufficient, ledger NOT written, nothing signed', async () => {
+    const deps = baseDeps();
+    const spy = vi.spyOn(deps.ledger, 'recordIfNewAndGetAttempt');
+    const writeArtifact = vi.fn(async () => 'sha256:art');
+    // Frozen tape ends at 8d, INSIDE the [6d,10d) holdout window — a profitable sub-portion must NOT qualify.
+    const r = await resolvePromotionGate(deps, makeClaimed(), baseCtx({
+      executedSpans: [{ firstTs: 0, lastTs: 8 * DAY }], barIntervalMs: DAY, writeArtifact,
+    }));
+    expect(r?.promotion).toMatchObject({ verdict: 'not_qualified', reason: 'evaluation_insufficient' });
+    expect(spy).not.toHaveBeenCalled();            // fail-closed: no ledger row
+    expect(writeArtifact).not.toHaveBeenCalled();  // fail-closed: no signed v2 evidence
+    expect(r?.evidenceRef).toBeUndefined();
   });
 
   it("evaluated verdict 'failed' ⇒ ledger recorded, reason metrics_failed, attemptNumber set, no evidenceRef", async () => {

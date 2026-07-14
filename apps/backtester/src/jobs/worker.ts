@@ -954,10 +954,22 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           const bundleBytes = (claimed.request.curatedBaselineRef !== undefined && sandboxBundle)
             ? readFileSync(join(sandboxBundle.bundle.bundleDir, sandboxBundle.bundle.descriptor.entryPoint))
             : new Uint8Array();
+          // E4b completeness guard input: per-symbol [firstTs,lastTs] of the FROZEN executed tape + its bar
+          // interval (derived from the tape's own grid, like runner.ts). Lets the gate fail-closed when a
+          // partial/short tape doesn't cover the whole holdout window (no false full-window scope claim).
+          const executedSpans = claimed.request.symbols.map((s) => {
+            const bars = marketTape.candles(s);
+            return bars.length > 0
+              ? { firstTs: bars[0].ts, lastTs: bars[bars.length - 1].ts }
+              : { firstTs: Number.NaN, lastTs: Number.NaN };
+          });
+          const firstBars = marketTape.candles(claimed.request.symbols[0]);
+          const barIntervalMs = firstBars.length > 1 ? firstBars[1].ts - firstBars[0].ts : 60_000;
           const pr = await workerInternals.resolvePromotionGate(deps.promotion, claimed, {
             candidate: outcome, curated, signingKey: deps.evidenceSigningKey,
             bundle: sandboxBundle!.bundle, bundleBytes, datasetFingerprint: dsFingerprint,
-            coverage, runId, clock: deps.clock, writeArtifact: (a) => deps.artifactStore.write(a),
+            coverage, executedSpans, barIntervalMs, runId, clock: deps.clock,
+            writeArtifact: (a) => deps.artifactStore.write(a),
           });
           promotionResult = pr?.promotion;
           if (pr?.evidenceRef) evidenceRef = pr.evidenceRef;   // v2 evidenceRef (artifactType 'backtest-evidence/v2')

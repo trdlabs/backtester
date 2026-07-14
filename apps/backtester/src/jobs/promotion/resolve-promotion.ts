@@ -45,6 +45,10 @@ export interface PromotionCtx {
   readonly bundleBytes: Uint8Array;
   readonly datasetFingerprint: string;
   readonly coverage: RunPeriod | null;
+  /** Per-symbol [firstTs,lastTs] of the FROZEN executed tape + bar interval — the completeness guard's
+   *  input, so a partial/short tail can't sign a full-window scope claim. */
+  readonly executedSpans: ReadonlyArray<{ readonly firstTs: number; readonly lastTs: number }>;
+  readonly barIntervalMs: number;
   readonly runId: string;
   readonly clock: () => number;
   readonly writeArtifact: (artifact: { body: unknown; signature: string }) => Promise<string>;
@@ -74,7 +78,8 @@ export async function resolvePromotionGate(
     catch { return nq('holdout_unavailable'); }
     const w = evaluatePromotionWindow({ candidate: ctx.candidate, curated: ctx.curated, holdoutWindow: window,
       runPeriod: claimed.request.period, thresholds: deps.policy.thresholds, policyMetrics: deps.policy.metrics,
-      minWarmupBars: deps.policy.minWarmupBars, minTrades: deps.policy.minTrades });
+      minWarmupBars: deps.policy.minWarmupBars, minTrades: deps.policy.minTrades,
+      executedSpans: ctx.executedSpans, barIntervalMs: ctx.barIntervalMs });
     if (w.outcome === 'reject') return nq(w.reason, { evaluationWindow: window });
     // record REGARDLESS of pass/fail (counter advances for failed too) — verdict computed BEFORE ledger
     const epochKey = computeQualificationEpochKey(

@@ -18,6 +18,10 @@ export function evaluatePromotionWindow(input: {
   readonly holdoutWindow: RunPeriod;   // non-null: the worker handled holdout_unavailable already
   readonly runPeriod: RunPeriod; readonly thresholds: EvidenceThresholds;
   readonly policyMetrics: readonly string[]; readonly minWarmupBars: number; readonly minTrades: number;
+  /** Per-symbol [firstTs,lastTs] of the FROZEN executed tape + its bar interval — used for the fail-closed
+   *  completeness guard below. */
+  readonly executedSpans: ReadonlyArray<{ readonly firstTs: number; readonly lastTs: number }>;
+  readonly barIntervalMs: number;
 }):
   | { outcome: 'reject'; reason: 'holdout_not_covered' | 'warmup_insufficient' | 'evaluation_insufficient' }
   | { outcome: 'evaluated'; verdict: 'passed' | 'failed'; candidateHoldoutMetrics: Record<string, number>; curatedHoldoutMetrics: Record<string, number> } {
@@ -25,6 +29,15 @@ export function evaluatePromotionWindow(input: {
   const wFrom = Date.parse(w.from), wTo = Date.parse(w.to);
   const pFrom = Date.parse(input.runPeriod.from), pTo = Date.parse(input.runPeriod.to);
   if (!(pFrom <= wFrom && wTo <= pTo)) return { outcome: 'reject', reason: 'holdout_not_covered' };
+  // Completeness (fail-closed): the FROZEN executed tape must cover BOTH holdout boundaries for EVERY
+  // symbol — first bar on/before wFrom AND last bar (+ one interval) reaching wTo. Without this, a
+  // stale/short tape ending inside the window lets a profitable sub-portion qualify while the v2 evidence
+  // signs its metrics as spanning the FULL evaluationWindow — a false, signed scope claim. Any uncovered
+  // symbol ⇒ evaluation_insufficient (returned BEFORE the ledger write and signing).
+  const covered = input.executedSpans.length > 0 && input.executedSpans.every(
+    (s) => Number.isFinite(s.firstTs) && Number.isFinite(s.lastTs) && s.firstTs <= wFrom && s.lastTs + input.barIntervalMs >= wTo,
+  );
+  if (!covered) return { outcome: 'reject', reason: 'evaluation_insufficient' };
   const evalC = evaluateWindow(input.candidate, w, input.policyMetrics);
   if (evalC.warmupSteps < input.minWarmupBars) return { outcome: 'reject', reason: 'warmup_insufficient' };
   if (evalC.equity.length < 2 || evalC.inTest.length < input.minTrades) return { outcome: 'reject', reason: 'evaluation_insufficient' };
