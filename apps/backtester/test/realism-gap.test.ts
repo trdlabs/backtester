@@ -19,6 +19,8 @@ describe('realism GAP — funding non-circular guard + sign + 5b anchor', () => 
     const { ledger, size } = await runRealismLedger(SYMBOL, rows, [trade]);
     // Inline recompute — plain arithmetic, NO import of funding.ts (independent of production code).
     // If funding.ts has a wrong divisor/sign/proration, this inline sum diverges from the engine ledger.
+    // P2-19: each covered bar realizes ONE funding snapshot = one server-cadence period (this fixture
+    // is a 1m tape, so 1 minute per covered bar). The inline recompute is independent of funding.ts.
     const INTERVAL_MIN = 8 * 60; // 480
     const sign = trade.side === 'long' ? 1 : -1;
     let inline = 0;
@@ -28,7 +30,7 @@ describe('realism GAP — funding non-circular guard + sign + 5b anchor', () => 
         continue;
       }
       const row = rows.find((r) => r.minute_ts === e.ts)!; // mark = close at the funding minute
-      inline += (e.rate / INTERVAL_MIN) * (size * row.close) * sign;
+      inline += (e.rate / INTERVAL_MIN) * (size * row.close) * sign; // one 1m cadence period
     }
     const engineTotal = ledger.reduce((s, e) => s + e.cost, 0);
     expect(Math.abs(engineTotal - inline)).toBeLessThan(1e-10);

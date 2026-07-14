@@ -20,7 +20,7 @@ describe('computeIdentity', () => {
   });
   // P3-7 — the compute-semantics version was bumped because cagr/calmar now annualize over the
   // really-processed bars; the bump re-keys every cached entry so old (pre-fix) metrics are not served.
-  it('DEDUP_COMPUTE_VERSION is 2 (bumped by P3-7)', () => {
-    expect(DEDUP_COMPUTE_VERSION).toBe('2');
+  it('DEDUP_COMPUTE_VERSION is 3 (bumped by P3-7 then P2-19)', () => {
+    expect(DEDUP_COMPUTE_VERSION).toBe('3');
   });
 });

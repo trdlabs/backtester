@@ -57,6 +57,7 @@ export function fundingReadingAt(
   gridTs: readonly number[],
   minuteTs: number,
   minuteIdx: number,
+  cadenceMs?: number,
 ): FundingReading {
   const snap = fundingCol === undefined ? undefined : fundingCol.at(minuteTs);
   if (snap === undefined || fundingCol === undefined) return Object.freeze({ state: 'missing' });
@@ -65,7 +66,14 @@ export function fundingReadingAt(
   if (minuteIdx >= 0) {
     for (let k = 1; k <= FUNDING_STALE_GRACE_BARS; k += 1) {
       const m = gridTs[minuteIdx - k];
-      if (m !== undefined && fundingCol.covered(m)) return Object.freeze({ state: 'stale', point });
+      if (m === undefined || !fundingCol.covered(m)) continue;
+      // P2-19: `m` is the last covered grid bar (the coverage EDGE — not the sparse change-point in
+      // `point.ts`). When a trusted `cadenceMs` is supplied, the grace is measured in ELAPSED TIME
+      // against that cadence, so a covered edge older than the grace window (e.g. a covered 2m bar and
+      // the next observed bar 60m later across a gap) does NOT resurrect as stale — it is `missing`.
+      // Without `cadenceMs` (market-access) the historical index-based grace is preserved.
+      const fresh = cadenceMs === undefined || minuteTs - m <= cadenceMs * FUNDING_STALE_GRACE_BARS;
+      return fresh ? Object.freeze({ state: 'stale', point }) : Object.freeze({ state: 'missing' });
     }
   }
   return Object.freeze({ state: 'missing' });

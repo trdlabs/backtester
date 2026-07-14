@@ -67,6 +67,24 @@ export async function buildOverlayDataset(
     throw new Error(`buildOverlayDataset: unknown dataset '${sel.datasetRef}'`);
   }
 
+  // P2-19: bind the tape's timeframe to the SERVER-declared DatasetDescriptor, not the client's request
+  // label. A client must not be able to relabel a real 1m dataset as '60m' (60×-charging funding) or
+  // pass an unparseable/degenerate value. Require request == descriptor equality and materialize from the
+  // descriptor's timeframe (the trusted funding cadence read downstream by the engine).
+  const descriptor = (await port.listDatasets()).find((d) => d.datasetRef === sel.datasetRef);
+  if (descriptor === undefined) {
+    throw new RunnerError(
+      'validation_error',
+      `buildOverlayDataset: no dataset descriptor for '${sel.datasetRef}' — cannot verify timeframe`,
+    );
+  }
+  if (sel.timeframe !== descriptor.timeframe) {
+    throw new RunnerError(
+      'validation_error',
+      `buildOverlayDataset: request timeframe '${sel.timeframe}' != dataset descriptor timeframe '${descriptor.timeframe}' for '${sel.datasetRef}'`,
+    );
+  }
+
   const tsFrom = Date.parse(sel.period.from);
   const tsTo = Date.parse(sel.period.to);
   if (Number.isNaN(tsFrom) || Number.isNaN(tsTo)) {
@@ -83,7 +101,7 @@ export async function buildOverlayDataset(
 
   const result: TapeBuildResult = marketTapeFromCanonicalRows(
     sel.datasetRef,
-    sel.timeframe,
+    descriptor.timeframe, // server-derived, validated == sel.timeframe above
     mappedRows,
   );
   if (!result.ok) {
