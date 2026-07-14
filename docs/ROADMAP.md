@@ -775,21 +775,30 @@ mechanism — unrequested ⇒ byte-identical results, INV preserved).
     never expose held-out/qualification-period (E4) outcomes, or the RAG layer itself becomes the
     test-leak channel.
 22. **E3 — walk-forward split runs (CPCV later).** Split into **E3a (substrate) ✅ SHIPPED** +
-    E3b (execution, open). **E3a** (`specs/2026-07-12-e3a-walk-forward-substrate-design.md`): pure
+    **E3b (execution) ✅ MERGED DARK (PR #121, flag `BACKTESTER_WALK_FORWARD_ENABLED` default
+    OFF)**. **E3a** (`specs/2026-07-12-e3a-walk-forward-substrate-design.md`): pure
     deterministic `splitWalkForward(period, {folds, mode})` → ordered train/test `FoldWindow[]`
     (N+1 equal segments, expanding/rolling train, fail-fast typed error) + `aggregateFolds` →
     transparent per-metric `{mean, population-stddev, min, max, positiveFraction}` surface;
     contract types in the SDK. **Executes nothing — no submit/result wiring** (so no "silent WF"
-    impression); goldens byte-identical. **E3b (open):** server-side per-fold execution — the
-    invasive part (marketTape is materialized for the whole period, so folds need tape/period
-    slicing + a worker loop), `walkForward` request field + `RunResultSummary.walkForward` result,
-    `result_hash` over ordered fold payloads. NOTE (family-identity interaction): WF folds of one
+    impression); goldens byte-identical. **E3b (merged dark, PR #121; was "open"):** server-side
+    per-fold execution — tape/period slicing + worker loop, `walkForward` request field +
+    `RunResultSummary.walkForward` result, `result_hash` over ordered fold payloads; advisory,
+    flag OFF (`BACKTESTER_WALK_FORWARD_ENABLED`, cap `BACKTESTER_WALK_FORWARD_MAX_FOLDS`).
+    Consumer rollout (SDK release → lab consumer → staging validation → flag) is a separate
+    cross-repo initiative — when it starts, track it in the control-center
+    [cross-repo initiative registry](../../control-center/docs/delivery/cross-repo-initiatives.md),
+    not here. NOTE (family-identity interaction): WF folds of one
     hypothesis span DIFFERENT windows ⇒ DIFFERENT E2 families (period is in the family key), so WF
     does NOT feed a family's trial count N — WF's value is OOS stability; N stays the
     parameter-trial (same-window) axis. CPCV with purging+embargo (and PBO) is the follow-up after
     E3b (Arian et al. 2024: CPCV ≫ WF at false-discovery prevention; WF is still the industry floor).
 23. **E4 — held-out OOS qualification window (BRAIN-style admission).** Split into **E4a (marker)
-    ✅ SHIPPED** + E4b (enforcement, open). **E4a**
+    ✅ SHIPPED** + **E4b (enforcement) ✅ MERGED DARK (PR #128, flag
+    `BACKTESTER_PROMOTION_HOLDOUT_GATE` default OFF; production enablement BLOCKED — canonical
+    cross-repo status:
+    [E4b card in control-center](../../control-center/docs/delivery/initiatives/e4b-heldout-promotion-enforcement.md))**.
+    **E4a**
     (`specs/2026-07-12-e4a-holdout-oos-marker-design.md`): a server-reserved held-out window =
     last `BACKTESTER_HOLDOUT_FRACTION` of the dataset's coverage span; every run whose `period`
     structurally overlaps it (half-open) is marked with a provenance-bearing, NON-hashed
@@ -804,12 +813,18 @@ mechanism — unrequested ⇒ byte-identical results, INV preserved).
     ⊆ holdout", NOT "run == holdout window" — so different sub-periods inside the holdout are
     DIFFERENT E2 families and the count does not accumulate. E4b must therefore either (a) require
     `request.period === holdout.window` for a promotion/qualification run, or (b) introduce a
-    dedicated qualification-attempt ledger/key keyed on (family, holdout-window). **E4b (open):**
-    enforcement (reject/budget the 2nd qualification attempt = the gate flip) + qualification verdict
-    into the signed `backtest-evidence/v1` body (cross-repo) + explicit `mode:'promotion'` semantics;
-    lab-side twin = Outcome Embargo on agent memory. Only systemic defense against adaptive overfitting *of the
-    refine loop itself* (Agentic-Trading survey's top validity risk; E2/E3 alone are gameable by
-    iteration).
+    dedicated qualification-attempt ledger/key keyed on (family, holdout-window) — **resolved in
+    E4b via (b):** dedicated promotion-attempt ledger (migration 0009) with server-resolved
+    `qualificationEpochKey`. **E4b (merged dark, PR #128; was "open"):** enforcement as a
+    signature-gate (`mode:'promotion'` + attempt ledger + qualification verdict signed into the
+    `backtest-evidence/v2` body — v2, not the v1 this entry previously named); job lifecycle and
+    `result_hash` byte-identical, the only enforcement lever is presence/absence of the signed
+    artifact; lab-side twin = Outcome Embargo on agent memory (pending, hard production blocker).
+    Enable order, rollback order, and current cross-repo state live in the canonical
+    [E4b card](../../control-center/docs/delivery/initiatives/e4b-heldout-promotion-enforcement.md)
+    — this roadmap keeps only the backtester-local view. Only systemic defense against adaptive
+    overfitting *of the refine loop itself* (Agentic-Trading survey's top validity risk; E2/E3
+    alone are gameable by iteration).
 24. **E5 — hypothesis novelty gate (PnL-correlation first, AST later).**
     Daily-PnL-delta correlation of a candidate vs the admitted-strategy pool (BRAIN: 2y window,
     escape hatch at Sharpe ≥ +10 %; AlphaMemo admission: |ρ| ≤ 0.70) — cheap post-processing over
