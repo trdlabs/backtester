@@ -181,23 +181,26 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   start/end, gaps, multi-symbol duplicate timestamps, <2 distinct ts ⇒ omit, an exact integration CAGR
   (100→121 over 0.5y ⇒ 0.4641, pinning the endpoint/time coupling), and the version bump. Full suite +
   Docker dedup-equivalence green.
-- **2026-07-14 — P2-19: funding cadence is the server-validated timeframe, one snapshot per bar**
-  (branch `fix/funding-gap-tape-permin-p2`, TDD; spec `docs/specs/P2-19-funding-gap-tape-per-bar-minutes.md`):
-  `buildBarEnv` derived a single `gridMinutes` from the first two bars and charged it as `barMinutes` on
-  EVERY bar — a start gap 2x-charged the whole run. Two review rounds (#131) refined the model: each
-  processed bar realizes exactly ONE funding snapshot = one cadence period, so `barMinutes` is the
-  SERVER-derived cadence (`timeframeToMinutes(marketTape.timeframe)`, e.g. 1m -> 1) — a constant, never a
-  forward/backward span nor a value inferred from observed bar gaps (unreliable on a sparse tape; same
-  inference defect closed in #128). A gap is not extrapolated at a single rate: missing snapshots accrue
-  0, and a present bar at the coverage edge charges only its own cadence minute (freshness bounds the
-  interval, not just reading.state at its start); a stale bar within the 1-bar grace charges one cadence,
-  beyond it 0. Ownership (which bars hold the position) stays with next_bar_open settlement. Contiguous
-  tapes are byte-identical (old gridMinutes = cadence there), so BEATUSDT is byte-identical to pre-P2-19
-  and only start-gap tapes change -> `DEDUP_COMPUTE_VERSION` bumped `2`->`3`. Tests (engine-path): contiguous,
-  start-gap not 2x, entry/exit-through-gap one cadence, plus two discriminating cases — sparse [0,60] 1m
-  tape with entry on the final bar charges 1 min not 60, and a present bar before a coverage gap charges
-  1 min not 60 (with the stale bar bounded to 1 and the past-grace bar to 0, asserted on specific ledger
-  entries). realism-gap NON-CIRCULAR guard back to one-cadence-per-bar; 5b anchor holds. Full suite green.
+- **2026-07-14 — P2-19: funding cadence from the server dataset timeframe, one snapshot per bar,
+  elapsed-aware stale** (branch `fix/funding-gap-tape-permin-p2`, TDD; spec
+  `docs/specs/P2-19-funding-gap-tape-per-bar-minutes.md`): `buildBarEnv` extrapolated a `gridMinutes` from
+  the first two bars and charged it on every bar — a start gap 2x-charged the whole run. Across four review
+  rounds (#131) the model settled on: each processed bar realizes exactly ONE funding snapshot = one
+  cadence period, so `barMinutes` is the SERVER cadence, not a span nor a min-gap inference. Two trust/
+  freshness fixes followed: (1) the cadence now comes from the `DatasetDescriptor.timeframe` — `buildOverlayDataset`
+  resolves the descriptor, requires `request.timeframe == descriptor.timeframe` (validation_error,
+  fail-closed, before the engine runs) and materializes the tape from it, and the engine parses via the
+  shared `parseTimeframeMs` (null ⇒ fail-closed) — a client can no longer relabel a 1m tape as 60m or pass
+  0m; (2) the stale grace is elapsed-aware — `fundingReadingAt` takes an optional `cadenceMs` and requires
+  the last covered EDGE bar to be within `cadenceMs × FUNDING_STALE_GRACE_BARS` in elapsed time (not the
+  previous processed index), so a 2m rate does not resurrect at a 62m bar across a gap; market-access keeps
+  the index-based grace. Ownership stays with next_bar_open. Contiguous tapes are byte-identical (BEATUSDT
+  unchanged) so only start-gap tapes change ⇒ `DEDUP_COMPUTE_VERSION` `2`->`3`. Tests (engine-path):
+  contiguous, start-gap not 2x, entry/exit-through-gap one cadence, sparse [0,60] final bar 1 min not 60,
+  present-before-gap 1 min not 60, a 60m-away covered bar ⇒ covered=false/0, an adjacent 1-cadence bar ⇒ the
+  allowed stale (1 cadence); plus a data-adapter provenance test (mismatched request timeframe rejected,
+  matched materializes from the descriptor). realism-gap NON-CIRCULAR guard one-cadence-per-bar; 5b anchor
+  holds. Rebased on main (#128 parseTimeframeMs). Full suite green.
 ## Feature 1: Client Contract Alignment ✅ DONE
 
 **Goal:** remove the contract gap between `trading-backtester` and `trading-lab`.

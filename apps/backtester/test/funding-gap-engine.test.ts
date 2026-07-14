@@ -105,15 +105,29 @@ describe('P2-19 — funding charges one server-cadence period per covered bar', 
     expect(presentBar.covered).toBe(true);
     expect(impliedMinutes(presentBar.cost, size, 100)).toBeCloseTo(1, 9); // NOT 60
 
-    const staleBar = at(62);
-    expect(staleBar).toBeDefined();
-    expect(staleBar.covered).toBe(true);
-    expect(impliedMinutes(staleBar.cost, size, 100)).toBeCloseTo(1, 9); // bounded 1-bar grace, NOT 60
+    // The bar at offset 62 sits 60 minutes after the last covered snapshot (offset 2). Elapsed-aware
+    // freshness (age > FUNDING_STALE_GRACE_BARS × cadence) rejects it — an arbitrarily-old rate must not
+    // resurrect after a gap just because 62 is the next PROCESSED bar. So it is uncovered ⇒ 0.
+    const afterGapBar = at(62);
+    expect(afterGapBar).toBeDefined();
+    expect(afterGapBar.covered).toBe(false);
+    expect(afterGapBar.cost).toBe(0);
 
     const beyondGrace = at(63);
     expect(beyondGrace).toBeDefined();
     expect(beyondGrace.covered).toBe(false);
     expect(beyondGrace.cost).toBe(0);
+  });
+
+  it('adjacent missing bar within one cadence IS the allowed one-bar stale grace (charges one cadence)', async () => {
+    // Coverage ends after offset 2; the very next bar (offset 3) is one cadence later, so the offset-2
+    // snapshot is stale WITHIN grace by elapsed time and charges exactly one cadence — pinning the
+    // permitted grace (contrast the 60-minute gap above, which is rejected).
+    const { ledger, size } = await runRealismLedger('SYNTH', tape([0, 1, 2, 3], /* fundingUntil */ 2), [longTrade(0, 9999)]);
+    const staleBar = ledger.find((e) => e.ts === T0 + 3 * MIN)!;
+    expect(staleBar).toBeDefined();
+    expect(staleBar.covered).toBe(true);
+    expect(impliedMinutes(staleBar.cost, size, 100)).toBeCloseTo(1, 9);
   });
 
   it('no double-charge: at most one ledger entry per bar ts', async () => {

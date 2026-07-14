@@ -40,6 +40,7 @@ import type { SandboxPolicyRegistry } from './sandbox-policy.js';
 import { OverlayComposer } from './overlay.js';
 import { Portfolio } from './portfolio.js';
 import { fundingReadingAt } from './market-tape.js';
+import { parseTimeframeMs } from './timeframe.js';
 import { SUPPORTED_FILL_MODEL_KINDS } from './profiles.js';
 import { detectProtection } from './protection.js';
 import { type TrustedModuleRegistry } from './registry.js';
@@ -482,8 +483,10 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
   // Correct boundary semantics under next_bar_open: entry bar held full → charged; exit bar held 0 → skipped.
   if (exec.fundingEnabled() && portfolio.position !== null) {
     const pos = portfolio.position;
-    const reading = fundingReadingAt(fundingCol, gridTs, bar.ts, t);
-    const covered = reading.state !== 'missing';
+    // P2-19: pass the trusted cadence so the stale grace is ELAPSED-aware (age of the last covered bar
+    // vs the cadence), not previous-processed-index — a 60m-old rate must not resurrect across a gap.
+    const reading = fundingReadingAt(fundingCol, gridTs, bar.ts, t, cadenceMinutes * 60_000);
+    const covered = reading.state !== 'missing'; // present, or stale within the elapsed grace
     const rate = covered && reading.point !== undefined ? reading.point.fundingRate : 0;
     // P2-19: each processed bar realizes exactly ONE funding snapshot = one cadence period, charged at
     // the bar's rate. barMinutes is the SERVER-DERIVED cadence (the bar's duration), never a forward or
@@ -509,16 +512,6 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
   acc.equityCurve.push({ barIndex: t, barTs: bar.ts, equity: portfolio.equityAt(bar.close) });
 }
 
-/** P2-19: parse a server-validated dataset timeframe (e.g. '1m'/'5m'/'1h'/'1d') into the bar duration
- *  in minutes — the TRUSTED funding cadence (one snapshot per bar). Deliberately NOT inferred from the
- *  observed bar gaps, which are unreliable on a sparse tape (every observed delta may itself be a gap). */
-function timeframeToMinutes(tf: string): number {
-  const m = /^(\d+)(m|h|d)$/.exec(tf);
-  if (m === null) throw new Error(`funding: unrecognized dataset timeframe "${tf}"`);
-  const count = Number(m[1]);
-  return m[2] === 'h' ? count * 60 : m[2] === 'd' ? count * 60 * 24 : count;
-}
-
 /** Setup half of `runSymbol` (17b/Task-3 refactor): grid/funding derivation, session init, `BarEnv` construction. Callers must ensure `candles.length >= 1`. */
 async function buildBarEnv(
   symbol: string,
@@ -536,10 +529,16 @@ async function buildBarEnv(
   const { router, risk, exec, composer } = engine;
   const fundingCol = exec.fundingEnabled() ? marketTape?.funding(symbol) : undefined;
   const gridTs = exec.fundingEnabled() ? candles.map((b) => b.ts) : [];
-  // P2-19: funding cadence = the server-validated dataset timeframe (one snapshot per bar), NOT inferred
-  // from observed bar gaps. Only needed when funding is enabled (tape present); harmless default otherwise.
-  const cadenceMinutes =
-    exec.fundingEnabled() && marketTape !== undefined ? timeframeToMinutes(marketTape.timeframe) : 1;
+  // P2-19: funding cadence = the SERVER-validated dataset timeframe carried by the tape (one snapshot per
+  // bar), parsed via the shared parseTimeframeMs — never inferred from observed bar gaps. The tape's
+  // timeframe is bound to the DatasetDescriptor upstream in buildOverlayDataset, so this is trusted; a
+  // null (unparseable) here is a defensive fail-closed. Only needed when funding is enabled.
+  let cadenceMinutes = 1;
+  if (exec.fundingEnabled() && marketTape !== undefined) {
+    const ms = parseTimeframeMs(marketTape.timeframe);
+    if (ms === null) throw new Error(`funding: unparseable dataset timeframe "${marketTape.timeframe}"`);
+    cadenceMinutes = ms / 60_000;
+  }
   const module = strategy.module;
   const strategyExec = router.forStrategy(strategy);
 

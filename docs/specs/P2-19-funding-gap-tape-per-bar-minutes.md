@@ -42,6 +42,28 @@ const barMinutes = cadenceMinutes;                    // одна cadence-мин
   ограничивает начисление по факту (не «reading.state в начале интервала»).
 - **timeframeToMinutes**: парсит `'1m'/'5m'/'1h'/'1d'` → минуты; НЕ выводит из наблюдаемых дельт.
 
+### Провенанс cadence — server DatasetDescriptor, не client request (ревью #131)
+
+`marketTape.timeframe` в обычном engine-path шёл из client `request.timeframe` (worker →
+`buildOverlayDataset({ timeframe: r.timeframe })` → `marketTapeFromCanonicalRows` копирует строку). Клиент
+мог объявить реальный 1m-тейп как `60m` (каждый снимок → 60 мин funding) или передать `0m`. Фикс:
+`buildOverlayDataset` резолвит `DatasetDescriptor` через `port.listDatasets()`, **требует
+`request.timeframe === descriptor.timeframe`** (иначе `validation_error`, fail-closed ДО engine-run) и
+материализует tape из `descriptor.timeframe` (trusted). Движок парсит cadence общим
+`parseTimeframeMs` (main/#128) — `0m`/невалидное → `null` → fail-closed; НЕ второй слабее валидированный
+parser.
+
+### Elapsed-aware stale grace (ревью #131)
+
+`FUNDING_STALE_GRACE_BARS` проверялся по предыдущему ОБРАБОТАННОМУ индексу: снимок на 2m считался stale
+на следующем обработанном баре 62m (спустя 60 мин). Заряд был ограничен одной cadence-минутой, но
+произвольно старая ставка всё равно применялась. Фикс: `fundingReadingAt` принимает опциональный
+`cadenceMs`; grace-loop находит coverage-EDGE бар `m` (последнюю covered точку — НЕ sparse change-point
+в `point.ts`) и требует `minuteTs - m <= cadenceMs × FUNDING_STALE_GRACE_BARS` по ELAPSED времени.
+Runner передаёт trusted cadence; market-access (без `cadenceMs`) сохраняет прежний index-based grace.
+Итог: covered@2m, следующий бар 3m (в пределах cadence) → stale (разрешённый 1-баровый grace); covered@2m,
+следующий бар 62m → `missing`/0.
+
 ## Инвариант contiguous-parity (byte-identical на непрерывном тейпе)
 
 На непрерывном тейпе прежний `gridMinutes = (candles[1].ts - candles[0].ts)/60000` = server cadence,
