@@ -13,6 +13,14 @@ describe('promotion identity', () => {
     expect(a).toBe(b);
     expect(a).toBe(c);
   });
+  it('family key DOES change on datasetRef / timeframe / hint (fields are load-bearing)', () => {
+    const a = computePromotionFamilyKey(req);
+    expect(computePromotionFamilyKey({ ...req, datasetRef: 'other' })).not.toBe(a);
+    expect(computePromotionFamilyKey({ ...req, timeframe: '1h' })).not.toBe(a);
+    expect(computePromotionFamilyKey({ ...req, trialFamilyHint: 'hinted' })).not.toBe(a);
+    // moduleRef.id feeds hint only when trialFamilyHint is absent
+    expect(computePromotionFamilyKey({ ...req, moduleRef: { id: 'other' } })).not.toBe(a);
+  });
   it('epoch key differs on epochId / policyVersion; attemptIdentity differs on datasetFingerprint', () => {
     expect(computeQualificationEpochKey('fam', 'e1', 'p1')).not.toBe(computeQualificationEpochKey('fam', 'e2', 'p1'));
     expect(computeQualificationEpochKey('fam', 'e1', 'p1')).not.toBe(computeQualificationEpochKey('fam', 'e1', 'p2'));
