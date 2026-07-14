@@ -19,12 +19,13 @@ export interface ComputeLockStore {
   renew(computeIdentity: string, workerId: string, untilMs: number): Promise<void>;
   /** Proactively expire (lockExpiresAtMs = nowMs) only while the caller owns the lock. */
   expire(computeIdentity: string, workerId: string, nowMs: number): Promise<void>;
-  /** P3-6a: eager release — DELETE the row (only while the caller owns it) so the table does not grow
-   *  one dead row per successful compute. Followers wake via the cache index, not this lock. */
-  release(computeIdentity: string, workerId: string): Promise<void>;
-  /** P3-6a: cleanup — DELETE every row expired beyond the grace window (lockExpiresAtMs < nowMs -
-   *  olderThanMs). Removes orphaned locks (leader crashed, no follower re-elected). Returns the count. */
-  sweepExpired(nowMs: number, olderThanMs: number): Promise<number>;
+  /** P3-6a: eager release — DELETE the row ONLY while the caller owns this exact generation
+   *  (workerId AND leaderRunId), so a stale leader cannot delete a freshly re-elected lock that a new
+   *  run happened to acquire under the same workerId. Followers wake via the cache index, not this lock. */
+  release(computeIdentity: string, workerId: string, leaderRunId: string): Promise<void>;
+  /** P3-6a: cleanup — DELETE up to `batchLimit` rows expired beyond the grace window (lockExpiresAtMs <
+   *  nowMs - olderThanMs), oldest first. Bounded to avoid a hot full-table DELETE. Returns the count. */
+  sweepExpired(nowMs: number, olderThanMs: number, batchLimit: number): Promise<number>;
   get(computeIdentity: string): Promise<ComputeLock | undefined>;
 }
 
@@ -61,21 +62,20 @@ export class InMemoryComputeLockStore implements ComputeLockStore {
     }
   }
 
-  async release(ci: string, workerId: string): Promise<void> {
+  async release(ci: string, workerId: string, leaderRunId: string): Promise<void> {
     const row = this.rows.get(ci);
-    if (row && row.lockOwnerWorkerId === workerId) this.rows.delete(ci);
+    if (row && row.lockOwnerWorkerId === workerId && row.leaderRunId === leaderRunId) this.rows.delete(ci);
   }
 
-  async sweepExpired(nowMs: number, olderThanMs: number): Promise<number> {
+  async sweepExpired(nowMs: number, olderThanMs: number, batchLimit: number): Promise<number> {
     const threshold = nowMs - olderThanMs;
-    let deleted = 0;
-    for (const [ci, row] of this.rows) {
-      if (row.lockExpiresAtMs < threshold) {
-        this.rows.delete(ci);
-        deleted += 1;
-      }
-    }
-    return deleted;
+    // Oldest-expired first, capped at batchLimit — mirrors the Pg ORDER BY … LIMIT.
+    const expired = [...this.rows.values()]
+      .filter((r) => r.lockExpiresAtMs < threshold)
+      .sort((a, b) => a.lockExpiresAtMs - b.lockExpiresAtMs)
+      .slice(0, Math.max(0, batchLimit));
+    for (const r of expired) this.rows.delete(r.computeIdentity);
+    return expired.length;
   }
 
   async get(ci: string): Promise<ComputeLock | undefined> {

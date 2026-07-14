@@ -32,27 +32,43 @@ describe('InMemoryComputeLockStore', () => {
     expect(await s.acquire('ci', 'run-C', 'w3', 6001, 100)).toBe(true); // now takeable
   });
 
-  // P3-6a: eager release DELETES the row (not just expires it) so the table does not grow one dead row
-  // per compute. Only the owner may delete.
-  it('release deletes the row for the owner; a non-owner is a no-op', async () => {
+  // P3-6a: eager release DELETES the row (not just expires it), fenced by (owner, leaderRunId) so a
+  // stale leader cannot delete a re-elected lock. Only the owning generation may delete.
+  it('release deletes the row for the owning generation; wrong owner or stale run is a no-op', async () => {
     const s = new InMemoryComputeLockStore();
     await s.acquire('ci', 'run-A', 'w1', 1000, 100);
-    await s.release('ci', 'w2'); // wrong owner -> row stays
+    await s.release('ci', 'w2', 'run-A'); // wrong owner -> row stays
     expect(await s.get('ci')).toBeDefined();
-    await s.release('ci', 'w1'); // owner -> deleted
+    await s.release('ci', 'w1', 'run-A'); // owner + run -> deleted
     expect(await s.get('ci')).toBeUndefined();
   });
 
-  // P3-6a: sweepExpired removes orphaned locks expired beyond a grace window (nowMs - olderThanMs),
-  // leaving live locks (and ones expired only recently, still within grace) in place.
-  it('sweepExpired removes rows expired beyond grace, keeps live and within-grace rows', async () => {
+  // P3-6a (review): a stale leader (same workerId, OLD run) must NOT delete a lock a NEW run re-acquired
+  // under the same workerId after takeover — the release is fenced on leaderRunId too.
+  it('a stale run does NOT release a re-elected lock held by a new run under the same workerId', async () => {
+    const s = new InMemoryComputeLockStore();
+    await s.acquire('ci', 'run-A', 'w1', 1000, 100); // A wins, expires 1100
+    await s.acquire('ci', 'run-B', 'w1', 1200, 100); // A expired -> B (same worker) takes over
+    await s.release('ci', 'w1', 'run-A'); // stale A -> must NOT delete B's lock
+    expect((await s.get('ci'))?.leaderRunId).toBe('run-B');
+    await s.release('ci', 'w1', 'run-B'); // B (current) -> deletes
+    expect(await s.get('ci')).toBeUndefined();
+  });
+
+  // P3-6a: sweepExpired removes orphaned locks expired beyond a grace window, bounded by batchLimit
+  // (oldest first), leaving live and within-grace rows.
+  it('sweepExpired removes beyond-grace rows oldest-first, bounded by batchLimit', async () => {
     const s = new InMemoryComputeLockStore();
     await s.acquire('alive', 'run-A', 'w1', 1000, 100); // expires 1100
-    await s.acquire('old', 'run-B', 'w1', 500, 100); // expires 600
-    await s.sweepExpired(2000, 1000); // threshold 1000: delete expiresAt < 1000
-    expect(await s.get('old')).toBeUndefined(); // 600 < 1000 -> swept
-    expect(await s.get('alive')).toBeDefined(); // 1100 >= 1000 -> kept
-    await s.sweepExpired(2000, 1500); // threshold 500: nothing below -> alive kept
+    await s.acquire('old1', 'run-B', 'w1', 300, 100); // expires 400
+    await s.acquire('old2', 'run-C', 'w1', 500, 100); // expires 600
+    // threshold 1000: old1(400) + old2(600) eligible; batchLimit 1 -> only the OLDEST (old1).
+    expect(await s.sweepExpired(2000, 1000, 1)).toBe(1);
+    expect(await s.get('old1')).toBeUndefined();
+    expect(await s.get('old2')).toBeDefined();
+    // second pass sweeps the rest (batchLimit 10); alive stays.
+    expect(await s.sweepExpired(2000, 1000, 10)).toBe(1);
+    expect(await s.get('old2')).toBeUndefined();
     expect(await s.get('alive')).toBeDefined();
   });
 });
