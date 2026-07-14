@@ -48,10 +48,14 @@ export function evaluatePromotionWindow(input: {
   readonly holdoutWindow: RunPeriod;   // non-null: the worker handled holdout_unavailable already
   readonly runPeriod: RunPeriod; readonly thresholds: EvidenceThresholds;
   readonly policyMetrics: readonly string[]; readonly minWarmupBars: number; readonly minTrades: number;
-  /** Per-symbol ACTUAL bar start-timestamps of the FROZEN executed tape + the TRUSTED request timeframe —
-   *  inputs to the fail-closed completeness guard below. */
+  /** Per-symbol ACTUAL bar start-timestamps of the FROZEN executed tape. */
   readonly executedBarTimes: ReadonlyArray<readonly number[]>;
-  readonly timeframe: string;
+  /** The client-declared timeframe (untrusted — submit only checks it's a non-empty string). */
+  readonly requestTimeframe: string;
+  /** The SERVER-derived dataset timeframe, frozen with coverage. The grid is built from THIS, and the
+   *  request must equal it — otherwise a client could relabel a sparse fine tape as a coarse one to fake
+   *  full coverage (bars at 6d,8d "cover" [6d,10d) if you claim '2d'). */
+  readonly datasetTimeframe: string;
 }):
   | { outcome: 'reject'; reason: 'holdout_not_covered' | 'warmup_insufficient' | 'evaluation_insufficient' }
   | { outcome: 'evaluated'; verdict: 'passed' | 'failed'; candidateHoldoutMetrics: Record<string, number>; curatedHoldoutMetrics: Record<string, number> } {
@@ -66,7 +70,10 @@ export function evaluatePromotionWindow(input: {
   // (never inferred from bar spacing — a leading gap would inflate it and mask a missing tail). Unknown
   // timeframe, no symbols, or any incomplete symbol ⇒ evaluation_insufficient, returned BEFORE the ledger
   // write and signing — so a signed v2 evaluationWindow can never claim a span the tape didn't fully cover.
-  const interval = parseTimeframeMs(input.timeframe);
+  // The request timeframe must equal the SERVER-derived dataset timeframe, and the grid is built from the
+  // server value (never the client's). A mismatch means the client relabeled the data (e.g. calling a 1m
+  // dataset '2d' so a sparse 6d/8d tape looks like full 2d coverage) — fail closed.
+  const interval = input.requestTimeframe === input.datasetTimeframe ? parseTimeframeMs(input.datasetTimeframe) : null;
   const covered = interval !== null && input.executedBarTimes.length > 0 && input.executedBarTimes.every(
     (bars) => symbolCoversWindow(bars, wFrom, wTo, interval),
   );

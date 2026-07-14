@@ -46,9 +46,11 @@ export interface PromotionCtx {
   readonly datasetFingerprint: string;
   readonly coverage: RunPeriod | null;
   /** Per-symbol ACTUAL bar start-times of the FROZEN executed tape — the completeness guard's input, so a
-   *  partial/short/gappy tape can't sign a full-window scope claim. (The trusted grid step is derived from
-   *  claimed.request.timeframe inside resolvePromotionGate.) */
+   *  partial/short/gappy tape can't sign a full-window scope claim. */
   readonly executedBarTimes: ReadonlyArray<readonly number[]>;
+  /** SERVER-derived dataset timeframe, frozen with coverage (null = dataset not found). The grid is built
+   *  from this, and request.timeframe must equal it — a client can't relabel the data's cadence. */
+  readonly datasetTimeframe: string | null;
   readonly runId: string;
   readonly clock: () => number;
   readonly writeArtifact: (artifact: { body: unknown; signature: string }) => Promise<string>;
@@ -72,14 +74,14 @@ export async function resolvePromotionGate(
     const integrity = evaluatePromotionIntegrity({ candidate: ctx.candidate, curated: ctx.curated, bundleGateRejected: bundleRejected(ctx.bundle) });
     if (integrity.outcome === 'reject') return nq(integrity.reason);
     const epoch = await deps.epochResolver.resolve(claimed);
-    if (!epoch || ctx.coverage === null) return nq('holdout_unavailable');
+    if (!epoch || ctx.coverage === null || ctx.datasetTimeframe === null) return nq('holdout_unavailable');
     let window: RunPeriod;
     try { window = computeHoldoutWindow(ctx.coverage, deps.policy.fraction); }
     catch { return nq('holdout_unavailable'); }
     const w = evaluatePromotionWindow({ candidate: ctx.candidate, curated: ctx.curated, holdoutWindow: window,
       runPeriod: claimed.request.period, thresholds: deps.policy.thresholds, policyMetrics: deps.policy.metrics,
       minWarmupBars: deps.policy.minWarmupBars, minTrades: deps.policy.minTrades,
-      executedBarTimes: ctx.executedBarTimes, timeframe: claimed.request.timeframe });
+      executedBarTimes: ctx.executedBarTimes, requestTimeframe: claimed.request.timeframe, datasetTimeframe: ctx.datasetTimeframe });
     if (w.outcome === 'reject') return nq(w.reason, { evaluationWindow: window });
     // record REGARDLESS of pass/fail (counter advances for failed too) — verdict computed BEFORE ledger
     const epochKey = computeQualificationEpochKey(

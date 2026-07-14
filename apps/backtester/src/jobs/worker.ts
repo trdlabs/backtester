@@ -546,6 +546,9 @@ interface Materialized {
    * shift the window OUT of the executed tape ⇒ not_covered ⇒ not_qualified (fail-closed, never a false pass).
    */
   coverage?: RunPeriod | null;
+  /** E4b: server-derived dataset timeframe, frozen alongside coverage (same descriptor). The completeness
+   *  guard builds its grid from this and requires request.timeframe to equal it. */
+  datasetTimeframe?: string | null;
 }
 
 /**
@@ -594,14 +597,21 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
       metrics: r.metrics,
       ...(r.robustnessChecks !== undefined ? { robustnessChecks: r.robustnessChecks } : {}),
     };
-    // E4b: freeze the coverage span BEFORE the engine runs (immutable qualification context). Only for a
-    // gated promotion run — a no-op read otherwise. Resolved from the same dataPort as the tape above.
-    const coverage = (deps.promotion?.enabled && r.mode === 'promotion')
-      ? ((await deps.dataPort.listDatasets().catch(() => [])).find((d) => d.datasetRef === r.datasetRef)?.period ?? null)
-      : undefined;
+    // E4b: freeze the coverage span AND the server-derived dataset timeframe BEFORE the engine runs
+    // (immutable qualification context). Only for a gated promotion run — a no-op read otherwise. Both come
+    // from the SAME descriptor read on the same dataPort as the tape above, so the grid step used by the
+    // completeness guard is the dataset's real cadence, never the client's declared timeframe.
+    let coverage: RunPeriod | null | undefined;
+    let datasetTimeframe: string | null | undefined;
+    if (deps.promotion?.enabled && r.mode === 'promotion') {
+      const descriptor = (await deps.dataPort.listDatasets().catch(() => [])).find((d) => d.datasetRef === r.datasetRef);
+      coverage = descriptor?.period ?? null;
+      datasetTimeframe = descriptor?.timeframe ?? null;
+    }
     return {
       engine, datasetFingerprint: dsFingerprint, engineRequest, marketTape,
       ...(coverage !== undefined ? { coverage } : {}),
+      ...(datasetTimeframe !== undefined ? { datasetTimeframe } : {}),
     };
   }
   // ===== MOMENTUM =====
@@ -961,8 +971,8 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           const pr = await workerInternals.resolvePromotionGate(deps.promotion, claimed, {
             candidate: outcome, curated, signingKey: deps.evidenceSigningKey,
             bundle: sandboxBundle!.bundle, bundleBytes, datasetFingerprint: dsFingerprint,
-            coverage, executedBarTimes, runId, clock: deps.clock,
-            writeArtifact: (a) => deps.artifactStore.write(a),
+            coverage, datasetTimeframe: materialized.datasetTimeframe ?? null, executedBarTimes,
+            runId, clock: deps.clock, writeArtifact: (a) => deps.artifactStore.write(a),
           });
           promotionResult = pr?.promotion;
           if (pr?.evidenceRef) evidenceRef = pr.evidenceRef;   // v2 evidenceRef (artifactType 'backtest-evidence/v2')

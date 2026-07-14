@@ -107,6 +107,7 @@ describe('resolvePromotionGate (E4b)', () => {
       bundleBytes: new TextEncoder().encode('x'),
       datasetFingerprint: 'dsf',
       coverage: COVERAGE,
+      datasetTimeframe: '1d', // server timeframe == request '1d'
       executedBarTimes: [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => d * DAY)], // full daily grid covers [6d,10d)
       runId: 'run-1',
       clock: () => 1,
@@ -189,6 +190,24 @@ describe('resolvePromotionGate (E4b)', () => {
     expect(spy).not.toHaveBeenCalled();            // fail-closed: no ledger row
     expect(writeArtifact).not.toHaveBeenCalled();  // fail-closed: no signed v2 evidence
     expect(r?.evidenceRef).toBeUndefined();
+  });
+
+  it('relabeled timeframe (request != server datasetTimeframe) ⇒ evaluation_insufficient, no ledger, nothing signed', async () => {
+    const deps = baseDeps();
+    const spy = vi.spyOn(deps.ledger, 'recordIfNewAndGetAttempt');
+    const writeArtifact = vi.fn(async () => 'sha256:art');
+    // request declares '1d' (makeClaimed) but the SERVER dataset is really '1m' — a relabel; must fail closed.
+    const r = await resolvePromotionGate(deps, makeClaimed(), baseCtx({ datasetTimeframe: '1m', writeArtifact }));
+    expect(r?.promotion).toMatchObject({ verdict: 'not_qualified', reason: 'evaluation_insufficient' });
+    expect(spy).not.toHaveBeenCalled();
+    expect(writeArtifact).not.toHaveBeenCalled();
+    expect(r?.evidenceRef).toBeUndefined();
+  });
+
+  it('server dataset not found (datasetTimeframe null) ⇒ holdout_unavailable', async () => {
+    const deps = baseDeps();
+    const r = await resolvePromotionGate(deps, makeClaimed(), baseCtx({ datasetTimeframe: null }));
+    expect(r?.promotion).toMatchObject({ verdict: 'not_qualified', reason: 'holdout_unavailable' });
   });
 
   it("evaluated verdict 'failed' ⇒ ledger recorded, reason metrics_failed, attemptNumber set, no evidenceRef", async () => {

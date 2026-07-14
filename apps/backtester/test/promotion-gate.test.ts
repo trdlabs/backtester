@@ -18,7 +18,9 @@ const trd = (entryDay: number, exitDay: number, pnl: number): Trade => ({ id: `t
 // the window [6d,10d) is covered at BOTH boundaries (a bar at 6d covers the left, a bar at 9d reaches 10d).
 // timeframe is the TRUSTED grid step (parsed to ms), never inferred from bar spacing.
 const FULL_BARS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => d * DAY);
-const win = { holdoutWindow: holdout, runPeriod, thresholds: THRESH, policyMetrics: POLICY, minWarmupBars: 2, minTrades: 1, executedBarTimes: [FULL_BARS], timeframe: '1d' };
+// Grid is built from the SERVER-DERIVED datasetTimeframe (trusted), and the request timeframe must equal it
+// — a client can't relabel a sparse fine tape as a coarse one to fake full coverage.
+const win = { holdoutWindow: holdout, runPeriod, thresholds: THRESH, policyMetrics: POLICY, minWarmupBars: 2, minTrades: 1, executedBarTimes: [FULL_BARS], requestTimeframe: '1d', datasetTimeframe: '1d' };
 
 describe('evaluatePromotionIntegrity', () => {
   it('gate_rejected wins first', () => {
@@ -91,9 +93,9 @@ describe('evaluatePromotionWindow', () => {
   it('evaluation_insufficient when declared timeframe is COARSER than the real tape cadence (extra in-window bars)', () => {
     const HOUR = 3_600_000;
     const eq = oc(warmEquity, [trd(7, 8, 5)]);
-    // hourly bars 5d..10d but timeframe declared '1d': 96 in-window bars vs 4 expected daily slots ⇒ mismatch.
+    // hourly bars 5d..10d but server timeframe '1d' (from win): 96 in-window bars vs 4 daily slots ⇒ mismatch.
     const hourly = [Array.from({ length: 24 * 5 }, (_, i) => 5 * DAY + i * HOUR)];
-    expect(evaluatePromotionWindow({ ...win, executedBarTimes: hourly, timeframe: '1d', candidate: eq, curated: eq }))
+    expect(evaluatePromotionWindow({ ...win, executedBarTimes: hourly, candidate: eq, curated: eq }))
       .toEqual({ outcome: 'reject', reason: 'evaluation_insufficient' });
   });
   it('evaluation_insufficient when ANY symbol is uncovered even if others are complete (per-symbol guard)', () => {
@@ -104,7 +106,23 @@ describe('evaluatePromotionWindow', () => {
   });
   it('evaluation_insufficient (fail-closed) on an unknown/unparseable timeframe even with full bars', () => {
     const eq = oc(warmEquity, [trd(7, 8, 5)]);
-    expect(evaluatePromotionWindow({ ...win, timeframe: 'bogus', candidate: eq, curated: eq }))
+    expect(evaluatePromotionWindow({ ...win, requestTimeframe: 'bogus', datasetTimeframe: 'bogus', candidate: eq, curated: eq }))
+      .toEqual({ outcome: 'reject', reason: 'evaluation_insufficient' });
+  });
+  it('evaluation_insufficient when request timeframe != server datasetTimeframe (relabel attack)', () => {
+    // Attack: a sparse 1m tape with bars only at 6d & 8d, relabeled '2d' to fake full coverage of [6d,10d).
+    // The grid is built from the SERVER datasetTimeframe, and request must equal it — so the mismatch rejects.
+    const eq = oc([pt(1, 100), pt(6, 110), pt(8, 130)], [trd(6, 8, 5)]);
+    const sparse = [[0, 6, 8].map((d) => d * DAY)];
+    expect(evaluatePromotionWindow({ ...win, executedBarTimes: sparse, requestTimeframe: '2d', datasetTimeframe: '1m', candidate: eq, curated: eq }))
+      .toEqual({ outcome: 'reject', reason: 'evaluation_insufficient' });
+  });
+  it('evaluation_insufficient when the sparse tape matches a relabeled coarse request but the SERVER timeframe is fine', () => {
+    // Even if request==dataset were both honestly '1m', a sparse tape (bars 6d,8d only) can't cover [6d,10d)
+    // on the 1m grid — thousands of slots missing. Confirms server-grid defeats the sparse-coarse fake.
+    const eq = oc([pt(1, 100), pt(6, 110), pt(8, 130)], [trd(6, 8, 5)]);
+    const sparse = [[0, 6, 8].map((d) => d * DAY)];
+    expect(evaluatePromotionWindow({ ...win, executedBarTimes: sparse, requestTimeframe: '1m', datasetTimeframe: '1m', candidate: eq, curated: eq }))
       .toEqual({ outcome: 'reject', reason: 'evaluation_insufficient' });
   });
 });
