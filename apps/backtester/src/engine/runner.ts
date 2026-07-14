@@ -897,6 +897,27 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
   if (strategy === undefined) {
     return rejected('invalid_module_ref', `moduleRef не найден в registry: ${request.moduleRef.id}@${request.moduleRef.version}`, '/moduleRef');
   }
+  // P2-20: a multi-symbol TRUSTED in-process run reuses ONE `module` object across all symbols
+  // (simulateTarget/runBarMajor's non-factory branch), so a stateful module leaks state between symbols
+  // — diverging from the sandbox twin (which instantiates a per-symbol isolated instance; the container
+  // may be shared under universe mode), and making the barMajor flip change results. Fail-fast: N>1
+  // requires a moduleFactory. A bundle strategy is exempt ONLY when it will ACTUALLY route to the
+  // sandbox — the SAME predicate the router uses (`provenance === 'bundle' && bundle !== undefined`):
+  // provenance alone is metadata, not a privilege, so a forged/incomplete bundle-provenance without a
+  // handle must NOT slip past the guard (it would run trusted in-process and leak).
+  const routesToSandbox = strategy.provenance === 'bundle' && strategy.bundle !== undefined;
+  if (
+    request.symbols.length > 1 &&
+    strategy.moduleFactory === undefined &&
+    !routesToSandbox
+  ) {
+    return rejected(
+      'invalid_module_ref',
+      `multi-symbol run (${request.symbols.length} symbols) of trusted strategy '${request.moduleRef.id}@${request.moduleRef.version}' requires a moduleFactory: without per-symbol instantiation a stateful module leaks state across symbols and diverges from the per-symbol-isolated sandbox twin`,
+      '/symbols',
+    );
+  }
+
   if (request.riskProfileRef === undefined) {
     return rejected('missing_risk_profile', 'riskProfileRef не привязан', '/riskProfileRef');
   }

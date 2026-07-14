@@ -23,7 +23,9 @@ export interface OverlayRunPresetDef {
 // Use the GENERAL contract types (matching `RegistryInput` in engine/registry.ts) so the definition
 // accepts any registered module/profile, not just the current example concretes.
 export interface RegistryDefinition {
-  readonly strategies: readonly StrategyModule[];
+  readonly strategies: readonly (StrategyModule & {
+    readonly moduleFactory?: (params: unknown) => StrategyModule;
+  })[];
   readonly overlays: readonly HypothesisOverlayModule[];
   readonly riskProfiles: readonly RiskProfile[];
   readonly executionProfiles: readonly ExecutionProfile[];

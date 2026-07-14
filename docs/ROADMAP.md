@@ -201,6 +201,25 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   allowed stale (1 cadence); plus a data-adapter provenance test (mismatched request timeframe rejected,
   matched materializes from the descriptor). realism-gap NON-CIRCULAR guard one-cadence-per-bar; 5b anchor
   holds. Rebased on main (#128 parseTimeframeMs). Full suite green.
+- **2026-07-14 — P2-20: multi-symbol trusted run requires a moduleFactory** (branch
+  `fix/stateful-module-factory-p2`, TDD; spec `docs/specs/P2-20-multi-symbol-module-factory.md`):
+  `simulateTarget`/`runBarMajor` reused ONE `module` object across all symbols when the strategy had no
+  `moduleFactory` — a stateful module leaked state between symbols and diverged from the per-symbol-
+  isolated sandbox twin (and the barMajor flip changed results), breaking the byte-identical-per-symbol
+  premise. Per the chosen blanket policy, `runBacktest` now fails-fast: a multi-symbol TRUSTED in-process
+  run (symbols > 1, provenance !== 'bundle') without a `moduleFactory` is rejected (`invalid_module_ref`,
+  path `/symbols`). Bundle strategies run one isolated sandbox session per symbol, so they are exempt (new
+  optional `provenance` on the engine `ResolvedStrategy`; `createTrustedRegistry` now propagates
+  `moduleFactory` and stamps `provenance:'trusted'` — it previously dropped the factory, which is why the
+  trusted twin path tripped the guard). The one trusted strategy, `shortAfterPump`, is stateless, so it
+  gets a trivial per-symbol factory (fresh { manifest, onBarClose }) — byte-identical output, the frozen
+  bar-major golden holds. Tests: a guard unit test (reject N>1 no-factory; allow single-symbol; allow N>1
+  with factory), `runner-universe-cap`'s test module updated to carry a factory, and the non-Docker
+  bar-major frozen golden. The Docker twin/universe equivalence tests (trusted==sandbox under the factory)
+  are CI-validated — WSL2 Docker was unavailable this session; the non-Docker golden parts plus the
+  relative (ON==OFF, factory applied to both sides) structure confirm equivalence. Full non-Docker suite
+  green (1136 passed).
+
 ## Feature 1: Client Contract Alignment ✅ DONE
 
 **Goal:** remove the contract gap between `trading-backtester` and `trading-lab`.

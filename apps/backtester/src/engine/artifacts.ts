@@ -259,11 +259,23 @@ export interface ResolvedStrategy {
   readonly module: StrategyModule;
   readonly manifest: ModuleManifest;
   /**
+   * Провенанс (опц.; проставляется 019-registry). Метаданные, НЕ привилегия: sandbox-исполнение
+   * гарантирует изоляцию только вместе с bundle-handle (`bundle` ниже) — router уходит в sandbox лишь
+   * при `provenance === 'bundle' && bundle !== undefined`. `'trusted'`/undefined ⇒ in-process путь.
+   */
+  readonly provenance?: 'trusted' | 'bundle';
+  /**
+   * Опционально: handle sandbox-бандла (`ModuleBundle`; типизирован как `unknown` во избежание цикла
+   * artifacts→sandbox). Присутствует ⟺ стратегия реально маршрутизируется в sandbox. Guard (P2-20) и
+   * router ДОЛЖНЫ использовать один и тот же predicate `provenance === 'bundle' && bundle !== undefined`.
+   */
+  readonly bundle?: unknown;
+  /**
    * Опционально (trusted): фабрика для СВЕЖЕГО инстанса модуля per-symbol. Когда задана, runner
    * инстанцирует стратегию заново на каждый символ — так module-level FSM-state (в замыкании
-   * `createStrategyModule`) НЕ протекает между символами (twin-equivalence с sandbox, где каждый
-   * символ исполняется в своей сессии/контейнере). Не задана → переиспользуется `module` (поведение
-   * single-symbol неизменно).
+   * `createStrategyModule`) НЕ протекает между символами (twin-equivalence с sandbox, где каждый символ
+   * получает ОТДЕЛЬНЫЙ per-symbol инстанс — контейнер при этом может быть ОБЩИМ, universe mode). Не
+   * задана → переиспользуется `module` (поведение single-symbol неизменно).
    */
   readonly moduleFactory?: (params: unknown) => StrategyModule;
 }

@@ -26,11 +26,14 @@ function makeCandles(n: number): Bar[] {
   })) as unknown as Bar[];
 }
 
-function makeModule(): StrategyModule {
-  return {
+// P2-20: a multi-symbol trusted run requires a moduleFactory (per-symbol isolation). This module is
+// stateless, so the factory returns a fresh equivalent instance — it lets the cap logic under test run.
+function makeModule(): StrategyModule & { moduleFactory: () => StrategyModule } {
+  const mk = (): StrategyModule => ({
     manifest: { ...shortAfterPump.manifest, id: 'universe-cap-mod', version: '1.0.0', name: 'universe-cap-mod', hooks: ['onBarClose'] },
     onBarClose: () => ({ kind: 'idle' }),
-  } as unknown as StrategyModule;
+  } as unknown as StrategyModule);
+  return Object.assign(mk(), { moduleFactory: mk });
 }
 
 function makeDataset(symbols: readonly string[], n: number): CandleDataset {

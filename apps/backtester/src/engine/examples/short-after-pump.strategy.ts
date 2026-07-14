@@ -24,7 +24,7 @@ const paramsSchema = {
   },
 };
 
-export const shortAfterPump: StrategyModule = {
+export const shortAfterPump: StrategyModule & { moduleFactory: (params: unknown) => StrategyModule } = {
   manifest: {
     id: 'short_after_pump',
     version: '0.1.0',
@@ -72,6 +72,11 @@ export const shortAfterPump: StrategyModule = {
     }
     return { kind: 'idle' };
   },
+
+  // P2-20: multi-symbol runs require a moduleFactory for per-symbol isolation (blanket policy). This
+  // strategy is stateless (onBarClose above is a pure function of ctx), so a fresh { manifest, onBarClose }
+  // wrapper per symbol is trivially correct and byte-identical to reuse.
+  moduleFactory: (): StrategyModule => ({ manifest: shortAfterPump.manifest, onBarClose: shortAfterPump.onBarClose }),
 };
 
 /** Валидные sample-решения примера (для author-supplied проверки decision-схемы). */
