@@ -527,14 +527,17 @@ export class PgJobStore implements JobStore {
     return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
   }
 
-  async poisonComputeWaiter(runId: string, nowMs: number): Promise<boolean> {
-    const r = await this.pool.query(
+  async poisonComputeWaiter(runId: string, nowMs: number): Promise<JobRow | undefined> {
+    // #138 §2: RETURNING * so the poison CAS and the row fetch are one atomic statement — no separate
+    // get() that, if it failed, would drop the completion for an already-terminal (unrecoverable) job.
+    const r = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
          status = 'failed', terminal_at_ms = $2::bigint, terminal_code = 'compute_wait_exhausted',
          timeline_json = timeline_json || $3::jsonb
-       WHERE run_id = $1 AND status = 'waiting_for_compute'`,
+       WHERE run_id = $1 AND status = 'waiting_for_compute'
+       RETURNING *`,
       [runId, nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }])],
     );
-    return r.rowCount === 1;
+    return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
   }
 }

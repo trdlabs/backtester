@@ -171,7 +171,7 @@ export interface JobStore {
     nowMs: number,
   ): Promise<JobRow | undefined>;
   /** Poison an exhausted waiting_for_compute job → failed(compute_wait_exhausted). */
-  poisonComputeWaiter(runId: string, nowMs: number): Promise<boolean>;
+  poisonComputeWaiter(runId: string, nowMs: number): Promise<JobRow | undefined>;
 }
 
 export class InMemoryJobStore implements JobStore {
@@ -461,12 +461,15 @@ export class InMemoryJobStore implements JobStore {
     return ok ? this.jobs.get(next.runId) : undefined;
   }
 
-  async poisonComputeWaiter(runId: string, nowMs: number): Promise<boolean> {
-    return this.transition(runId, 'waiting_for_compute', 'failed', {
+  async poisonComputeWaiter(runId: string, nowMs: number): Promise<JobRow | undefined> {
+    // #138 §2: return the canonical row atomically with the CAS, so wake never needs a separate get()
+    // (a get failure would drop the completion for an already-terminal job that can't re-enter wake).
+    const ok = await this.transition(runId, 'waiting_for_compute', 'failed', {
       atMs: nowMs,
       terminalAtMs: nowMs,
       terminalCode: 'compute_wait_exhausted',
     });
+    return ok ? this.jobs.get(runId) : undefined;
   }
 }
 

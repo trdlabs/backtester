@@ -43,10 +43,12 @@ export async function wakeComputeWaiters(
     // Poison exhausted waiters first (independent of cache/lock).
     for (const w of group) {
       if (w.computeWaitAttempts >= deps.computeWaitMaxAttempts) {
-        if (await deps.store.poisonComputeWaiter(w.runId, now)) {
+        // #138 §2: poison returns the canonical row atomically (CAS winner only) — no separate get, so a
+        // poisoned completion is never dropped and is surfaced exactly once.
+        const row = await deps.store.poisonComputeWaiter(w.runId, now);
+        if (row) {
           poisoned += 1;
-          const row = await deps.store.get(w.runId);
-          if (row) poisonedJobs.push(row);
+          poisonedJobs.push(row);
         }
       }
     }

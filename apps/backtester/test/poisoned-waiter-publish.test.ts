@@ -82,3 +82,21 @@ describe('P2-6 — wake-path poison surfaces its rows and gets published', () =>
     expect(posted.filter((p) => p.event.runId === 'follower')).toHaveLength(1); // exactly one terminal event
   }, 6_000);
 });
+
+// #138 §2 — poisonComputeWaiter must return the canonical row atomically (UPDATE ... RETURNING), not a
+// boolean that forces a separate get(): if that get failed, the job was already terminal and would never
+// re-enter wake, so the completion would be lost.
+describe('P2-6 §2 — poisonComputeWaiter returns the canonical failed row atomically', () => {
+  it('returns the failed row on the CAS win and undefined on a repeat (no separate get)', async () => {
+    const store = new InMemoryJobStore();
+    await parkExhaustedFollower(store, 'p1', 'ci-1');
+
+    const row = await store.poisonComputeWaiter('p1', CLOCK + 1);
+    expect(row?.runId).toBe('p1');
+    expect(row?.status).toBe('failed');
+    expect(row?.terminalCode).toBe('compute_wait_exhausted');
+
+    const again = await store.poisonComputeWaiter('p1', CLOCK + 2); // already terminal
+    expect(again).toBeUndefined();
+  });
+});
