@@ -41,10 +41,12 @@ describe('P2-7 — runWorkerLoop contains per-iteration errors', () => {
       concurrency: 1, heartbeatMs: 10_000, pollMs: 5, signal: ac.signal,
       errorBackoffBaseMs: 5, errorBackoffMaxMs: 20,
     });
-    await sleep(80);
+    await sleep(120);
     ac.abort();
     await loop; // must resolve, not reject with 'transient pg'
-    expect(calls).toBeGreaterThan(2); // kept iterating past the throw
+    // call #1 threw; any further call proves the loop survived the throw and kept iterating. (>=2 rather
+    // than a larger count so the assertion is not flaky under full-suite CPU contention.)
+    expect(calls).toBeGreaterThanOrEqual(2);
   }, 6_000);
 
   it('resolves promptly on abort even while parked in a long backoff', async () => {

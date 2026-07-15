@@ -121,3 +121,23 @@ Backoff — новые опции `runWorkerLoop` (`errorBackoffBaseMs`, `errorB
 10. `app.ts::tick` бросок внутри drain/reap → `void tick()` не даёт unhandled rejection; `busy` сброшен.
 
 **Регрессии**: worker-loop / reap / coalesce-wake / idempotency зелёные; INV-6 OFF-путь byte-identical.
+
+## Ответ на ревью #138 (4 пункта)
+
+- **§1 (High) — гонка submit/reaper.** Расширение accepted-reap (P2-5) открыло гонку: `submitRun`
+  игнорировал результат `accepted→queued`. Reaper мог первым сделать `accepted→expired`, после чего submit
+  всё равно добавлял `job_queued` после terminal + возвращал stale-handle. Фикс: honor CAS — `job_queued`
+  только при успехе транзиции; при проигрыше гонки перечитываем и возвращаем каноническую terminal-строку,
+  без enqueue. Тест `submit-reaper-race.test.ts` (RED: `job_queued` после terminal).
+- **§2 (Medium) — разрыв poison CAS / get.** `poisonComputeWaiter` теперь `Promise<JobRow | undefined>`
+  (Pg `UPDATE … RETURNING *`, InMemory — каноническая строка на выигрыш CAS). `wakeComputeWaiters`
+  использует возвращённую строку — без отдельного `get`, completion не теряется. Тест
+  `poisoned-waiter-publish.test.ts` §2 (RED: boolean без `.status`).
+- **§3 (Medium) — упавший slot под бесконечным drain.** `runBoundedPool` на `allSettled` маскировал
+  падение одного slot'а до опустошения очереди (при concurrency>1 sibling дренирует вечно). Фикс:
+  cooperative-stop — упавший slot ставит флаг `stopped`, siblings прекращают тянуть НОВУЮ работу после
+  текущего in-flight-прогона, пул возвращается сразу с ошибкой → outer catch/backoff (P2-7) перезаходит в
+  `drainQueue` на полном concurrency (это и есть recovery slot'а). Тест `pool-slot-recovery.test.ts` (RED:
+  пул зависает под sustained-sibling).
+- **§4 (Medium) — Pg-покрытие accepted-reap.** Добавлен `pg-reap-accepted.test.ts` — реальный PgJobStore
+  дискриминатор ветки `WHERE status IN ('queued','accepted')` (скипается локально, бежит в Postgres-lane).
