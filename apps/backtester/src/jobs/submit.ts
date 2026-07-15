@@ -318,7 +318,15 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmitRequest): Promi
 
   await deps.store.appendEvent(eventRow(deps.store, deps.uid(), runId, runId, 'job_accepted', now));
   const queuedAt = deps.clock();
-  await deps.store.transition(runId, 'accepted', 'queued', { atMs: queuedAt, queuedAtMs: queuedAt });
+  // P2-5 race (#138 §1): honor the CAS. reapDeadlines now expires an `accepted` job past its queue
+  // deadline, so a concurrent reaper may terminalize this row between insertOrGet and here. If the
+  // accepted->queued transition loses that race, DO NOT append job_queued (it would land AFTER a terminal
+  // state) — re-read and return the canonical (terminal) row instead of a stale accepted snapshot.
+  const enqueued = await deps.store.transition(runId, 'accepted', 'queued', { atMs: queuedAt, queuedAtMs: queuedAt });
+  if (!enqueued) {
+    const canonical = (await deps.store.get(runId)) ?? job;
+    return { handle: toHandle(canonical, false), created: true };
+  }
   await deps.store.appendEvent(eventRow(deps.store, deps.uid(), runId, runId, 'job_queued', queuedAt));
 
   return { handle: toHandle(job, false), created: true };
