@@ -1,5 +1,17 @@
 # P2-12 — Data-fetch resilience: timeout, bounded retry, pagination guards
 
+> **ИСПРАВЛЕНИЕ SCOPE (ревью #140).** Изначальная версия этой спеки ошибочно назвала контуром 2
+> `@trading-backtester/sdk` `BacktesterClient`. Настоящая цель P2-12 (CODE-REVIEW:100) — **`HttpDataPort`**
+> + кросс-репный **`@trdlabs/sdk` `HistoricalClient`** (держит production `dataSource=real|mock` через
+> `RowsDataPort`). Итоговое разбиение:
+> - **#140 (этот репо)** — только `HttpDataPort` (контур 1), с закрытыми багами ревью #140: (2) timeout
+>   охватывает fetch + чтение/парсинг body; (3) backoff ограничен operation deadline (Retry-After не
+>   переполняет дедлайн).
+> - **Кросс-репный PR (`../sdk`)** — захардить `HistoricalClient` (`discover`/`coverage`/`queryRows`) теми
+>   же гарантиями; затем bump `@trdlabs/sdk` в backtester + wire `RowsDataPort`. Это закрывает production.
+> - **Отдельный `@trading-backtester/sdk` 0.9 PR** — `BacktesterClient` timeout/abort (полезно, но не цель
+>   P2-12), с закрытыми багами (2) body-under-timeout и (4) abortable backoff/polling sleep. Убран из #140.
+
 Из `CODE-REVIEW-2026-07-12.md` P2-12. Два ownership-контура, одна спека, два TDD-слайса/коммита (сначала
 service data-port, затем публичный SDK-клиент + release):
 

@@ -5,11 +5,12 @@
 // token for the data API itself. Rows are fetched lazily one page at a time (cursor paging), so a
 // full dataset never lands in memory and the consumer drives back-pressure.
 //
-// P2-12 resilience: every request has a per-request timeout (AbortController) and a bounded retry
-// (transient network / 408 / 429 / 5xx only; 4xx-except-408/429 fail fast); the cursor loop detects a
-// repeated cursor and enforces max pages/rows fail-closed BEFORE materialize() can grow. All failures
-// map to RealDataUnavailableError (the existing data taxonomy → worker terminal `missing_dataset`), so
-// a hung or looping upstream can never wedge a claiming worker.
+// P2-12 resilience: every request has a per-request timeout (AbortController) that spans fetch AND body
+// read/parse — a stalled body cannot wedge a worker; a bounded retry (transient network / body-parse /
+// 408 / 429 / 5xx only; 4xx-except-408/429 fail fast) with a deadline-capped backoff; and the cursor
+// loop detects a repeated cursor and enforces max pages/rows fail-closed BEFORE materialize() can grow.
+// All failures map to RealDataUnavailableError (the existing data taxonomy → worker terminal
+// `missing_dataset`), so a hung or looping upstream can never wedge a claiming worker.
 
 import type {
   DatasetDescriptor,
@@ -30,7 +31,7 @@ export interface HttpDataPortOptions {
   readonly pageLimit?: number;
   /** Injectable fetch (for tests). Defaults to globalThis.fetch. */
   readonly fetchImpl?: FetchImpl;
-  /** Per-request timeout (ms). A request that does not settle in time is aborted and retried. Default 30000. */
+  /** Per-request timeout (ms) — spans fetch + body read/parse. Default 30000. */
   readonly timeoutMs?: number;
   /** Total attempts per request including the first (1 = no retry). Default 3. */
   readonly maxAttempts?: number;
@@ -42,7 +43,7 @@ export interface HttpDataPortOptions {
   readonly maxPages?: number;
   /** Fail-closed cap on rows accumulated by a single queryRange (guards materialize growth). Default 5_000_000. */
   readonly maxRows?: number;
-  /** Optional operation deadline (ms) bounding a whole queryRange across pages+retries. 0 = off. Default 0. */
+  /** Optional operation deadline (ms) bounding a whole queryRange across pages+retries+sleeps. 0 = off. Default 0. */
   readonly operationDeadlineMs?: number;
   /** @internal test seam — replaces real backoff sleeping. */
   readonly sleepImpl?: (ms: number) => Promise<void>;
@@ -76,18 +77,26 @@ function backoffMs(attempt: number, r: Resilience): number {
   return Math.max(1, Math.floor(Math.random() * exp)); // full jitter
 }
 
+/** Sleep `ms`, but never past the operation deadline — so a long Retry-After can't overshoot it. */
+async function sleepBounded(ms: number, deadlineAt: number | undefined, r: Resilience): Promise<void> {
+  const capped = deadlineAt !== undefined ? Math.min(ms, Math.max(0, deadlineAt - Date.now())) : ms;
+  if (capped > 0) await r.sleep(capped);
+}
+
 /**
- * Fetch `url` with a per-request timeout + bounded retry, mapping every terminal failure to a
- * RealDataUnavailableError. All data-API requests are GET (idempotent), so a network throw is retryable.
- * `deadlineAt` (absolute epoch ms) caps the total time across retries when set.
+ * Fetch `url` with a per-request timeout that spans BOTH the fetch and the body read/parse, plus a
+ * bounded retry. All data-API requests are GET (idempotent), so a network / timeout / body-parse error
+ * is retryable. `readBody` false skips the body (reachability probe, e.g. openDataset). Every terminal
+ * failure is a RealDataUnavailableError. `deadlineAt` (absolute epoch ms) caps the total time.
  */
-async function resilientFetch(
+async function resilientRequest<T>(
   url: string,
   headers: Record<string, string>,
   r: Resilience,
   datasetRef: string,
   deadlineAt: number | undefined,
-): Promise<Response> {
+  readBody: boolean,
+): Promise<T | undefined> {
   let lastCause: RealDataCause = 'rows_resource_unavailable';
   for (let attempt = 1; attempt <= r.maxAttempts; attempt += 1) {
     if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
@@ -102,21 +111,25 @@ async function resilientFetch(
       ctrl.abort();
     }, budget);
 
-    let res: Response;
+    let outcome: { ok: true; body: T | undefined } | { ok: false; status: number; retryAfter?: number };
     try {
-      res = await r.fetchImpl(url, { headers, signal: ctrl.signal });
+      const res = await r.fetchImpl(url, { headers, signal: ctrl.signal });
+      // The body read stays INSIDE the timer window: a stalled body aborts on the same signal.
+      if (res.ok) outcome = { ok: true, body: readBody ? ((await res.json()) as T) : undefined };
+      else outcome = { ok: false, status: res.status, retryAfter: res.status === 429 ? retryAfterMs(res) : undefined };
     } catch {
       clearTimeout(timer);
+      // Timeout (headers OR body) → 'timeout'; any other throw (network / body-parse) → transient unavailable.
       lastCause = timedOut ? 'timeout' : 'rows_resource_unavailable';
       if (attempt === r.maxAttempts) throw new RealDataUnavailableError(lastCause, datasetRef);
-      await r.sleep(backoffMs(attempt, r));
+      await sleepBounded(backoffMs(attempt, r), deadlineAt, r);
       continue;
     }
     clearTimeout(timer);
 
-    if (res.ok) return res;
+    if (outcome.ok) return outcome.body;
 
-    const status = res.status;
+    const status = outcome.status;
     // Permanent 4xx (except 408/429) → fail fast, no retry.
     if (status === 401 || status === 403) throw new RealDataUnavailableError('unauthorized', datasetRef);
     if (status === 404) throw new RealDataUnavailableError('dataset_not_found', datasetRef);
@@ -125,7 +138,7 @@ async function resilientFetch(
 
     lastCause = status === 429 ? 'rate_limited' : 'rows_resource_unavailable';
     if (attempt === r.maxAttempts) throw new RealDataUnavailableError(lastCause, datasetRef);
-    await r.sleep((status === 429 ? retryAfterMs(res) : undefined) ?? backoffMs(attempt, r));
+    await sleepBounded(outcome.retryAfter ?? backoffMs(attempt, r), deadlineAt, r);
   }
   throw new RealDataUnavailableError(lastCause, datasetRef);
 }
@@ -158,14 +171,14 @@ class HttpDatasetReader implements HistoricalDatasetReader {
       if (q.symbols && q.symbols.length > 0) params.set('symbols', q.symbols.join(','));
       if (cursor) params.set('cursor', cursor);
 
-      const res = await resilientFetch(
+      const page = (await resilientRequest<HistoricalRowsPage>(
         `${this.base}/data/v1/rows?${params.toString()}`,
         this.headers,
         this.r,
         this.datasetRef,
         deadlineAt,
-      );
-      const page = (await res.json()) as HistoricalRowsPage;
+        true,
+      ))!;
 
       // Fail-closed BEFORE yielding (materialize accumulates every yielded row): bound pages and rows.
       pages += 1;
@@ -213,19 +226,27 @@ export class HttpDataPort implements BacktesterDataPort {
   }
 
   async listDatasets(): Promise<DatasetDescriptor[]> {
-    const res = await resilientFetch(`${this.base}/data/v1/datasets`, this.headers, this.r, '(datasets)', undefined);
-    const body = (await res.json()) as { datasets: DatasetDescriptor[] };
+    const body = (await resilientRequest<{ datasets: DatasetDescriptor[] }>(
+      `${this.base}/data/v1/datasets`,
+      this.headers,
+      this.r,
+      '(datasets)',
+      undefined,
+      true,
+    ))!;
     return body.datasets;
   }
 
   async openDataset(datasetRef: string): Promise<HistoricalDatasetReader | undefined> {
     try {
-      await resilientFetch(
+      // Reachability probe (no body): resolves on 2xx, undefined on 404, else a typed failure.
+      await resilientRequest(
         `${this.base}/data/v1/datasets/${encodeURIComponent(datasetRef)}`,
         this.headers,
         this.r,
         datasetRef,
         undefined,
+        false,
       );
     } catch (err) {
       // A missing dataset is a normal answer (undefined), not an error — matches the prior 404 handling.

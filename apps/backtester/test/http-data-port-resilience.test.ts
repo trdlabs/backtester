@@ -138,6 +138,50 @@ describe('P2-12 HttpDataPort resilience', () => {
       reason: 'pagination_overflow',
     });
   });
+
+  it('bug2) times out a hung response BODY (not just headers)', async () => {
+    // fetch() resolves after headers; the body read (res.json()) hangs until the signal aborts. The
+    // timeout must span fetch + body consumption, else a stalled body wedges the worker forever.
+    const bodyHang: Fetch = ((url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes('/rows')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+            }),
+          text: async () => '',
+          headers: { get: () => null },
+        } as unknown as Response);
+      }
+      return Promise.resolve(res(200, { datasets: [] }));
+    }) as Fetch;
+    await expect(drain(port(bodyHang))).rejects.toMatchObject({ name: 'RealDataUnavailableError', reason: 'timeout' });
+  }, 3_000);
+
+  it('bug3) caps a Retry-After sleep to the remaining operation deadline', async () => {
+    const resRA = (status: number, retryAfter: string): Response =>
+      ({
+        ok: false,
+        status,
+        json: async () => ({}),
+        text: async () => '',
+        headers: { get: (n: string) => (n.toLowerCase() === 'retry-after' ? retryAfter : null) },
+      }) as unknown as Response;
+    const sleeps: number[] = [];
+    const p = port(routed(async () => resRA(429, '60')), {
+      operationDeadlineMs: 30,
+      maxAttempts: 5,
+      // Records the (capped) delay AND advances real time so the deadline actually elapses.
+      sleepImpl: async (ms: number) => {
+        sleeps.push(ms);
+        await new Promise((r) => setTimeout(r, ms));
+      },
+    });
+    await expect(drain(p)).rejects.toMatchObject({ name: 'RealDataUnavailableError', reason: 'timeout' });
+    expect(Math.max(0, ...sleeps)).toBeLessThanOrEqual(35); // never the advertised 60s
+  }, 3_000);
 });
 
 describe('P2-12 config fail-fast', () => {
