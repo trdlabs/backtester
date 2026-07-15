@@ -269,6 +269,12 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
         for (const job of await coalesceMaintain()) await publishCompletion(completionDeps, job);
       }
       if (resultCacheSweep) await resultCacheSweep();
+    } catch (err) {
+      // P2-7: contain the error. tick() is driven as `void tick()` (autoWorker kick + the setInterval
+      // below), so an uncaught rejection would take down the process. Swallow-and-log; the next tick
+      // retries, and terminal transitions are idempotent so a retried drain/reap emits no duplicates.
+      // eslint-disable-next-line no-console
+      console.error('[app] worker tick failed; will retry on the next tick', err);
     } finally {
       busy = false;
     }

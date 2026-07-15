@@ -1154,6 +1154,10 @@ export async function runWorkerLoop(
     signal: AbortSignal;
     /** Wakes the idle wait early on a queue NOTIFY. Absent ⇒ today's inline-timeout poll (unchanged). */
     waker?: import('./queue-notify.js').QueueWaker;
+    /** P2-7: first backoff after a loop-body error (ms); doubles up to errorBackoffMaxMs. Default 500. */
+    errorBackoffBaseMs?: number;
+    /** P2-7: cap for the loop-body error backoff (ms). Default 30_000. */
+    errorBackoffMaxMs?: number;
   },
 ): Promise<void> {
   // The genuine in-flight heartbeat promise. A SKIPPED tick (beatInFlight) must NOT overwrite this —
@@ -1232,23 +1236,51 @@ export async function runWorkerLoop(
       }
     })();
   };
+  // P2-7: bounded, abort-interruptible backoff for the loop body. A transient store/publish error must
+  // neither crash the worker process (which would kill sibling in-flight runs on this process) nor spin
+  // hot. The heartbeat `beat` above is INDEPENDENT of this try/catch — it keeps renewing the lease and
+  // reaping/waking on its own timer even while the body backs off, so #137's guarantees stay intact.
+  const backoffBaseMs = opts.errorBackoffBaseMs ?? 500;
+  const backoffMaxMs = opts.errorBackoffMaxMs ?? 30_000;
+  let backoffMs = 0;
+  const abortableDelay = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      if (opts.signal.aborted) return resolve();
+      const onAbort = (): void => { clearTimeout(t); opts.signal.removeEventListener('abort', onAbort); resolve(); };
+      const t = setTimeout(() => { opts.signal.removeEventListener('abort', onAbort); resolve(); }, ms);
+      opts.signal.addEventListener('abort', onAbort);
+    });
   const beat = setInterval(runBeat, opts.heartbeatMs);
   try {
     while (!opts.signal.aborted) {
-      const processed = await drainQueue(deps, opts.concurrency);
-      await reapAndPublish(deps, {
-        leaseMaxAttempts: deps.lease?.maxAttempts,
-        coalesceEnabled: deps.coalesceEnabled,
-        computeWaitMaxAttempts: deps.computeWaitMaxAttempts,
-      });
-      // P1-2: in the multi-process topology ONLY this loop runs — the app-level tick() that flushes the
-      // durable outbox never fires, so a webhook that failed once is never retried. Redeliver each pass.
-      await deliverOutbox(deps);
-      if (coalesceMaintain) {
-        // P2-6: publish completions for wake-poisoned followers (compute_wait_exhausted).
-        for (const job of await coalesceMaintain()) await publishCompletion(deps, job);
+      let processed = 0;
+      try {
+        processed = await drainQueue(deps, opts.concurrency);
+        await reapAndPublish(deps, {
+          leaseMaxAttempts: deps.lease?.maxAttempts,
+          coalesceEnabled: deps.coalesceEnabled,
+          computeWaitMaxAttempts: deps.computeWaitMaxAttempts,
+        });
+        // P1-2: in the multi-process topology ONLY this loop runs — the app-level tick() that flushes the
+        // durable outbox never fires, so a webhook that failed once is never retried. Redeliver each pass.
+        await deliverOutbox(deps);
+        if (coalesceMaintain) {
+          // P2-6: publish completions for wake-poisoned followers (compute_wait_exhausted).
+          for (const job of await coalesceMaintain()) await publishCompletion(deps, job);
+        }
+        if (resultCacheSweep) await resultCacheSweep();
+        backoffMs = 0; // healthy pass → reset
+      } catch (err) {
+        // Abort wins: never wait out a backoff on shutdown (P2-7 invariant). Terminal transitions are
+        // CAS/SKIP-LOCKED, so a retried iteration cannot re-reap/re-poison an already-terminal row — a
+        // publish error therefore never emits a duplicate terminal event.
+        if (opts.signal.aborted) break;
+        backoffMs = backoffMs === 0 ? backoffBaseMs : Math.min(backoffMs * 2, backoffMaxMs);
+        // eslint-disable-next-line no-console
+        console.error(`[worker ${deps.lease?.workerId ?? '?'}] loop iteration failed; backing off ${backoffMs}ms`, err);
+        await abortableDelay(backoffMs);
+        continue; // re-check signal at the top; do NOT fall through to the idle poll
       }
-      if (resultCacheSweep) await resultCacheSweep();
       if (opts.signal.aborted) break;
       if (processed === 0) {
         if (opts.waker) {
