@@ -396,7 +396,7 @@ export class PgJobStore implements JobStore {
       `UPDATE backtest_job SET
          status = 'expired', terminal_at_ms = $1::bigint, terminal_code = 'queue_deadline_exceeded',
          timeline_json = timeline_json || $2::jsonb
-       WHERE status = 'queued' AND queue_deadline_ms IS NOT NULL AND $1::bigint > queue_deadline_ms
+       WHERE status IN ('queued', 'accepted') AND queue_deadline_ms IS NOT NULL AND $1::bigint > queue_deadline_ms
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'expired', atMs: nowMs }])],
     );

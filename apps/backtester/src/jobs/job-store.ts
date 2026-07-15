@@ -339,11 +339,14 @@ export class InMemoryJobStore implements JobStore {
     for (const job of this.jobs.values()) {
       if (isTerminal(job.status)) continue;
       if (
-        job.status === 'queued' &&
+        (job.status === 'queued' || job.status === 'accepted') &&
         job.queueDeadlineMs !== undefined &&
         nowMs > job.queueDeadlineMs
       ) {
-        if (await this.transition(job.runId, 'queued', 'expired', {
+        // P2-5: `accepted` past its queue deadline is a job that crashed between insertOrGet and the
+        // transition to `queued` — terminalize it exactly like a stale `queued`, so it stops stranding
+        // and a resumeToken replay re-attaches to a terminal row instead of a non-terminal corpse.
+        if (await this.transition(job.runId, job.status, 'expired', {
           atMs: nowMs, terminalAtMs: nowMs, terminalCode: 'queue_deadline_exceeded',
         })) reaped.push(job);
       } else if (job.status === 'running') {
