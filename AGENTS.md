@@ -52,11 +52,22 @@ If `../control-center` is absent (standalone clone), use local repo docs only.
 - `packages/sdk/` — **`@trading-backtester/sdk`** (Apache-2.0) — канонический публичный пакет с
   4 subpath-экспортами (`/contracts`, `/builder`, `/client`, `/artifacts`). Устанавливается через
   GitHub Release `.tgz` (без npm-регистри) через `.github/workflows/sdk-release.yml`.
-  Опубликованы **`sdk-v0.1.0`** и **`sdk-v0.2.0`** (последняя добавляет registry-discovery:
-  `GET /v1/registry` + `discoverRegistry()`).
+  Не хардкодь список опубликованных версий в документации: сверяй `packages/sdk/package.json`,
+  git-теги `sdk-v*` и GitHub Releases перед release/consumer rollout.
   Ядро детерминизма (`canonical-json`, хэширование) живёт в SDK; сервис потребляет его через
   тонкие re-export обёртки. Живых кредов и биржевого исполнения нет — SDK чисто для авторинга и
   интеграции с API.
+- **Не путай два публичных SDK с разными владельцами и каналами доставки:**
+
+  | Пакет | Владелец | Назначение | Каноническая доставка |
+  | --- | --- | --- | --- |
+  | `@trading-backtester/sdk` | этот репозиторий, `packages/sdk/` | API/контракты backtester для lab | GitHub Release `.tgz` |
+  | `@trdlabs/sdk` | sibling `../sdk` (`trdlabs/sdk`) | platform-facing client, включая `/historical` | public npm registry (`npm install @trdlabs/sdk`) |
+
+  Для изменений, релиза или bump `@trdlabs/sdk` сначала читай
+  `../control-center/docs/operations/npm-publishing.md` и
+  `../control-center/docs/delivery/sdk-consumer-rollout-checklist.md`. Не используй GitHub `.tgz`
+  workflow `@trading-backtester/sdk` как модель публикации `@trdlabs/sdk`.
 - `packages/research-contracts/` — `@trading/research-contracts` — **приватный** пакет для
   исторических/engine-only типов (`HistoricalDatasetReader`, canonical rows, engine
   context/decisions/indicators/market-tape). Остаётся приватным.
