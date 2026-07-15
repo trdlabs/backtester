@@ -1221,7 +1221,12 @@ export async function runWorkerLoop(
           coalesceEnabled: deps.coalesceEnabled,
           computeWaitMaxAttempts: deps.computeWaitMaxAttempts,
         }).catch(() => {});
-        if (coalesceMaintain) await coalesceMaintain().catch(() => {});
+        if (coalesceMaintain) {
+          // P2-6: publish completions for wake-poisoned followers (compute_wait_exhausted). Best-effort
+          // on the beat, like the reap above; CAS in poisonComputeWaiter keeps this exactly-once.
+          const poisoned = await coalesceMaintain().catch(() => [] as JobRow[]);
+          for (const job of poisoned) await publishCompletion(deps, job).catch(() => {});
+        }
       } finally {
         beatInFlight = false;
       }
@@ -1239,7 +1244,10 @@ export async function runWorkerLoop(
       // P1-2: in the multi-process topology ONLY this loop runs — the app-level tick() that flushes the
       // durable outbox never fires, so a webhook that failed once is never retried. Redeliver each pass.
       await deliverOutbox(deps);
-      if (coalesceMaintain) await coalesceMaintain();
+      if (coalesceMaintain) {
+        // P2-6: publish completions for wake-poisoned followers (compute_wait_exhausted).
+        for (const job of await coalesceMaintain()) await publishCompletion(deps, job);
+      }
       if (resultCacheSweep) await resultCacheSweep();
       if (opts.signal.aborted) break;
       if (processed === 0) {

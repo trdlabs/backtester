@@ -15,6 +15,7 @@ import { migrate } from './db/migrate';
 import {
   defaultWebhookPoster,
   deliverOutbox,
+  publishCompletion,
   reapAndPublish,
   type CompletionDeps,
   type WebhookPoster,
@@ -262,7 +263,11 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       await drain();
       await reap();
       await flushOutbox();
-      if (coalesceMaintain) await coalesceMaintain();
+      if (coalesceMaintain) {
+        // P2-6: publish completions for followers poisoned on the wake path (compute_wait_exhausted),
+        // so the owner is notified instead of learning only by polling — same as the reaper path.
+        for (const job of await coalesceMaintain()) await publishCompletion(completionDeps, job);
+      }
       if (resultCacheSweep) await resultCacheSweep();
     } finally {
       busy = false;
