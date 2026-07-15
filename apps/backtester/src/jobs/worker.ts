@@ -996,6 +996,19 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
 
       const dataset = materialized.dataset!;
       await chargeEngineAttempt(); // INV-5: engine-commit charge (momentum path)
+      // P3-5 (MITIGATION — not a full close): renew the lease at the LAST await boundary before the
+      // synchronous momentum engine run. runBacktest's per-symbol simulateSymbol loop is CPU-bound and
+      // yields NO awaits, so it blocks the event loop and starves the setInterval heartbeat — a long
+      // universe run would let the lease lapse and another worker would re-execute the engine (wasted
+      // work + charge; the terminal CAS still guards correctness). Renewing here, OFF the sync path,
+      // keeps the lease alive across any block SHORTER than the TTL — the common case. A single sync run
+      // LONGER than workerLeaseTtlMs can still lapse (no timer can fire during a single-thread sync
+      // block); config.workerLeaseTtlMs carries the "keep TTL above the longest sync run" guidance, and
+      // the structural close (cooperative yield / off-thread heartbeat) is a tracked follow-up.
+      // Best-effort; lease-less paths (tests/app) are unchanged.
+      if (deps.lease) {
+        await deps.store.renewLease(deps.lease.workerId, deps.clock() + deps.lease.ttlMs).catch(() => {});
+      }
       const result = await runBacktest(engineRequest, {
         dataset,
         executor,
@@ -1143,30 +1156,18 @@ export async function runWorkerLoop(
     waker?: import('./queue-notify.js').QueueWaker;
   },
 ): Promise<void> {
-  let pendingRenew: Promise<unknown> = Promise.resolve();
+  // The genuine in-flight heartbeat promise. A SKIPPED tick (beatInFlight) must NOT overwrite this —
+  // otherwise shutdown would await an already-resolved placeholder and let maintenance run past the loop.
+  let activeBeat: Promise<void> = Promise.resolve();
   // Active-leader identities for this worker: populated by the gate's registerLeader (Task 6, lock-win)
   // and cleared by unregisterLeader (terminal/defer finally). The beat below renews each so a long
   // engine run never lets the compute-lock lapse into a spurious takeover.
   const activeLeaders = new Set<string>();
   deps.registerLeader = (computeIdentity: string) => activeLeaders.add(computeIdentity);
   deps.unregisterLeader = (computeIdentity: string) => activeLeaders.delete(computeIdentity);
-  const beat = setInterval(() => {
-    if (deps.lease) {
-      pendingRenew = deps.store
-        .renewLease(deps.lease.workerId, deps.clock() + deps.lease.ttlMs)
-        .catch(() => {}); // ignore post-shutdown errors (pool may be tearing down)
-      // Compute-lock renew is SEPARATE from and additional to the job-lease renew above — only when
-      // coalescing is on (INV-6: coalescing-off loop behavior unchanged). Best-effort, like the lease renew.
-      if (deps.computeLock && deps.coalesceEnabled) {
-        const until = deps.clock() + (deps.computeLockTtlMs ?? deps.lease.ttlMs);
-        for (const ci of activeLeaders) {
-          void deps.computeLock.renew(ci, deps.lease.workerId, until).catch(() => {});
-        }
-      }
-    }
-  }, opts.heartbeatMs);
   // P3-6a: one coalescing-maintenance step (wake followers + throttled, bounded orphan-lock sweep),
   // shared with buildApp.tick() so orphan locks are cleaned in BOTH topologies. Gated on coalescing.
+  // Defined ABOVE the heartbeat so the beat can drive follower-wake on cadence (P3-4).
   const coalesceMaintain =
     deps.coalesceEnabled && deps.computeLock && deps.resultCache
       ? createCoalesceMaintenance({
@@ -1187,6 +1188,46 @@ export async function runWorkerLoop(
           deps.resultCacheSweepIntervalMs !== undefined ? { sweepIntervalMs: deps.resultCacheSweepIntervalMs } : {},
         )
       : undefined;
+  // P3-4 + P3-5 heartbeat. Besides renewing this worker's job-lease and its compute-locks, the beat now
+  // ALSO recovers orphans (reapAndPublish) and wakes parked followers (coalesceMaintain) — decoupled from
+  // drain completion. Under sustained input the drain loop below never returns, so its body's post-drain
+  // reap is unreachable; the timer is then the ONLY thing that reaps crashed (lease-expired) jobs and
+  // wakes followers. Re-entrancy-guarded so a slow tick can't stack on the next.
+  let beatInFlight = false;
+  const runBeat = (): void => {
+    // Skip (don't stack) if the previous tick is still running — and crucially do NOT touch activeBeat,
+    // so the finally below always awaits the LIVE beat rather than a resolved placeholder (shutdown race).
+    if (beatInFlight) return;
+    beatInFlight = true;
+    activeBeat = (async () => {
+      try {
+        if (deps.lease) {
+          await deps.store
+            .renewLease(deps.lease.workerId, deps.clock() + deps.lease.ttlMs)
+            .catch(() => {}); // ignore post-shutdown errors (pool may be tearing down)
+          // Compute-lock renew is SEPARATE from and additional to the job-lease renew above — only when
+          // coalescing is on (INV-6: coalescing-off loop behavior unchanged). Best-effort, like the lease renew.
+          if (deps.computeLock && deps.coalesceEnabled) {
+            const until = deps.clock() + (deps.computeLockTtlMs ?? deps.lease.ttlMs);
+            for (const ci of activeLeaders) {
+              await deps.computeLock.renew(ci, deps.lease.workerId, until).catch(() => {});
+            }
+          }
+        }
+        // P3-4: reap/wake on the timer, independent of drain. Idempotent with the loop body's pass —
+        // reapDeadlines is FOR UPDATE SKIP LOCKED, publish is ownTerminalTransition-guarded, sweep throttled.
+        await reapAndPublish(deps, {
+          leaseMaxAttempts: deps.lease?.maxAttempts,
+          coalesceEnabled: deps.coalesceEnabled,
+          computeWaitMaxAttempts: deps.computeWaitMaxAttempts,
+        }).catch(() => {});
+        if (coalesceMaintain) await coalesceMaintain().catch(() => {});
+      } finally {
+        beatInFlight = false;
+      }
+    })();
+  };
+  const beat = setInterval(runBeat, opts.heartbeatMs);
   try {
     while (!opts.signal.aborted) {
       const processed = await drainQueue(deps, opts.concurrency);
@@ -1214,6 +1255,6 @@ export async function runWorkerLoop(
     }
   } finally {
     clearInterval(beat);
-    await pendingRenew; // drain the last in-flight heartbeat so it can't reject after the loop resolves
+    await activeBeat; // drain the genuine in-flight heartbeat so maintenance can't run past loop resolve
   }
 }

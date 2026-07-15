@@ -256,6 +256,36 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   P3-6a compute-lock sweep). Tests: store sweep + no-refresh-on-hit (InMemory + Pg-gated); a
   createResultCacheSweep unit (evict + throttle); a buildApp integration (tick() evicts an expired row,
   keeps fresh) + default-OFF (no ttl ⇒ never sweeps). Full non-Docker suite green.
+- **2026-07-15 — P3-4 + P3-5: reap/wake on the heartbeat timer + lease-renew off the sync path** (branch
+  `fix/worker-reap-heartbeat-p3-4-5`, TDD; spec `docs/specs/P3-4-5-worker-reap-heartbeat.md`): paired
+  `runWorkerLoop` hardening. **P3-4** — reap/wake ran only after a full `drainQueue`, so under sustained
+  input (drain never returns) crashed jobs (expired leases) were never reaped and parked followers never
+  woken. The heartbeat `setInterval` now ALSO runs `reapAndPublish` + `coalesceMaintain` (wake +
+  throttled bounded lock sweep), decoupled from drain completion; the loop body keeps its post-drain pass
+  for the prompt idle path. Re-entrancy-guarded (`beatInFlight`) so a slow tick can't stack; idempotent
+  with the body pass (reapDeadlines is FOR UPDATE SKIP LOCKED, publish is ownTerminalTransition-guarded,
+  sweep throttled). **P3-5** — the beat is on the event loop, and the trusted momentum engine
+  (`runBacktest`'s per-symbol `simulateSymbol` loop) is CPU-bound with NO awaits, so a long universe run
+  blocks the loop, starves the beat, and lets the lease lapse → another worker re-executes the engine
+  (wasted work + charge; terminal CAS still guards correctness). `processNextQueued` now renews the lease
+  at the last await boundary BEFORE that synchronous section, off the sync path — the lease survives any
+  block shorter than the TTL. **P3-5 is MITIGATED, not fully closed** (review #137 §1): a single sync run
+  LONGER than `workerLeaseTtlMs` can still lapse (no timer fires during a single-thread sync block). Kept
+  as a documented mitigation + TTL guidance (`config.workerLeaseTtlMs` JSDoc: keep TTL above the longest
+  expected single sync run); the structural close is a tracked follow-up (below). Byte-identical:
+  `renewLease` only moves `leaseExpiresAt` (timing), never a hashed field; momentum golden `eff10116…`
+  unmoved. INV-6 preserved (wake/compute-lock renew still gated on `coalesceEnabled`); `buildApp.tick()`
+  untouched. Review #137 also fixed a **shutdown race** (§2): a skipped heartbeat tick clobbered the
+  tracked promise, so `finally` awaited a resolved placeholder and maintenance could run past
+  loop-resolve — now `activeBeat` is assigned only when a beat actually starts, and shutdown awaits the
+  genuine in-flight beat. Tests: timer reaps a crashed orphan AND wakes a parked follower while the drain
+  loop is wedged; eager renew fires before the momentum engine with no heartbeat involved; shutdown does
+  not resolve until an in-flight (gated) beat completes despite skipped ticks. Full non-Docker suite
+  green; typecheck clean.
+- **Follow-up (P3-5 full close, OPEN)** — bound heartbeat starvation on the trusted momentum path
+  regardless of run length: cooperative yield inside `runBacktest`/`simulateSymbol` (periodic `await` so
+  the beat renews) OR an off-event-loop heartbeat (worker_thread). Must keep the momentum golden
+  byte-identical. Deferred from #137 per the mitigation decision.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
