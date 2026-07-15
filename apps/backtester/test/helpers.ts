@@ -41,6 +41,8 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     workerHeartbeatMs: 10_000,
     workerMaxAttempts: 3,
     workerPollMs: 500,
+    workerErrorBackoffBaseMs: 500,
+    workerErrorBackoffMaxMs: 30_000,
     enableOverlayEngine: false,
     dedupEnabled: false,
     jobObs: false,

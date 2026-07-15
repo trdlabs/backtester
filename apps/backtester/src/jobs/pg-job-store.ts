@@ -396,7 +396,7 @@ export class PgJobStore implements JobStore {
       `UPDATE backtest_job SET
          status = 'expired', terminal_at_ms = $1::bigint, terminal_code = 'queue_deadline_exceeded',
          timeline_json = timeline_json || $2::jsonb
-       WHERE status = 'queued' AND queue_deadline_ms IS NOT NULL AND $1::bigint > queue_deadline_ms
+       WHERE status IN ('queued', 'accepted') AND queue_deadline_ms IS NOT NULL AND $1::bigint > queue_deadline_ms
        RETURNING *`,
       [nowMs, JSON.stringify([{ status: 'expired', atMs: nowMs }])],
     );
@@ -527,14 +527,17 @@ export class PgJobStore implements JobStore {
     return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
   }
 
-  async poisonComputeWaiter(runId: string, nowMs: number): Promise<boolean> {
-    const r = await this.pool.query(
+  async poisonComputeWaiter(runId: string, nowMs: number): Promise<JobRow | undefined> {
+    // #138 §2: RETURNING * so the poison CAS and the row fetch are one atomic statement — no separate
+    // get() that, if it failed, would drop the completion for an already-terminal (unrecoverable) job.
+    const r = await this.pool.query<JobDbRow>(
       `UPDATE backtest_job SET
          status = 'failed', terminal_at_ms = $2::bigint, terminal_code = 'compute_wait_exhausted',
          timeline_json = timeline_json || $3::jsonb
-       WHERE run_id = $1 AND status = 'waiting_for_compute'`,
+       WHERE run_id = $1 AND status = 'waiting_for_compute'
+       RETURNING *`,
       [runId, nowMs, JSON.stringify([{ status: 'failed', atMs: nowMs }])],
     );
-    return r.rowCount === 1;
+    return r.rows[0] ? rowToJob(r.rows[0]) : undefined;
   }
 }

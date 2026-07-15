@@ -21,7 +21,7 @@ export interface WakeDeps {
 
 export async function wakeComputeWaiters(
   deps: WakeDeps,
-): Promise<{ released: number; poisoned: number }> {
+): Promise<{ released: number; poisoned: number; poisonedJobs: JobRow[] }> {
   const now = deps.clock();
   const waiters = await deps.store.listComputeWaiters();
 
@@ -35,12 +35,21 @@ export async function wakeComputeWaiters(
 
   let released = 0;
   let poisoned = 0;
+  // P2-6: rows poisoned on THIS pass, for the caller to publish. Collected only when poisonComputeWaiter
+  // won its CAS, so a poisoned completion is surfaced (and thus published) exactly once.
+  const poisonedJobs: JobRow[] = [];
 
   for (const [ci, group] of byCi) {
     // Poison exhausted waiters first (independent of cache/lock).
     for (const w of group) {
       if (w.computeWaitAttempts >= deps.computeWaitMaxAttempts) {
-        if (await deps.store.poisonComputeWaiter(w.runId, now)) poisoned += 1;
+        // #138 §2: poison returns the canonical row atomically (CAS winner only) — no separate get, so a
+        // poisoned completion is never dropped and is surfaced exactly once.
+        const row = await deps.store.poisonComputeWaiter(w.runId, now);
+        if (row) {
+          poisoned += 1;
+          poisonedJobs.push(row);
+        }
       }
     }
     const live = group.filter((w) => w.computeWaitAttempts < deps.computeWaitMaxAttempts);
@@ -67,5 +76,5 @@ export async function wakeComputeWaiters(
     if (elected) released += 1;
   }
 
-  return { released, poisoned };
+  return { released, poisoned, poisonedJobs };
 }

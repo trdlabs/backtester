@@ -15,6 +15,7 @@ import { migrate } from './db/migrate';
 import {
   defaultWebhookPoster,
   deliverOutbox,
+  publishCompletion,
   reapAndPublish,
   type CompletionDeps,
   type WebhookPoster,
@@ -262,8 +263,18 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       await drain();
       await reap();
       await flushOutbox();
-      if (coalesceMaintain) await coalesceMaintain();
+      if (coalesceMaintain) {
+        // P2-6: publish completions for followers poisoned on the wake path (compute_wait_exhausted),
+        // so the owner is notified instead of learning only by polling — same as the reaper path.
+        for (const job of await coalesceMaintain()) await publishCompletion(completionDeps, job);
+      }
       if (resultCacheSweep) await resultCacheSweep();
+    } catch (err) {
+      // P2-7: contain the error. tick() is driven as `void tick()` (autoWorker kick + the setInterval
+      // below), so an uncaught rejection would take down the process. Swallow-and-log; the next tick
+      // retries, and terminal transitions are idempotent so a retried drain/reap emits no duplicates.
+      // eslint-disable-next-line no-console
+      console.error('[app] worker tick failed; will retry on the next tick', err);
     } finally {
       busy = false;
     }

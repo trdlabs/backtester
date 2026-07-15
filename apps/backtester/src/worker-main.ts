@@ -57,6 +57,8 @@ async function main(): Promise<void> {
       pollMs: config.workerPollMs,
       signal: ac.signal,
       waker,
+      errorBackoffBaseMs: config.workerErrorBackoffBaseMs,
+      errorBackoffMaxMs: config.workerErrorBackoffMaxMs,
     },
   ).finally(() => {
     loopDone = true;

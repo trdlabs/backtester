@@ -6,7 +6,7 @@
 // `sweepBatchLimit` rows per pass) so it never becomes a hot full-table DELETE / WAL spike on an
 // accumulated table (it walks the lock_expires_at_ms index tail — see migration 0010).
 import { wakeComputeWaiters } from './wake.js';
-import type { JobStore } from '../job-store.js';
+import type { JobRow, JobStore } from '../job-store.js';
 import type { ResultCache } from '../dedup/result-cache.js';
 
 // Default sweep cadence cap: the sweep runs at most this often even when the retention window (TTL) is
@@ -40,12 +40,12 @@ export interface CoalesceMaintenanceOptions {
 export function createCoalesceMaintenance(
   deps: CoalesceMaintenanceDeps,
   opts: CoalesceMaintenanceOptions = {},
-): () => Promise<void> {
+): () => Promise<JobRow[]> {
   const batchLimit = opts.sweepBatchLimit ?? 1000;
   const intervalMs = opts.sweepIntervalMs ?? Math.min(deps.computeLockTtlMs, DEFAULT_SWEEP_INTERVAL_MS);
   let lastSweepAtMs: number | undefined;
-  return async () => {
-    await wakeComputeWaiters({
+  return async (): Promise<JobRow[]> => {
+    const { poisonedJobs } = await wakeComputeWaiters({
       store: deps.store,
       resultCache: deps.resultCache,
       computeLock: deps.computeLock,
@@ -57,6 +57,10 @@ export function createCoalesceMaintenance(
       lastSweepAtMs = now;
       await deps.computeLock.sweepExpired(now, deps.computeLockTtlMs, batchLimit).catch(() => {});
     }
+    // P2-6: hand the wake-poisoned rows back so a caller with CompletionDeps publishes their completion.
+    // The maintenance step itself stays free of webhook/uid deps, mirroring reapDeadlines (reap returns
+    // rows; reapAndPublish publishes). CAS in poisonComputeWaiter keeps publish exactly-once.
+    return poisonedJobs;
   };
 }
 

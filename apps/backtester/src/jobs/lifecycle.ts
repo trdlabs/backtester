@@ -17,7 +17,10 @@ export const TERMINAL: readonly RunStatus[] = [
 export type InternalJobStatus = RunStatus | 'waiting_for_compute';
 
 const ALLOWED_TRANSITIONS: Record<InternalJobStatus, readonly InternalJobStatus[]> = {
-  accepted: ['queued', 'canceled'],
+  // 'expired' (P2-5): a job crashed mid-submit — insertOrGet(accepted) committed but the follow-up
+  // transition to 'queued' never ran — stays 'accepted' forever. The queue-deadline reaper expires it
+  // in place, so this edge must be allowed (InMemory transition goes through canTransition).
+  accepted: ['queued', 'canceled', 'expired'],
   queued: ['running', 'canceled', 'expired'],
   // 'running' -> 'running' is a deliberate self-transition: the coalescing engine-commit charge
   // (worker.ts::chargeEngineAttempt) persists `attempts`/`engineAttemptCharged` via a same-status
