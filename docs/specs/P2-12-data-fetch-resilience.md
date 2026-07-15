@@ -12,13 +12,12 @@
 > - **Отдельный `@trading-backtester/sdk` 0.9 PR** — `BacktesterClient` timeout/abort (полезно, но не цель
 >   P2-12), с закрытыми багами (2) body-under-timeout и (4) abortable backoff/polling sleep. Убран из #140.
 
-Из `CODE-REVIEW-2026-07-12.md` P2-12. Два ownership-контура, одна спека, два TDD-слайса/коммита (сначала
-service data-port, затем публичный SDK-клиент + release):
+Из `CODE-REVIEW-2026-07-12.md` P2-12 (строка 100). Два ownership-контура, одна спека:
 
-1. **Backtester `HttpDataPort`** (`apps/backtester/src/data/http-data-port.ts`) — per-request timeout,
-   bounded retry, cursor-cycle detection, max pages/rows.
-2. **SDK `BacktesterClient`** (`packages/sdk/src/client/client.ts`) — additive timeout/abort API + те же
-   bounded-pagination гарантии (retry там уже есть — доводим, не переписываем).
+1. **Backtester `HttpDataPort`** (`apps/backtester/src/data/http-data-port.ts`, `dataSource=http`) —
+   per-request timeout (fetch + body), bounded retry, deadline-capped backoff, cursor-cycle, max pages/rows.
+2. **`@trdlabs/sdk` `HistoricalClient`** (кросс-репный `../sdk/src/historical/client.ts`) — держит
+   PRODUCTION `dataSource=real|mock` через `RowsDataPort`; те же гарантии на `discover`/`coverage`/`queryRows`.
 
 ## Проблема
 
@@ -28,10 +27,11 @@ service data-port, затем публичный SDK-клиент + release):
   upstream, вечно эхоящий тот же курсор, даёт бесконечный fetch-loop, а `materialize()` (аккумулирует ВСЕ
   строки в `Map<symbol, ReaderRow[]>`) растёт без границы → OOM. Ошибки — generic `throw new Error(...)`,
   не мапятся в data-taxonomy.
-- `BacktesterClient`: retry реализован (idempotency-gating GET/resumeToken; 429 всегда, 5xx idempotent;
-  expo backoff + full jitter; Retry-After honored+clamped; typed `Backtester*Error`), **но** каждый
-  `fetchImpl(...)` — без timeout/abort. Hung fetch → retry-loop не двигается (attempt никогда не
-  завершается). `FetchLikeInit` не несёт `signal`, caller не может отменить.
+- `HistoricalClient` (`@trdlabs/sdk`): `discover`/`coverage`/`queryRows` зовут `fetch` **без**
+  `AbortController` — зависший ответ (заголовки ИЛИ стопнувшийся body) вешает потребляющий воркер навсегда;
+  `queryRows` — тот же `for(;;)` по `cursor`, выход только на `nextCursor === null` (эхо-курсор → ∞-loop +
+  рост `materialize()` у потребителя). Ошибки — generic `Error` c `HTTP <status>` (сохранить для
+  backtester `classifyDiscoverError`).
 
 ## Обязательные правила (оба контура)
 
@@ -80,32 +80,41 @@ service data-port, затем публичный SDK-клиент + release):
 `retryMax ≥ retryBase`; иначе `loadConfig` бросает с явным сообщением. Дефолты byte-identical к текущему
 поведению по РЕЗУЛЬТАТУ (успешный happy-path не меняется — только добавляются границы на сбое).
 
-## Контур 2 — SDK `BacktesterClient` (additive)
+## Контур 2 — `@trdlabs/sdk` `HistoricalClient` (кросс-репно, PR `trdlabs/sdk#16`)
 
-- `FetchLikeInit` += `signal?: AbortSignal` (additive; фейки без него работают).
-- Новая опция `BacktesterClientOptions.timeoutMs` (per-request) + `RetryOptions` уважает её; опциональный
-  `deadlineMs` (operation). Каждый attempt оборачивается per-request `AbortController` + timeout; caller
-  может передать свой `signal` (через новый `RequestOptions`/per-call arg) — его abort приоритетен и
-  no-retry.
-- Retry-set довести до правил: idempotent → retry на сети/`408`/`429`/весь `5xx` (сейчас 429+502/503/504);
-  `4xx≠408/429` — no-retry (уже так через `raise`). `AbortError` (timeout) — transient (retry); caller-abort —
-  raise немедленно.
-- Bounded-пагинация: у SDK нет cursor-loop (только `awaitCompletion`, уже timeout-bounded; `readArtifact` —
-  offset/limit одиночный). Гарантия = timeout/abort на каждом запросе + сохранение bounded `awaitCompletion`.
-  Если/когда добавится cursor-метод — те же `maxPages`/`maxRows`/cycle-guard (вынести helper).
-- **Публичный `.d.ts` без Node-globals** (только clean-consumer gate ловит; `AbortSignal`/`AbortController` —
-  DOM/WHATWG-глобалы, доступны в lib.dom/webworker; проверить, что `tsc` public-типов чист).
-- **Release implications.** Additive minor. Бамп версии = 4 сайта (`package.json` + `src/internal/versions.ts`
-  `SDK_VERSION` + `package-shape.test` + `registry-contract.test`); релиз-workflow ассертит
-  `package.json == input` → бамп+мерж ДО dispatch. Слайс 2 подготавливает изменения; сам релиз
-  (`SDK Release` workflow_dispatch) — отдельным действием после мержа, по решению заказчика.
+Настоящий production-фикс `dataSource=real|mock`: `RowsDataPort` целиком делегирует в этот клиент. Зеркалит
+resilient-request слой из Контура 1, но клиент **generic** (без backtester-типов), поэтому бросает `Error`.
+
+- Внутренний `resilientJson<T>(r, url, label, deadlineAt, readBody)`: per-request `AbortController` +
+  `setTimeout(timeoutMs)`, окно таймаута **охватывает fetch И чтение/парсинг body**; retry только на
+  transient (network / body-parse / `408` / `429` / весь `5xx`), `4xx≠408/429` → fail-fast; между попытками
+  `sleepBounded` (bounded expo backoff + full jitter, **ограничен operation deadline** — Retry-After не
+  переполняет дедлайн); `429` уважает numeric Retry-After (clamped).
+- `discover`/`coverage` → `resilientJson(readBody=true)`. `queryRows` → per-page `resilientJson` +
+  cursor-cycle (`nextCursor === cursor || seen`) + fail-closed `maxPages`/`maxRows` ДО `yield`.
+- **Ошибки — generic `Error`** c сохранением сообщения `platform /historical/<path>: HTTP <status>` (чтобы
+  backtester `classifyDiscoverError` продолжал маппить discover-ошибки); timeout → `… timeout after Nms`;
+  cycle/overflow/deadline → явные сообщения. Backtester-сторона (consumer) при желании маппит их в taxonomy.
+- Новые опции `HistoricalClientOptions` (`timeoutMs`/`maxAttempts`/`retryBaseMs`/`retryMaxMs`/`maxPages`/
+  `maxRows`/`operationDeadlineMs`/`sleepImpl`) — все опциональны, консервативные дефолты, **happy-path не
+  меняется**. Minor **0.9.5 → 0.10.0**; репозиторий без unit-харнесса — добавлен `node:test` suite + `test`.
+- **Consumer-gate (backtester, после релиза 0.10.0):** bump `@trdlabs/sdk` dep + `RowsDataPortOptions`
+  прокидывает resilience-опции (из `config` через `app.ts`) в `new HistoricalClient(...)`; прогнать real/mock
+  integration. Только после этого P2-12 считается полностью закрытым.
+
+## Контур 2b — `@trading-backtester/sdk` `BacktesterClient` (НЕ цель P2-12, отдельный PR)
+
+Полезное, но **не** часть P2-12 (это lab-facing SDK). Ошибочно попал в #140 (ревью #140 §1) → откачен,
+перевезён в отдельный `@trading-backtester/sdk` 0.9 PR. Там закрыть баги ревью #140: **§2** timeout
+охватывает body-read, **§4** backoff/polling `sleep` — abort-прерываемый (caller abort не ждёт до 60с).
+Additive minor 0.8.0→0.9.0 (4 сайта версии); релиз — свой release train, после ревью.
 
 ## Инварианты
 
 - Happy-path результат не меняется (goldens/`result_hash` не затронуты — это транспортный слой, не движок).
 - Дефолты консервативны: границы срабатывают только на реальном сбое/зависании/зацикливании.
-- `HttpDataPort` — единственный http-путь; `RowsDataPort` (`real`) / `MockPlatformDataPort` / `FixtureDataPort`
-  не трогаем в этом слайсе (у них своя семантика; при желании — отдельный fast-follow).
+- `HttpDataPort` покрывает `dataSource=http`; `real`/`mock` покрываются Контуром 2 (`HistoricalClient` +
+  consumer-wiring `RowsDataPort`). `MockPlatformDataPort` / `FixtureDataPort` не трогаем (своя семантика).
 
 ## Тесты (TDD, по контуру)
 
@@ -121,10 +130,14 @@ service data-port, затем публичный SDK-клиент + release):
 8. **row overflow** — суммарно строк > `maxRows` → fail-closed `pagination_overflow` до `materialize`-роста.
 9. **config fail-fast** — невалидные числа (`0`/`NaN`/`retryMax<retryBase`) → `loadConfig` бросает.
 
-**Слайс 2 — `BacktesterClient`** (инъекция `fetchImpl` + `sleepImpl`):
-10. **hanging fetch** — attempt-timeout → transient retry → (idempotent GET) recovery / (исчерпан) raise.
-11. **abort priority** — caller `signal` abort → немедленно, no-retry.
-12. **retry-set** — `408`/`429`/`5xx` idempotent → retry; `400`/`404`/`409` → no-retry (typed error).
-13. **release-shape** — версия SDK забамплена во всех 4 сайтах; public `.d.ts` без Node-globals (gate).
+Плюс `bug2` (hung BODY → timeout, не только headers) и `bug3` (Retry-After sleep ограничен operation
+deadline) — ревью #140 §2/§3.
 
-**Регрессии**: существующие data-api / rows-data-port / sdk-client-retry зелёные; happy-path без изменений.
+**Контур 2 — `HistoricalClient`** (`node:test` в `../sdk`, инъекция `fetchImpl` + `sleepImpl`):
+10. **hung fetch / hung body** — per-request timeout (охватывает body) → error, не виснет.
+11. **transient recovery** — `503` затем `200` → успех в пределах cap.
+12. **4xx no-retry** — `401` → 1 попытка, сообщение `HTTP 401` сохранено (для `classifyDiscoverError`).
+13. **cursor cycle / maxRows overflow** — fail-closed, не ∞-loop / не рост памяти.
+14. **Retry-After vs deadline** — `429` c `Retry-After: 60` при `operationDeadlineMs=30` → sleep ≤ остатка.
+
+**Регрессии**: существующие data-api / rows-data-port зелёные; happy-path без изменений.
