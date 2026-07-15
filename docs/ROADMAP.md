@@ -286,6 +286,29 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   regardless of run length: cooperative yield inside `runBacktest`/`simulateSymbol` (periodic `await` so
   the beat renews) OR an off-event-loop heartbeat (worker_thread). Must keep the momentum golden
   byte-identical. Deferred from #137 per the mitigation decision.
+- **2026-07-15 — P2-5 + P2-6 + P2-7: queue reliability** (branch `fix/queue-reliability-p2-5-6-7`, TDD;
+  spec `docs/specs/P2-5-6-7-queue-reliability.md`): three queue/worker recovery defects, one PR, one TDD
+  commit each. **P2-5** — a job that crashed mid-submit (`insertOrGet(accepted)` committed but the
+  transition to `queued` never ran) stayed `accepted` forever: the reaper only expired `queued`, so
+  publicStatus reported it pending indefinitely and a `resumeToken` replay re-attached to the corpse.
+  `reapDeadlines` now expires `accepted` past `queueDeadlineMs` exactly like a stale `queued`
+  (`queue_deadline_exceeded`), InMemory + Pg; `ALLOWED_TRANSITIONS` gains `accepted→expired`;
+  `reapAndPublish` notifies the owner and the terminal row makes replay return an expired handle.
+  **P2-6** — a coalescing follower poisoned on the WAKE path (`wakeComputeWaiters→poisonComputeWaiter→
+  failed(compute_wait_exhausted)`) never had its completion published (unlike the reaper path); the owner
+  only learned by polling. `wakeComputeWaiters` now returns the poisoned rows (collected only when its CAS
+  won ⇒ exactly-once), `createCoalesceMaintenance` hands them back, and every maintenance caller with
+  `CompletionDeps` publishes them (`buildApp.tick()` + the `runWorkerLoop` beat and loop body). **P2-7** —
+  `void tick()` had no `catch` (any store/webhook throw ⇒ unhandled rejection ⇒ process exit) and
+  `runWorkerLoop`'s body had no `try/catch` (a transient Pg error propagated out ⇒ `worker-main` exit(1),
+  killing sibling in-flight runs). `tick()` now catches-and-logs; the loop wraps each iteration in
+  `try/catch` with an abort-interruptible, bounded exponential backoff (`workerErrorBackoff{Base,Max}Ms`,
+  defaults 500ms/30s), reset on a healthy pass. Pinned invariants (tests): abort ends the loop without
+  waiting out a backoff; a transient store error never rejects the loop; the retry rate is bounded (no hot
+  spin); the #137 heartbeat keeps renewing while the body fails; a publish error is contained and emits no
+  duplicate terminal event (terminal transitions are CAS/SKIP-LOCKED). No engine/math change — goldens and
+  `result_hash` untouched; INV-6 preserved; `buildApp.tick()` single-process path only lightly touched.
+  Full non-Docker suite green (1175 passed / 96 skipped); typecheck clean.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
