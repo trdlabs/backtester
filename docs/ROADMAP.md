@@ -309,6 +309,27 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   duplicate terminal event (terminal transitions are CAS/SKIP-LOCKED). No engine/math change — goldens and
   `result_hash` untouched; INV-6 preserved; `buildApp.tick()` single-process path only lightly touched.
   Full non-Docker suite green (1175 passed / 96 skipped); typecheck clean.
+- **2026-07-15 — P2-12: data-fetch resilience (timeout, bounded retry, pagination guards)** (branch
+  `fix/data-fetch-resilience-p2-12`, TDD; spec `docs/specs/P2-12-data-fetch-resilience.md`): two ownership
+  contours, one spec, two TDD slices. **Slice 1 — `HttpDataPort`**: `listDatasets`/`openDataset`/
+  `queryRange` called `fetch` with no `AbortController` (a hung platform response blocked a claiming
+  worker forever — `runTimeoutMs` is a deadline reaper, not an in-flight abort), and `queryRange`'s
+  `for(;;)` cursor loop only exited on a falsy `nextCursor` (an upstream echoing the same cursor looped
+  forever while `materialize()` grew unbounded). Added a resilient-fetch layer: per-request timeout
+  (AbortController) + bounded retry (transient network/408/429/5xx only, 4xx-except-408/429 fail fast,
+  bounded expo backoff + full jitter, Retry-After clamped) + optional operation deadline; cursor-cycle
+  detection + fail-closed `maxPages`/`maxRows` BEFORE any yield/materialize growth. Every failure maps to
+  `RealDataUnavailableError` (worker already terminalizes → `missing_dataset`), so a hung/looping upstream
+  can no longer wedge a worker. Six fail-fast-validated `dataApi*` config knobs. **Slice 2 — SDK
+  `BacktesterClient`** (additive): `FetchLikeInit` gains `signal`; new `timeoutMs` option wraps every
+  attempt in a per-request AbortController+timeout (hung fetch → aborted → retried for idempotent); a
+  caller `signal` (`RequestOptions` on `getRunStatus` / `AwaitCompletionOptions.signal`) takes priority
+  and is never retried; retryable set extended to 408 + any 5xx for idempotent (429 unchanged) — a strict
+  superset, no regression. Additive minor **0.8.0 → 0.9.0** (4 sites; `API_CONTRACT_VERSION` unchanged
+  017.2); clean-consumer gate green (AbortSignal is a standard global, no Node-global leak); the SDK
+  Release workflow dispatch is a separate step. Happy path byte-identical (transport only; no
+  engine/`result_hash` change). Full suite green (1225 passed); typecheck + clean-consumer gate clean.
+  Scoped to the http path — `RowsDataPort`(`real`)/`MockPlatformDataPort`/`FixtureDataPort` untouched.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
