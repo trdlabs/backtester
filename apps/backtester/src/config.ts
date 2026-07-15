@@ -81,6 +81,20 @@ export interface AppConfig {
   /** Bearer token for real-platform auth (required when dataSource === 'real'). */
   readonly realPlatformToken?: string;
   readonly dataApiPageLimit: number;
+  /** P2-12 HttpDataPort resilience (fail-fast validated). Per-request timeout (ms). */
+  readonly dataApiTimeoutMs: number;
+  /** Total attempts per data-API request including the first (1 = no retry). */
+  readonly dataApiMaxAttempts: number;
+  /** Retry backoff base delay (ms), full jitter, doubled per attempt. */
+  readonly dataApiRetryBaseMs: number;
+  /** Retry backoff ceiling (ms); must be >= dataApiRetryBaseMs. */
+  readonly dataApiRetryMaxMs: number;
+  /** Fail-closed cap on pages a single queryRange fetches. */
+  readonly dataApiMaxPages: number;
+  /** Fail-closed cap on rows a single queryRange accumulates (guards materialize growth). */
+  readonly dataApiMaxRows: number;
+  /** Optional operation deadline (ms) bounding a whole queryRange across pages+retries. 0 = off. */
+  readonly dataApiOperationDeadlineMs: number;
   /** Postgres connection string. When set, the service uses PgJobStore; otherwise in-memory. */
   readonly databaseUrl?: string;
   /** Max pooled Pg connections per process (pg default 10; raise with worker fleet math). */
@@ -379,6 +393,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // eslint-disable-next-line no-console
     console.warn('[config] BACKTESTER_AUTH_TOKEN is unset — using the insecure dev default; set it for any non-local deployment');
   }
+
+  // P2-12: HttpDataPort resilience knobs — fail-fast so a typo (0 / NaN / negative) surfaces at boot,
+  // not as a silently-disabled timeout in production.
+  const posInt = (name: string, raw: string | undefined, def: number): number => {
+    const v = raw === undefined ? def : Number(raw);
+    if (!Number.isFinite(v) || v < 1) throw new Error(`config: ${name} must be a finite number >= 1 (got ${String(raw)})`);
+    return Math.floor(v);
+  };
+  const nonNegInt = (name: string, raw: string | undefined, def: number): number => {
+    const v = raw === undefined ? def : Number(raw);
+    if (!Number.isFinite(v) || v < 0) throw new Error(`config: ${name} must be a finite number >= 0 (got ${String(raw)})`);
+    return Math.floor(v);
+  };
+  const dataApiTimeoutMs = posInt('BACKTESTER_DATA_API_TIMEOUT_MS', env.BACKTESTER_DATA_API_TIMEOUT_MS, 30_000);
+  const dataApiMaxAttempts = posInt('BACKTESTER_DATA_API_MAX_ATTEMPTS', env.BACKTESTER_DATA_API_MAX_ATTEMPTS, 3);
+  const dataApiRetryBaseMs = posInt('BACKTESTER_DATA_API_RETRY_BASE_MS', env.BACKTESTER_DATA_API_RETRY_BASE_MS, 500);
+  const dataApiRetryMaxMs = posInt('BACKTESTER_DATA_API_RETRY_MAX_MS', env.BACKTESTER_DATA_API_RETRY_MAX_MS, 10_000);
+  const dataApiMaxPages = posInt('BACKTESTER_DATA_API_MAX_PAGES', env.BACKTESTER_DATA_API_MAX_PAGES, 10_000);
+  const dataApiMaxRows = posInt('BACKTESTER_DATA_API_MAX_ROWS', env.BACKTESTER_DATA_API_MAX_ROWS, 5_000_000);
+  const dataApiOperationDeadlineMs = nonNegInt('BACKTESTER_DATA_API_OPERATION_DEADLINE_MS', env.BACKTESTER_DATA_API_OPERATION_DEADLINE_MS, 0);
+  if (dataApiRetryMaxMs < dataApiRetryBaseMs) {
+    throw new Error(
+      `config: BACKTESTER_DATA_API_RETRY_MAX_MS (${dataApiRetryMaxMs}) must be >= BACKTESTER_DATA_API_RETRY_BASE_MS (${dataApiRetryBaseMs})`,
+    );
+  }
+
   return {
     host,
     port: Number(env.BACKTESTER_PORT ?? 8080),
@@ -396,6 +436,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(realPlatformUrl   ? { realPlatformUrl }   : {}),
     ...(realPlatformToken ? { realPlatformToken } : {}),
     dataApiPageLimit: Number(env.BACKTESTER_DATA_API_PAGE_LIMIT ?? 1000),
+    dataApiTimeoutMs,
+    dataApiMaxAttempts,
+    dataApiRetryBaseMs,
+    dataApiRetryMaxMs,
+    dataApiMaxPages,
+    dataApiMaxRows,
+    dataApiOperationDeadlineMs,
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
     pgPoolMax: Math.max(1, Number(env.BACKTESTER_PG_POOL_MAX ?? 10) || 10),
     pgStatementTimeoutMs: Math.max(0, Number(env.BACKTESTER_PG_STATEMENT_TIMEOUT_MS ?? 0) || 0),

@@ -31,7 +31,13 @@ export type RealDataCause =
   | 'contract_version_mismatch'
   | 'rows_resource_unavailable'
   | 'dataset_not_found'
-  | 'discover_failed';
+  | 'discover_failed'
+  // P2-12: HttpDataPort resilience causes. The worker maps ANY RealDataUnavailableError to the single
+  // terminal code `missing_dataset` (worker.ts), so these enrich the errorDetail without a new terminal.
+  | 'timeout'
+  | 'rate_limited'
+  | 'pagination_cycle'
+  | 'pagination_overflow';
 
 /** Thrown by RowsDataPort.openDataset on any platform-side failure. `message` is the fixed
  *  errorDetail string contract: `cause=<reason>; datasetRef=<datasetRef>`. */

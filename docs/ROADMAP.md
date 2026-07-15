@@ -309,6 +309,27 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   duplicate terminal event (terminal transitions are CAS/SKIP-LOCKED). No engine/math change — goldens and
   `result_hash` untouched; INV-6 preserved; `buildApp.tick()` single-process path only lightly touched.
   Full non-Docker suite green (1175 passed / 96 skipped); typecheck clean.
+- **2026-07-15 — P2-12: data-fetch resilience (timeout, bounded retry, pagination guards)** (spec
+  `docs/specs/P2-12-data-fetch-resilience.md`): the review names TWO surfaces — the backtester
+  `HttpDataPort` AND the cross-repo `@trdlabs/sdk` `HistoricalClient` (which backs the PRODUCTION
+  `dataSource=real|mock` paths via `RowsDataPort`). **Contour 1 — `HttpDataPort`** (branch
+  `fix/data-fetch-resilience-p2-12`, #140, TDD): `listDatasets`/`openDataset`/`queryRange` called `fetch`
+  with no `AbortController` (a hung platform response blocked a claiming worker forever), and
+  `queryRange`'s `for(;;)` cursor loop only exited on a falsy `nextCursor` (an upstream echoing the same
+  cursor looped forever while `materialize()` grew unbounded). Added a resilient-request layer: per-request
+  timeout that spans **fetch AND body read/parse** (a stalled body can't wedge a worker — review #140 §2)
+  + bounded retry (transient network/body-parse/408/429/5xx only, 4xx-except-408/429 fail fast, bounded
+  expo backoff + full jitter, Retry-After clamped) + optional operation deadline with a **deadline-capped
+  backoff** (a 60 s Retry-After can't overshoot a 1 ms-remaining deadline — review #140 §3); cursor-cycle
+  detection + fail-closed `maxPages`/`maxRows` BEFORE any yield/materialize growth. Every failure maps to
+  `RealDataUnavailableError` (worker already terminalizes → `missing_dataset`). Six fail-fast-validated
+  `dataApi*` config knobs. **Contour 2 — `@trdlabs/sdk` `HistoricalClient`** (cross-repo, separate PR):
+  the real production fix — `discover`/`coverage`/`queryRows` get the same timeout/retry/deadline/cursor/
+  page-row guards; then bump backtester's `@trdlabs/sdk` dep and wire `RowsDataPort` to pass the resilience
+  options. **NOTE (review #140 §1):** an earlier revision mistakenly hardened `@trading-backtester/sdk`
+  `BacktesterClient` (a different, lab-facing SDK — not the P2-12 target); that change was reverted from
+  #140 and re-homed to its own `@trading-backtester/sdk` 0.9 PR. Happy path byte-identical (transport only;
+  no engine/`result_hash` change). `MockPlatformDataPort`/`FixtureDataPort` untouched.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
