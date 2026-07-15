@@ -128,6 +128,13 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
           baseUrl: config.dataApiUrl,
           ...(config.dataApiToken ? { token: config.dataApiToken } : {}),
           pageLimit: config.dataApiPageLimit,
+          timeoutMs: config.dataApiTimeoutMs,
+          maxAttempts: config.dataApiMaxAttempts,
+          retryBaseMs: config.dataApiRetryBaseMs,
+          retryMaxMs: config.dataApiRetryMaxMs,
+          maxPages: config.dataApiMaxPages,
+          maxRows: config.dataApiMaxRows,
+          operationDeadlineMs: config.dataApiOperationDeadlineMs,
         })
       : config.dataSource === 'real' && config.realPlatformUrl
       ? new RowsDataPort({
