@@ -464,6 +464,16 @@ Cross-repo changes can be rolled out predictably without manual re-debugging of 
 
 The core product flow is closed. What's left:
 
+### B2C readiness (cross-repo, 2026-07-17)
+
+Canonical status lives in the control-center initiative registry — local status only, no plan duplication:
+
+- [b2c-f1-tenancy](../../control-center/docs/delivery/initiatives/b2c-f1-tenancy.md) — `proposed`. Backtester part: `tenant_id` + `submitted_by` on `backtest_job` (migration), tenant-scoped list/read/cancel — today `GET /v1/runs` is unscoped and `POST /v1/runs/:runId/cancel` authorizes by knowing a runId alone (`src/api/server.ts:111,178`); tenant must derive from the authenticated principal, not the request body.
+- [b2c-sdk-consolidation](../../control-center/docs/delivery/initiatives/b2c-sdk-consolidation.md) — `proposed`. `@trading-backtester/sdk` merges into `@trdlabs/sdk` as a `./backtester` subpath (step 0: lab realigns off the pinned v0.7.0 tarball first).
+- [b2c-ops-hardening](../../control-center/docs/delivery/initiatives/b2c-ops-hardening.md) — `proposed`. Backtester part: systemd units for the VPS deploy (replaces `setsid`/`pkill` in `deploy/vps/up.sh:18-27`), remove the committed VPS IP from `deploy/vps/README.md`.
+
+Local quick win independent of the cards: set a non-zero `BACKTESTER_QUEUE_MAX_DEPTH` (default `0` = unlimited; the 429 `queue_full` backpressure path already exists in `submit.ts`). Full analysis: control-center [`docs/analysis/06-b2c-readiness-report.md`](../../control-center/docs/analysis/06-b2c-readiness-report.md) §3.2 (incl. the full-history materialization OOM risk and FIFO fairness gap).
+
 ### Phase A — real platform data path
 
 **Verify-spike DONE (2026-07-05).** The backtester's live `RowsDataPort` (historical.2 contract)
