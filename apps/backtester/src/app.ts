@@ -140,12 +140,26 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       ? new RowsDataPort({
           baseUrl:   config.realPlatformUrl,
           pageLimit: config.dataApiPageLimit,
+          timeoutMs: config.dataApiTimeoutMs,
+          maxAttempts: config.dataApiMaxAttempts,
+          retryBaseMs: config.dataApiRetryBaseMs,
+          retryMaxMs: config.dataApiRetryMaxMs,
+          maxPages: config.dataApiMaxPages,
+          maxRows: config.dataApiMaxRows,
+          operationDeadlineMs: config.dataApiOperationDeadlineMs,
           ...(config.realPlatformToken ? { token: config.realPlatformToken } : {}),
         })
       : config.dataSource === 'mock' && config.mockPlatformUrl
       ? new RowsDataPort({
           baseUrl:   config.mockPlatformUrl,
           pageLimit: config.dataApiPageLimit,
+          timeoutMs: config.dataApiTimeoutMs,
+          maxAttempts: config.dataApiMaxAttempts,
+          retryBaseMs: config.dataApiRetryBaseMs,
+          retryMaxMs: config.dataApiRetryMaxMs,
+          maxPages: config.dataApiMaxPages,
+          maxRows: config.dataApiMaxRows,
+          operationDeadlineMs: config.dataApiOperationDeadlineMs,
           ...(config.mockPlatformToken ? { token: config.mockPlatformToken } : {}),
         })
       : new FixtureDataPort(config.fixturesDir));
