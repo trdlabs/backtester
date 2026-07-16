@@ -50,11 +50,11 @@ it('retries a transient rows response within maxAttempts', async () => {
   expect(rowCalls).toBe(2);
 });
 
-it('maps a timeout, operation deadline, and page/row overflow to RealDataUnavailableError', async () => {
-  await expect(collect(timeoutPort)).rejects.toMatchObject({ reason: 'timeout' });
-  await expect(collect(deadlinePort)).rejects.toMatchObject({ reason: 'timeout' });
-  await expect(collect(pageOverflowPort)).rejects.toMatchObject({ reason: 'pagination_overflow' });
-  await expect(collect(rowOverflowPort)).rejects.toMatchObject({ reason: 'pagination_overflow' });
+it('propagates timeout, operation deadline, and page/row overflow from HistoricalClient', async () => {
+  await expect(collect(timeoutPort)).rejects.toThrow(/timeout/);
+  await expect(collect(deadlinePort)).rejects.toThrow(/operation deadline exceeded/);
+  await expect(collect(pageOverflowPort)).rejects.toThrow(/exceeded maxPages/);
+  await expect(collect(rowOverflowPort)).rejects.toThrow(/exceeded maxRows/);
 });
 ```
 
