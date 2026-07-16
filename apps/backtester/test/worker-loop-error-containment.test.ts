@@ -18,6 +18,14 @@ import { loadConfig } from '../src/config.js';
 const CLOCK = 1_700_000_000_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error('timed out waiting for condition');
+    await sleep(5);
+  }
+}
+
 function baseDeps(store: InMemoryJobStore, nowMs: number): WorkerDeps {
   return {
     store, clock: () => nowMs, uid: () => 'u', postWebhook: async () => {},
@@ -41,7 +49,7 @@ describe('P2-7 — runWorkerLoop contains per-iteration errors', () => {
       concurrency: 1, heartbeatMs: 10_000, pollMs: 5, signal: ac.signal,
       errorBackoffBaseMs: 5, errorBackoffMaxMs: 20,
     });
-    await sleep(120);
+    await waitFor(() => calls >= 2);
     ac.abort();
     await loop; // must resolve, not reject with 'transient pg'
     // call #1 threw; any further call proves the loop survived the throw and kept iterating. (>=2 rather
@@ -95,7 +103,7 @@ describe('P2-7 — runWorkerLoop contains per-iteration errors', () => {
       concurrency: 1, heartbeatMs: 10, pollMs: 5, signal: ac.signal,
       errorBackoffBaseMs: 5, errorBackoffMaxMs: 10,
     });
-    await sleep(70);
+    await waitFor(() => renews > 1);
     ac.abort();
     await loop;
     expect(renews).toBeGreaterThan(1); // the beat fired repeatedly despite the failing loop body

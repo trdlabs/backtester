@@ -74,6 +74,20 @@ export interface RowsDataPortOptions {
   readonly fetchImpl?: FetchLike;
   /** Rows per page when fetching /historical/rows. Default 1000. */
   readonly pageLimit?: number;
+  /** Per-request timeout (ms), including response body consumption. */
+  readonly timeoutMs?: number;
+  /** Total request attempts, including the first. */
+  readonly maxAttempts?: number;
+  /** Retry backoff base delay (ms). */
+  readonly retryBaseMs?: number;
+  /** Retry backoff ceiling (ms). */
+  readonly retryMaxMs?: number;
+  /** Fail-closed cap on pages fetched by a single rows query. */
+  readonly maxPages?: number;
+  /** Fail-closed cap on rows accumulated by a single rows query. */
+  readonly maxRows?: number;
+  /** Optional deadline (ms) for a complete rows query. */
+  readonly operationDeadlineMs?: number;
   /** Bearer token for platform auth. */
   readonly token?: string;
 }
@@ -128,6 +142,13 @@ export class RowsDataPort implements BacktesterDataPort {
       fetchImpl: opts.fetchImpl,
       pageLimit: opts.pageLimit ?? 1000,
       token: opts.token,
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(opts.maxAttempts !== undefined ? { maxAttempts: opts.maxAttempts } : {}),
+      ...(opts.retryBaseMs !== undefined ? { retryBaseMs: opts.retryBaseMs } : {}),
+      ...(opts.retryMaxMs !== undefined ? { retryMaxMs: opts.retryMaxMs } : {}),
+      ...(opts.maxPages !== undefined ? { maxPages: opts.maxPages } : {}),
+      ...(opts.maxRows !== undefined ? { maxRows: opts.maxRows } : {}),
+      ...(opts.operationDeadlineMs !== undefined ? { operationDeadlineMs: opts.operationDeadlineMs } : {}),
     });
   }
 
