@@ -142,13 +142,13 @@ export class RowsDataPort implements BacktesterDataPort {
       fetchImpl: opts.fetchImpl,
       pageLimit: opts.pageLimit ?? 1000,
       token: opts.token,
-      timeoutMs: opts.timeoutMs,
-      maxAttempts: opts.maxAttempts,
-      retryBaseMs: opts.retryBaseMs,
-      retryMaxMs: opts.retryMaxMs,
-      maxPages: opts.maxPages,
-      maxRows: opts.maxRows,
-      operationDeadlineMs: opts.operationDeadlineMs,
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(opts.maxAttempts !== undefined ? { maxAttempts: opts.maxAttempts } : {}),
+      ...(opts.retryBaseMs !== undefined ? { retryBaseMs: opts.retryBaseMs } : {}),
+      ...(opts.retryMaxMs !== undefined ? { retryMaxMs: opts.retryMaxMs } : {}),
+      ...(opts.maxPages !== undefined ? { maxPages: opts.maxPages } : {}),
+      ...(opts.maxRows !== undefined ? { maxRows: opts.maxRows } : {}),
+      ...(opts.operationDeadlineMs !== undefined ? { operationDeadlineMs: opts.operationDeadlineMs } : {}),
     });
   }
 

@@ -42,7 +42,9 @@ async function collectRows(app: Awaited<ReturnType<typeof buildApp>>, datasetRef
 
 describe('buildApp data-source factory', () => {
   let realSrv: FastifyInstance, mockSrv: FastifyInstance, realUrl: string, mockUrl: string;
+  let sharedRealSrv: FastifyInstance, sharedMockSrv: FastifyInstance, sharedRealUrl: string, sharedMockUrl: string;
   let realAuthorizations: string[], mockAuthorizations: string[];
+  let sharedRealAuthorizations: string[], sharedMockAuthorizations: string[];
   beforeAll(async () => {
     realAuthorizations = [];
     mockAuthorizations = [];
@@ -50,8 +52,20 @@ describe('buildApp data-source factory', () => {
     realUrl = await realSrv.listen({ host: '127.0.0.1', port: 0 });
     mockSrv = historical2Server(['MOCKSYM'], [{ ...CANONICAL_ROW, symbol: 'MOCKSYM' }, { ...CANONICAL_ROW, symbol: 'MOCKSYM', minute_ts: 120_000 }], mockAuthorizations);
     mockUrl = await mockSrv.listen({ host: '127.0.0.1', port: 0 });
+    sharedRealAuthorizations = [];
+    sharedMockAuthorizations = [];
+    const sharedRows = [{ ...CANONICAL_ROW, symbol: 'BTCUSDT' }, { ...CANONICAL_ROW, symbol: 'BTCUSDT', minute_ts: 120_000 }];
+    sharedRealSrv = historical2Server(['BTCUSDT'], sharedRows, sharedRealAuthorizations);
+    sharedRealUrl = await sharedRealSrv.listen({ host: '127.0.0.1', port: 0 });
+    sharedMockSrv = historical2Server(['BTCUSDT'], sharedRows, sharedMockAuthorizations);
+    sharedMockUrl = await sharedMockSrv.listen({ host: '127.0.0.1', port: 0 });
   });
-  afterAll(async () => { await realSrv.close(); await mockSrv.close(); });
+  afterAll(async () => {
+    await realSrv.close();
+    await mockSrv.close();
+    await sharedRealSrv.close();
+    await sharedMockSrv.close();
+  });
 
   it("dataSource=real opens datasets from the REAL pair, not the mock pair", async () => {
     const cfg = loadConfig({
@@ -104,6 +118,33 @@ describe('buildApp data-source factory', () => {
       expect(calls).toContain(`Bearer ${token}`);
     } finally {
       await app.dispose();
+    }
+  });
+
+  it('real and mock production sources read identical canonical rows with their own credentials', async () => {
+    const baseConfig = {
+      realPlatformUrl: sharedRealUrl,
+      realPlatformToken: 'shared-real-tok',
+      mockPlatformUrl: sharedMockUrl,
+      mockPlatformToken: 'shared-mock-tok',
+    };
+    const realApp = await buildApp(testConfig({ ...baseConfig, dataSource: 'real' }));
+    const mockApp = await buildApp(testConfig({ ...baseConfig, dataSource: 'mock' }));
+    try {
+      const [realRows, mockRows] = await Promise.all([
+        collectRows(realApp, 'BTCUSDT:1m'),
+        collectRows(mockApp, 'BTCUSDT:1m'),
+      ]);
+      expect(realRows).toEqual(mockRows);
+      expect(realRows).toEqual([
+        { symbol: 'BTCUSDT', minute_ts: 60_000 },
+        { symbol: 'BTCUSDT', minute_ts: 120_000 },
+      ]);
+      expect(sharedRealAuthorizations).toContain('Bearer shared-real-tok');
+      expect(sharedMockAuthorizations).toContain('Bearer shared-mock-tok');
+    } finally {
+      await realApp.dispose();
+      await mockApp.dispose();
     }
   });
 
