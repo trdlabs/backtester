@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@microsoft/api-extractor": "^7.58.9",
-    "@trdlabs/sdk": "^0.9.5",
+    "@trdlabs/sdk": "^0.10.0",
     "rimraf": "^6.1.3",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
