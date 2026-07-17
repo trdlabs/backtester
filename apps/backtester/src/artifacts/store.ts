@@ -12,8 +12,8 @@ import type {
   ArtifactManifest,
   ArtifactReference,
   ContentHash,
-} from '@trading-backtester/sdk/artifacts';
-import { API_CONTRACT_VERSION, ARTIFACT_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
+} from '@trdlabs/backtester-sdk/artifacts';
+import { API_CONTRACT_VERSION, ARTIFACT_CONTRACT_VERSION } from '@trdlabs/backtester-sdk/contracts';
 import { canonicalJson } from '../determinism/canonical-json';
 import { contentRef } from '../determinism/hash';
 import type { BacktestResult } from '../runner/run-backtest';

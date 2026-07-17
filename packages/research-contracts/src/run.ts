@@ -1,5 +1,5 @@
 // Run / result / artifact / validation / capability wire types — re-exported from the canonical
-// SDK (@trading-backtester/sdk). This module keeps the historical @trading/research-contracts
+// SDK (@trdlabs/backtester-sdk). This module keeps the historical @trading/research-contracts
 // entry stable for existing importers (no import-site churn); the SDK is the single definition
 // source. ComparisonSummary is re-exported from ./comparison.ts (itself a thin SDK re-export).
 
@@ -32,7 +32,7 @@ export type {
   ValidationReport,
   CapabilityDescriptor,
   DatasetDescriptor,
-} from '@trading-backtester/sdk/contracts';
+} from '@trdlabs/backtester-sdk/contracts';
 
 export type {
   ArtifactReference,
@@ -40,4 +40,4 @@ export type {
   ArtifactManifest,
   ArtifactPage,
   ArtifactAvailability,
-} from '@trading-backtester/sdk/artifacts';
+} from '@trdlabs/backtester-sdk/artifacts';

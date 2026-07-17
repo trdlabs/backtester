@@ -1,4 +1,4 @@
-// Canonical client integration test: exercises the @trading-backtester/sdk client against a REAL
+// Canonical client integration test: exercises the @trdlabs/backtester-sdk client against a REAL
 // running app over HTTP (the same path trading-lab's HttpBacktesterAdapter uses). Imported from
 // source to avoid a build step in tests. The legacy packages/client and its test were removed in
 // Phase 3 of the SDK initiative; this file is the sole client integration test going forward.
@@ -14,7 +14,7 @@ import { buildTestApp, runBody, testDeps } from './helpers';
 
 const GOLDEN_RESULT_HASH = 'sha256:eff10116147933c96d92ae50071ef66339467fb69545c38855dcd50c2c0b43ba';
 
-describe('@trading-backtester/sdk client over HTTP', () => {
+describe('@trdlabs/backtester-sdk client over HTTP', () => {
   let app: AppHandles;
   let client: BacktesterClient;
 

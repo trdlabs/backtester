@@ -4,7 +4,7 @@
 // the trusted momentum executor. Sandbox limit/▶failures map to a clean terminal status + terminal_code
 // (never a service crash).
 
-import type { ArtifactManifest, ArtifactReference, ContentHash } from '@trading-backtester/sdk/artifacts';
+import type { ArtifactManifest, ArtifactReference, ContentHash } from '@trdlabs/backtester-sdk/artifacts';
 import type {
   BacktestRunRequest,
   HoldoutMarker,
@@ -15,8 +15,8 @@ import type {
   RunResultSummary,
   WalkForward,
   WalkForwardFailureCode,
-} from '@trading-backtester/sdk/contracts';
-import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
+} from '@trdlabs/backtester-sdk/contracts';
+import { API_CONTRACT_VERSION } from '@trdlabs/backtester-sdk/contracts';
 import { contentRef } from '../determinism/hash';
 import { persistRunArtifacts, type ArtifactStore } from '../artifacts/store';
 import { persistOverlayArtifacts } from '../artifacts/overlay-store';

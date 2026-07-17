@@ -30,7 +30,7 @@ export interface ReleaseManifestInput {
 
 export function releaseManifest(input: ReleaseManifestInput) {
   return {
-    package: '@trading-backtester/sdk' as const,
+    package: '@trdlabs/backtester-sdk' as const,
     version: input.version,
     sourceSha: input.sourceSha,
     asset: input.asset,

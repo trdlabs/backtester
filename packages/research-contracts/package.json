@@ -17,7 +17,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
-    "@trading-backtester/sdk": "workspace:*",
+    "@trdlabs/backtester-sdk": "workspace:*",
     "@trdlabs/sdk": "^0.10.0"
   }
 }

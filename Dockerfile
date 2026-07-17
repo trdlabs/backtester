@@ -1,7 +1,7 @@
 # trading-backtester Dockerfile
 # Single-stage: the service app runs with tsx (no tsc emit step in this workspace).
-# @trading-backtester/sdk is built with tsup → dist/ (contracts/builder/client/artifacts subpaths).
-# trading-lab consumes the published @trading-backtester/sdk tarball (packages/client removed in Phase 3).
+# @trdlabs/backtester-sdk is built with tsup → dist/ (contracts/builder/client/artifacts subpaths).
+# trading-lab consumes the published @trdlabs/backtester-sdk tarball (packages/client removed in Phase 3).
 
 # Docker CLI only (no daemon) for the DooD sandbox runner — pinned >=25 for `--mount volume-subpath`.
 FROM docker:27-cli AS dockercli
@@ -32,7 +32,7 @@ COPY apps/backtester/migrations apps/backtester/migrations/
 # fixtures used by FixtureDataPort (BACKTESTER_DATA_SOURCE=fixture)
 COPY apps/backtester/fixtures apps/backtester/fixtures/
 
-RUN pnpm --filter @trading-backtester/sdk build
+RUN pnpm --filter @trdlabs/backtester-sdk build
 # Build the overlay harness _engine (gitignored; compiled from src/engine/indicators/**).
 RUN node apps/backtester/scripts/build-sandbox-harness-overlay.mjs
 

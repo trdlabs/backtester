@@ -1,5 +1,5 @@
 {
-  "name": "@trading-backtester/sdk",
+  "name": "@trdlabs/backtester-sdk",
   "version": "0.8.0",
   "description": "Standalone authoring, contracts, artifacts and HTTP client SDK for trading-backtester.",
   "type": "module",

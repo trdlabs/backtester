@@ -20,7 +20,7 @@ import type { CanonicalRowV2, StrategyModule } from '@trading/research-contracts
 import { toFixtureFile, fixtureWindow } from './lib/long-oi-fixture.mjs';
 import { materializeBundle } from '../src/engine/sandbox/bundle-materialize.js';
 import { loadBundle } from '../src/engine/sandbox/bundle.js';
-import { createModuleManifest } from '@trading-backtester/sdk/builder';
+import { createModuleManifest } from '@trdlabs/backtester-sdk/builder';
 import { buildOverlayDataset } from '../src/engine/data-adapter.js';
 import { runStrategyBacktest } from '../src/engine/run-strategy.js';
 import { buildInlineOverlayRegistry } from '../src/engine/trusted-registry.js';

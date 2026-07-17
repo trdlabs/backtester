@@ -26,12 +26,12 @@ importers:
 
   apps/backtester:
     dependencies:
-      '@trading-backtester/sdk':
-        specifier: workspace:*
-        version: link:../../packages/sdk
       '@trading/research-contracts':
         specifier: workspace:*
         version: link:../../packages/research-contracts
+      '@trdlabs/backtester-sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@trdlabs/sdk':
         specifier: ^0.10.0
         version: 0.10.0
@@ -54,7 +54,7 @@ importers:
 
   packages/research-contracts:
     dependencies:
-      '@trading-backtester/sdk':
+      '@trdlabs/backtester-sdk':
         specifier: workspace:*
         version: link:../sdk
       '@trdlabs/sdk':

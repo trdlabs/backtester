@@ -17,8 +17,8 @@ import type { QualificationEpochResolver } from './epoch-resolver.js';
 import type { CompletedOutcome } from '../../engine/window-eval.js';
 import type { JobRow } from '../job-store.js';
 import type { ModuleBundle } from '../../engine/sandbox/bundle.js';
-import type { PromotionResult, PromotionFailureReason, RunPeriod } from '@trading-backtester/sdk/contracts';
-import type { ArtifactReference, ContentHash } from '@trading-backtester/sdk/artifacts';
+import type { PromotionResult, PromotionFailureReason, RunPeriod } from '@trdlabs/backtester-sdk/contracts';
+import type { ArtifactReference, ContentHash } from '@trdlabs/backtester-sdk/artifacts';
 
 export function buildPromotionPolicy(cfg: { holdoutFraction: number }) {
   const thresholds = DEFAULT_THRESHOLDS;

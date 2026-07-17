@@ -18,9 +18,9 @@ const pkg = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 ) as PackageJson;
 
-describe('@trading-backtester/sdk package shape', () => {
+describe('@trdlabs/backtester-sdk package shape', () => {
   it('is public, licensed and exposes only the approved entrypoints', () => {
-    expect(pkg.name).toBe('@trading-backtester/sdk');
+    expect(pkg.name).toBe('@trdlabs/backtester-sdk');
     expect(pkg.version).toBe('0.8.0');
     expect(pkg.private).not.toBe(true);
     expect(pkg.license).toBe('Apache-2.0');

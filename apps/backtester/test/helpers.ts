@@ -11,8 +11,8 @@ import { DEFAULT_SANDBOX, SANDBOX_IMAGE } from '../src/engine/sandbox-policy';
 import type { JobStore } from '../src/jobs/job-store';
 import type { RunSubmitRequest } from '@trading/research-contracts';
 import type { StoreFactory } from './store-factories';
-import { createModuleManifest } from '@trading-backtester/sdk/builder';
-import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
+import { createModuleManifest } from '@trdlabs/backtester-sdk/builder';
+import type { ModuleBundle } from '@trdlabs/backtester-sdk/contracts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = resolve(HERE, '../fixtures/candles');

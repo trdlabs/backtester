@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { RegistryDescriptor } from '@trading-backtester/sdk/contracts';
+import type { RegistryDescriptor } from '@trdlabs/backtester-sdk/contracts';
 import type { AppHandles } from '../src/app';
 import { AUTH, buildTestApp } from './helpers';
 

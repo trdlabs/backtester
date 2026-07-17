@@ -3,7 +3,7 @@
 // those facts + operator thresholds; lab-only judgments (suspected_overfit / hypothesis_mismatch)
 // stay lab-side. Advisory: the result rides the summary projection only, never a hashed payload.
 
-import type { RunDiagnostics, RunDiagnosticFlag } from '@trading-backtester/sdk/contracts';
+import type { RunDiagnostics, RunDiagnosticFlag } from '@trdlabs/backtester-sdk/contracts';
 import type { EquityPoint, Trade } from './artifacts.js';
 import { quantize } from '../determinism/canonical-json.js';
 import { dsrInputsFromEquity } from './metrics.js';

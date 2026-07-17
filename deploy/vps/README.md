@@ -11,7 +11,7 @@ captured in config, not a code default flip.
 - `backtester-pg` Postgres container on `127.0.0.1:15433`.
 - mock-platform on `127.0.0.1:8890` (`MOCK_SNAPSHOT_REF=fixtures/2026-06-16-to-18-extended`).
 - Repo synced to `/root/projects/trading-backtester`, deps installed, SDK built
-  (`pnpm --filter @trading-backtester/sdk build` after any rsync).
+  (`pnpm --filter @trdlabs/backtester-sdk build` after any rsync).
 
 ## Use
 

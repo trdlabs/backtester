@@ -1,7 +1,7 @@
 # P2-12 — Data-fetch resilience: timeout, bounded retry, pagination guards
 
 > **ИСПРАВЛЕНИЕ SCOPE (ревью #140).** Изначальная версия этой спеки ошибочно назвала контуром 2
-> `@trading-backtester/sdk` `BacktesterClient`. Настоящая цель P2-12 (CODE-REVIEW:100) — **`HttpDataPort`**
+> `@trdlabs/backtester-sdk` `BacktesterClient`. Настоящая цель P2-12 (CODE-REVIEW:100) — **`HttpDataPort`**
 > + кросс-репный **`@trdlabs/sdk` `HistoricalClient`** (держит production `dataSource=real|mock` через
 > `RowsDataPort`). Итоговое разбиение:
 > - **#140 (этот репо)** — только `HttpDataPort` (контур 1), с закрытыми багами ревью #140: (2) timeout
@@ -9,7 +9,7 @@
 >   переполняет дедлайн).
 > - **Кросс-репный PR (`../sdk`)** — захардить `HistoricalClient` (`discover`/`coverage`/`queryRows`) теми
 >   же гарантиями; затем bump `@trdlabs/sdk` в backtester + wire `RowsDataPort`. Это закрывает production.
-> - **Отдельный `@trading-backtester/sdk` 0.9 PR** — `BacktesterClient` timeout/abort (полезно, но не цель
+> - **Отдельный `@trdlabs/backtester-sdk` 0.9 PR** — `BacktesterClient` timeout/abort (полезно, но не цель
 >   P2-12), с закрытыми багами (2) body-under-timeout и (4) abortable backoff/polling sleep. Убран из #140.
 
 Из `CODE-REVIEW-2026-07-12.md` P2-12 (строка 100). Два ownership-контура, одна спека:
@@ -102,10 +102,10 @@ resilient-request слой из Контура 1, но клиент **generic** 
   прокидывает resilience-опции (из `config` через `app.ts`) в `new HistoricalClient(...)`; прогнать real/mock
   integration. Только после этого P2-12 считается полностью закрытым.
 
-## Контур 2b — `@trading-backtester/sdk` `BacktesterClient` (НЕ цель P2-12, отдельный PR)
+## Контур 2b — `@trdlabs/backtester-sdk` `BacktesterClient` (НЕ цель P2-12, отдельный PR)
 
 Полезное, но **не** часть P2-12 (это lab-facing SDK). Ошибочно попал в #140 (ревью #140 §1) → откачен,
-перевезён в отдельный `@trading-backtester/sdk` 0.9 PR. Там закрыть баги ревью #140: **§2** timeout
+перевезён в отдельный `@trdlabs/backtester-sdk` 0.9 PR. Там закрыть баги ревью #140: **§2** timeout
 охватывает body-read, **§4** backoff/polling `sleep` — abort-прерываемый (caller abort не ждёт до 60с).
 Additive minor 0.8.0→0.9.0 (4 сайта версии); релиз — свой release train, после ревью.
 

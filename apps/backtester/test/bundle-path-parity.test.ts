@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { ModuleBundle } from '@trading/research-contracts';
-import { createModuleManifest, preflightValidateBundle } from '@trading-backtester/sdk/builder';
+import { createModuleManifest, preflightValidateBundle } from '@trdlabs/backtester-sdk/builder';
 import { validateBundle } from '../src/sandbox/bundle.js';
 
 const ENTRY = 'module.mjs';

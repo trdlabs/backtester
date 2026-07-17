@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ExecutorRouter } from '../src/engine/sandbox/routing.js';
 import { RunnerError } from '../src/runner/errors.js';
 import { workerInternals, type WorkerDeps } from '../src/jobs/worker.js';
-import type { FoldWindow } from '@trading-backtester/sdk/contracts';
+import type { FoldWindow } from '@trdlabs/backtester-sdk/contracts';
 
 const DAY = 86_400_000;
 const fold = (i: number): FoldWindow => ({

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
-import { computeInlineBundleHash, createModuleManifest } from '@trading-backtester/sdk/builder';
+import type { ModuleBundle } from '@trdlabs/backtester-sdk/contracts';
+import { computeInlineBundleHash, createModuleManifest } from '@trdlabs/backtester-sdk/builder';
 import { bundleHash, validateBundle } from '../src/sandbox/bundle';
 
 const SRC = 'export function signals(c){ return c.map(()=>false); }';

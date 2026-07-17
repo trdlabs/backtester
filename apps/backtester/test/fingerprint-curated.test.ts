@@ -5,7 +5,7 @@
 // fingerprints (no dedup-cache churn; curated runs bypass the cache anyway). See CODE-REVIEW-2026-07-12.md.
 
 import { describe, expect, it } from 'vitest';
-import type { RunSubmitRequest } from '@trading-backtester/sdk/contracts';
+import type { RunSubmitRequest } from '@trdlabs/backtester-sdk/contracts';
 import { requestFingerprint } from '../src/jobs/fingerprint.js';
 
 const base = {

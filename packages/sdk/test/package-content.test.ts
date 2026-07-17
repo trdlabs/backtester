@@ -30,7 +30,7 @@ describe('SDK packed package policy', () => {
   it('allows the declared decimal.js registry dependency and a clean file set', () => {
     expect(checkPackedPackage({
       packageJson: {
-        name: '@trading-backtester/sdk', version: '0.1.0', license: 'Apache-2.0',
+        name: '@trdlabs/backtester-sdk', version: '0.1.0', license: 'Apache-2.0',
         dependencies: { 'decimal.js': '^10.4.3' },
         exports: {
           '.': { import: './dist/index.js', types: './dist/index.d.ts' },

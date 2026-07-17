@@ -12,7 +12,7 @@
     "start:data-api": "tsx src/data-api-main.ts"
   },
   "dependencies": {
-    "@trading-backtester/sdk": "workspace:*",
+    "@trdlabs/backtester-sdk": "workspace:*",
     "@trdlabs/sdk": "^0.10.0",
     "@trading/research-contracts": "workspace:*",
     "ajv": "^8.20.0",

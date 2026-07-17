@@ -6,8 +6,8 @@
 import type {
   ArtifactDescriptor,
   ArtifactReference,
-} from '@trading-backtester/sdk/artifacts';
-import { API_CONTRACT_VERSION, ARTIFACT_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
+} from '@trdlabs/backtester-sdk/artifacts';
+import { API_CONTRACT_VERSION, ARTIFACT_CONTRACT_VERSION } from '@trdlabs/backtester-sdk/contracts';
 import type { ArtifactStore, PersistedArtifacts } from './store';
 import type { RunOutcome } from '../engine/artifacts';
 

@@ -15,7 +15,7 @@ import type {
   StrategyContext,
   StrategyModule,
 } from '@trading/research-contracts/research';
-import { STRATEGY_EXAMPLE_BUNDLE } from '@trading-backtester/sdk/builder';
+import { STRATEGY_EXAMPLE_BUNDLE } from '@trdlabs/backtester-sdk/builder';
 import { loadConfig } from '../src/config.js';
 import { loadBundle } from '../src/engine/sandbox/bundle.js';
 import { materializeBundle, type MaterializedBundle } from '../src/engine/sandbox/bundle-materialize.js';
