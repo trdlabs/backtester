@@ -1,4 +1,4 @@
-# @trading-backtester/sdk
+# @trdlabs/backtester-sdk
 
 Standalone authoring, contracts, artifacts, and HTTP client SDK for the trading-backtester platform.
 
@@ -13,13 +13,13 @@ Standalone authoring, contracts, artifacts, and HTTP client SDK for the trading-
 Install from the GitHub Release tarball (no registry required):
 
 ```sh
-npm install https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trading-backtester-sdk-0.1.0.tgz
+npm install https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trdlabs-backtester-sdk-0.1.0.tgz
 ```
 
 Or with pnpm:
 
 ```sh
-pnpm add https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trading-backtester-sdk-0.1.0.tgz
+pnpm add https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trdlabs-backtester-sdk-0.1.0.tgz
 ```
 
 ---
@@ -30,11 +30,11 @@ The SDK ships five subpath exports. All are ESM-only; use `"type": "module"` and
 
 | Subpath | Contents |
 |---|---|
-| `@trading-backtester/sdk` | Root — `SDK_VERSION`, capability flags |
-| `@trading-backtester/sdk/contracts` | Core type contracts, schema assets, `allSchemaAssets()` |
-| `@trading-backtester/sdk/builder` | `createModuleManifest`, `createModuleBundle`, `computeInlineBundleHash`, `preflightValidateBundle` |
-| `@trading-backtester/sdk/client` | `BacktesterClient` HTTP client, error types |
-| `@trading-backtester/sdk/artifacts` | `isContentHash` and artifact guard utilities |
+| `@trdlabs/backtester-sdk` | Root — `SDK_VERSION`, capability flags |
+| `@trdlabs/backtester-sdk/contracts` | Core type contracts, schema assets, `allSchemaAssets()` |
+| `@trdlabs/backtester-sdk/builder` | `createModuleManifest`, `createModuleBundle`, `computeInlineBundleHash`, `preflightValidateBundle` |
+| `@trdlabs/backtester-sdk/client` | `BacktesterClient` HTTP client, error types |
+| `@trdlabs/backtester-sdk/artifacts` | `isContentHash` and artifact guard utilities |
 
 ---
 
@@ -45,8 +45,8 @@ The SDK ships five subpath exports. All are ESM-only; use `"type": "module"` and
 Compute signals from a candle series and package them as a runnable overlay module:
 
 ```ts
-import { createModuleManifest, createModuleBundle, computeInlineBundleHash } from '@trading-backtester/sdk/builder';
-import { isContentHash } from '@trading-backtester/sdk/artifacts';
+import { createModuleManifest, createModuleBundle, computeInlineBundleHash } from '@trdlabs/backtester-sdk/builder';
+import { isContentHash } from '@trdlabs/backtester-sdk/artifacts';
 
 function signals(candles: { close: number }[], seed: number) {
   // simple momentum: price relative to n-period average
@@ -95,8 +95,8 @@ console.assert(isContentHash(hash), 'hash must be a valid ContentHash');
 ### Authoring types and lifecycle
 
 ```ts
-import type { ModuleManifest, ModuleBundle } from '@trading-backtester/sdk/contracts';
-import { preflightValidateBundle } from '@trading-backtester/sdk/builder';
+import type { ModuleManifest, ModuleBundle } from '@trdlabs/backtester-sdk/contracts';
+import { preflightValidateBundle } from '@trdlabs/backtester-sdk/builder';
 
 // Local preflight — catches structural errors before submitting to the service.
 // This is not authoritative validation; the service performs authoritative validation
@@ -113,8 +113,8 @@ async function prepareBundle(bundle: ModuleBundle): Promise<void> {
 ### HTTP client — submit, poll, and read artifacts
 
 ```ts
-import { BacktesterClient } from '@trading-backtester/sdk/client';
-import { isContentHash } from '@trading-backtester/sdk/artifacts';
+import { BacktesterClient } from '@trdlabs/backtester-sdk/client';
+import { isContentHash } from '@trdlabs/backtester-sdk/artifacts';
 
 const client = new BacktesterClient({ baseUrl: 'https://your-backtester-host' });
 
@@ -173,7 +173,7 @@ to bound memory usage. For large artifacts, use the paginated
 
 ## Strategy authoring (for the lab builder)
 
-The `@trading-backtester/sdk/builder` subpath now carries the strategy-authoring surface:
+The `@trdlabs/backtester-sdk/builder` subpath now carries the strategy-authoring surface:
 
 - `getAuthoringDoc('strategy' | 'overlay')` + `STRATEGY_AUTHORING_DOC` / `OVERLAY_AUTHORING_DOC` —
   the prose fed to the LLM builder.
@@ -187,7 +187,7 @@ The `@trading-backtester/sdk/builder` subpath now carries the strategy-authoring
 bundleContractVersion }` plus the rich kernel manifest fields; `bundleHash` is the sha256 of the raw
 ESM bytes.
 
-**Next on the lab side (separate task):** depend on `@trading-backtester/sdk`; consume
+**Next on the lab side (separate task):** depend on `@trdlabs/backtester-sdk`; consume
 `getAuthoringDoc` + the example in the builder prompt/RAG; converge lab's `module-bundle-v1` to this
 canonical contract; update the lab schema/validator/prompt to emit strategy bundles; then build the
 proof-harness (generate → backtester validate+sign → platform paper-isolated vs curated `long_oi` →

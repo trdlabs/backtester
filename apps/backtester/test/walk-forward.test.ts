@@ -2,7 +2,7 @@
 // metrics → transparent cross-fold stats). Executes nothing; no submit/result wiring.
 
 import { describe, expect, it } from 'vitest';
-import type { WalkForwardFoldMetrics } from '@trading-backtester/sdk/contracts';
+import type { WalkForwardFoldMetrics } from '@trdlabs/backtester-sdk/contracts';
 import { aggregateFolds, splitWalkForward, WalkForwardConfigError } from '../src/engine/walk-forward.js';
 
 // 7-day window ⇒ folds=6 ⇒ 7 equal 1-day segments; boundary(k) = 2023-01-(01+k).

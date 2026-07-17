@@ -2,14 +2,14 @@
 // Bearer auth on every /v1 route, fail-closed. See docs/ARCHITECTURE.md §4.
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import type { ArtifactPage } from '@trading-backtester/sdk/artifacts';
+import type { ArtifactPage } from '@trdlabs/backtester-sdk/artifacts';
 import type {
   CapabilityDescriptor,
   RunSubmitRequest,
   ValidationIssue,
   ValidationReport,
-} from '@trading-backtester/sdk/contracts';
-import { API_CONTRACT_VERSION, ARTIFACT_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
+} from '@trdlabs/backtester-sdk/contracts';
+import { API_CONTRACT_VERSION, ARTIFACT_CONTRACT_VERSION } from '@trdlabs/backtester-sdk/contracts';
 import { METRIC_CATALOG } from '@trading/research-contracts';
 import { validateBundle } from '../sandbox/bundle';
 import type { BacktesterDataPort } from '../data/reader';

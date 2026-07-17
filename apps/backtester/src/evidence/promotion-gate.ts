@@ -4,7 +4,7 @@ import { compareBacktestRuns } from '../engine/equivalence.js';
 import { evaluateWindow, type CompletedOutcome } from '../engine/window-eval.js';
 import { parseTimeframeMs } from '../engine/timeframe.js';
 import { decideVerdict, type EvidenceThresholds } from './verdict.js';
-import type { RunPeriod } from '@trading-backtester/sdk/contracts';
+import type { RunPeriod } from '@trdlabs/backtester-sdk/contracts';
 
 /** True iff the tape FULLY and CONTIGUOUSLY covers the holdout window `[wFrom, wTo)` on the trusted grid:
  *  a real bar covering the left edge, then every `interval`-spaced slot present up to `wTo`, and NO extra

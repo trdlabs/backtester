@@ -99,8 +99,8 @@ export function checkPackedPackage(input: CheckPackedPackageInput): string[] {
   //       (Skipped for minimal/partial inputs to avoid spurious errors.)
   if (typeof packageJson.name === 'string') {
     // 3a. Name / license / version
-    if (packageJson.name !== '@trading-backtester/sdk') {
-      errors.push(`invalid package name "${packageJson.name}"; expected @trading-backtester/sdk`);
+    if (packageJson.name !== '@trdlabs/backtester-sdk') {
+      errors.push(`invalid package name "${packageJson.name}"; expected @trdlabs/backtester-sdk`);
     }
     if (packageJson.license !== 'Apache-2.0') {
       errors.push(`missing or incorrect license; expected Apache-2.0, got ${packageJson.license ?? '(none)'}`);

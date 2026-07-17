@@ -3,7 +3,7 @@
 // Advisory: the marker rides the result projection only, never a hashed payload. NOT the worker's
 // pre-existing curated-baseline "E4" evidence block — different feature.
 
-import type { HoldoutResolved, RunPeriod } from '@trading-backtester/sdk/contracts';
+import type { HoldoutResolved, RunPeriod } from '@trdlabs/backtester-sdk/contracts';
 
 /** Malformed holdout configuration — thrown fail-fast so a bad fraction/coverage never silently no-ops. */
 export class HoldoutConfigError extends Error {

@@ -1,7 +1,7 @@
 // Submit service — validate, fingerprint, idempotent insert, accepted -> queued.
 
-import type { ContentHash } from '@trading-backtester/sdk/artifacts';
-import type { RunJobHandle, RunSubmitRequest } from '@trading-backtester/sdk/contracts';
+import type { ContentHash } from '@trdlabs/backtester-sdk/artifacts';
+import type { RunJobHandle, RunSubmitRequest } from '@trdlabs/backtester-sdk/contracts';
 import { METRIC_CATALOG } from '@trading/research-contracts';
 import { METRIC_CATALOG as OVERLAY_METRIC_CATALOG } from '@trading/research-contracts/research';
 import { E1A_METRIC_CATALOG } from '../engine/metrics';

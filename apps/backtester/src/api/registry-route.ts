@@ -1,5 +1,5 @@
-import type { RegistryDescriptor, RegisteredModuleRef } from '@trading-backtester/sdk/contracts';
-import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
+import type { RegistryDescriptor, RegisteredModuleRef } from '@trdlabs/backtester-sdk/contracts';
+import { API_CONTRACT_VERSION } from '@trdlabs/backtester-sdk/contracts';
 import { TRUSTED_REGISTRY_DEFINITION as D } from '../engine/registry-definition.js';
 
 function toRef(r: { id: string; version: string; name?: string; summary?: string }): RegisteredModuleRef {

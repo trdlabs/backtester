@@ -23,11 +23,11 @@ const absoluteTarball = resolve(tarball);
 
 // Smoke test — TypeScript source (compile-time coverage of all entrypoints)
 const smokeTs = `\
-import { SDK_VERSION } from '@trading-backtester/sdk';
-import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
-import { createModuleManifest } from '@trading-backtester/sdk/builder';
-import { BacktesterClient } from '@trading-backtester/sdk/client';
-import { isContentHash } from '@trading-backtester/sdk/artifacts';
+import { SDK_VERSION } from '@trdlabs/backtester-sdk';
+import type { ModuleBundle } from '@trdlabs/backtester-sdk/contracts';
+import { createModuleManifest } from '@trdlabs/backtester-sdk/builder';
+import { BacktesterClient } from '@trdlabs/backtester-sdk/client';
+import { isContentHash } from '@trdlabs/backtester-sdk/artifacts';
 void [SDK_VERSION, createModuleManifest, BacktesterClient, isContentHash];
 const bundle: ModuleBundle | undefined = undefined;
 void bundle;
@@ -35,13 +35,13 @@ void bundle;
 
 // Smoke test — runtime ESM
 const smokeMjs = `\
-import { SDK_VERSION } from '@trading-backtester/sdk';
-import { allSchemaAssets } from '@trading-backtester/sdk/contracts';
-import { createModuleManifest, createModuleBundle, computeInlineBundleHash } from '@trading-backtester/sdk/builder';
-import { BacktesterClient } from '@trading-backtester/sdk/client';
-import { isContentHash } from '@trading-backtester/sdk/artifacts';
+import { SDK_VERSION } from '@trdlabs/backtester-sdk';
+import { allSchemaAssets } from '@trdlabs/backtester-sdk/contracts';
+import { createModuleManifest, createModuleBundle, computeInlineBundleHash } from '@trdlabs/backtester-sdk/builder';
+import { BacktesterClient } from '@trdlabs/backtester-sdk/client';
+import { isContentHash } from '@trdlabs/backtester-sdk/artifacts';
 import { readFileSync } from 'node:fs';
-const expected = JSON.parse(readFileSync(new URL('./node_modules/@trading-backtester/sdk/package.json', import.meta.url), 'utf8')).version;
+const expected = JSON.parse(readFileSync(new URL('./node_modules/@trdlabs/backtester-sdk/package.json', import.meta.url), 'utf8')).version;
 if (SDK_VERSION !== expected) { console.error('SDK_VERSION', SDK_VERSION, '!== package.json', expected); process.exit(1); }
 if (typeof createModuleManifest !== 'function') process.exit(1);
 if (typeof BacktesterClient !== 'function') process.exit(1);
@@ -89,7 +89,7 @@ try {
     private: true,
     type: 'module',
     dependencies: {
-      '@trading-backtester/sdk': absoluteTarball,
+      '@trdlabs/backtester-sdk': absoluteTarball,
     },
     devDependencies: {
       typescript: '^5.7.2',

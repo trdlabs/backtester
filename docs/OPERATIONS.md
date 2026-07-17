@@ -10,7 +10,7 @@ How to verify, release, and roll out changes across `trading-backtester`, `tradi
 | `trading-platform` | Canonical research engine, historical data writer, contract gates (`gates:017`…`gates:037`) |
 | `trading-mock-platform` | Credential-free ops-read + historical replay for local/demo stacks |
 | `trading-backtester` | Async research job service; HTTP client boundary for `trading-lab` |
-| `trading-lab` | Hypothesis orchestration; submits preset-driven overlay runs via `@trading-backtester/sdk` |
+| `trading-lab` | Hypothesis orchestration; submits preset-driven overlay runs via `@trdlabs/backtester-sdk` |
 
 ## Release ordering
 
@@ -22,16 +22,16 @@ When a change spans repositories, land in this order:
    - `packages/research-contracts` (if types changed) — wire types are now re-exported from `packages/sdk`, the single definition source (see `docs/superpowers/specs/2026-06-21-research-contracts-wire-dedup-design.md`)
    - service + tests (`pnpm check`)
    - **publish a new SDK release** if the public contract changed (see *SDK distribution & discovery* below). `packages/client` was removed (PR #22); consumers no longer use a `file:` path dep.
-4. **`trading-lab`** — adapter / handler wiring last (`pnpm check`); re-pin `@trading-backtester/sdk` to the new release tarball URL and commit the lockfile **only after** the SDK release is published.
+4. **`trading-lab`** — adapter / handler wiring last (`pnpm check`); re-pin `@trdlabs/backtester-sdk` to the new release tarball URL and commit the lockfile **only after** the SDK release is published.
 
 When the public contract changes, **bump and publish `sdk-vX.Y.Z` before** landing the lab cutover — lab pins an exact GitHub Release tarball, not a sibling checkout.
 
 ## SDK distribution & discovery
 
-The public `@trading-backtester/sdk` (`packages/sdk`) ships as an **immutable GitHub Release tarball** — no npmjs, no sibling checkouts.
+The public `@trdlabs/backtester-sdk` (`packages/sdk`) ships as an **immutable GitHub Release tarball** — no npmjs, no sibling checkouts.
 
 - **Publish:** `gh workflow run sdk-release.yml -f version=X.Y.Z` (manual `workflow_dispatch`). Fail-closed: it refuses to overwrite an existing tag/release. The job runs `pnpm check`, builds + packs + verifies the SDK, attaches `.tgz` + `.sha256` + `manifest.json`, and creates tag `sdk-vX.Y.Z`. `packages/sdk/package.json`'s version MUST equal the input.
-- **Consume:** pin the exact asset URL `…/releases/download/sdk-vX.Y.Z/trading-backtester-sdk-X.Y.Z.tgz` in `package.json` and commit the resulting `pnpm-lock.yaml` (URL + integrity). A clean-clone install needs no sibling checkout.
+- **Consume:** pin the exact asset URL `…/releases/download/sdk-vX.Y.Z/trdlabs-backtester-sdk-X.Y.Z.tgz` in `package.json` and commit the resulting `pnpm-lock.yaml` (URL + integrity). A clean-clone install needs no sibling checkout.
 - **Versioning:** `SDK_VERSION` (the package version, e.g. `0.2.0`) is independent of `API_CONTRACT_VERSION` (the wire version, e.g. `017.2`). An additive SDK change bumps `SDK_VERSION` only.
 
 ### Registry discovery (`GET /v1/registry`)

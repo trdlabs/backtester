@@ -1,6 +1,6 @@
 // E4b — build the flat backtest-evidence/v2 promotion body (v1 fields + held-out binding). Signed only
 // when verdict === 'passed', so this builder hardcodes verdict:'passed'.
-import type { EvidenceBodyV2 } from '@trading-backtester/sdk/contracts';
+import type { EvidenceBodyV2 } from '@trdlabs/backtester-sdk/contracts';
 
 export function buildEvidenceBodyV2(input: {
   readonly backtesterRunId: string; readonly bundleHash: string; readonly keyId: string;

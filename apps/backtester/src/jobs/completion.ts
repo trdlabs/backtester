@@ -7,8 +7,8 @@ import type {
   CompletionEventType,
   RunResultSummary,
   TerminalRunStatus,
-} from '@trading-backtester/sdk/contracts';
-import { API_CONTRACT_VERSION } from '@trading-backtester/sdk/contracts';
+} from '@trdlabs/backtester-sdk/contracts';
+import { API_CONTRACT_VERSION } from '@trdlabs/backtester-sdk/contracts';
 import { isTerminal } from './lifecycle';
 import type { JobRow, JobStore } from './job-store';
 

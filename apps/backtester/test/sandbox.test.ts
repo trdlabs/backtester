@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { ModuleBundle, RunResultSummary, RunStatusView } from '@trading/research-contracts';
-import { createModuleManifest } from '@trading-backtester/sdk/builder';
+import { createModuleManifest } from '@trdlabs/backtester-sdk/builder';
 import { InMemoryBundleStore } from '../src/sandbox/bundle-store';
 import { AUTH, buildTestApp, HARNESS_DIR, runBody, testDeps } from './helpers';
 import { DOCKER_AVAILABLE } from './store-factories';

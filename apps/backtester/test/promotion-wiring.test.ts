@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BacktestRunRequest, ModuleBundle, RunSubmitRequest } from '@trading/research-contracts';
 import { processNextQueued, workerInternals, type WorkerDeps } from '../src/jobs/worker.js';
-import type { ContentHash } from '@trading-backtester/sdk/artifacts';
+import type { ContentHash } from '@trdlabs/backtester-sdk/artifacts';
 import { InMemoryJobStore, type NewJob } from '../src/jobs/job-store.js';
 import { InMemoryArtifactStore } from '../src/artifacts/store.js';
 import { InMemoryBundleStore } from '../src/sandbox/bundle-store.js';

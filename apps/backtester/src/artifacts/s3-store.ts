@@ -1,7 +1,7 @@
 // S3-compatible ArtifactStore — same content-addressing (contentRef + canonicalJson) as the
 // filesystem store, so ContentHash values are byte-identical. Key layout: artifacts/<hex>.json.
 
-import type { ContentHash } from '@trading-backtester/sdk/artifacts';
+import type { ContentHash } from '@trdlabs/backtester-sdk/artifacts';
 import { canonicalJson } from '../determinism/canonical-json';
 import { contentRef } from '../determinism/hash';
 import type { ArtifactStore } from './store';

@@ -5,7 +5,7 @@
 // hash cannot depend on holdout (the flag-OFF path is additionally pinned by the goldens).
 
 import { describe, expect, it } from 'vitest';
-import type { DatasetDescriptor } from '@trading-backtester/sdk/contracts';
+import type { DatasetDescriptor } from '@trdlabs/backtester-sdk/contracts';
 import type { JobRow } from '../src/jobs/job-store.js';
 import { resolveHoldoutMarker, type WorkerDeps } from '../src/jobs/worker.js';
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RunSubmitRequest } from '@trading-backtester/sdk/contracts';
+import type { RunSubmitRequest } from '@trdlabs/backtester-sdk/contracts';
 import { requestFingerprint } from '../src/jobs/fingerprint.js';
 
 const base = {

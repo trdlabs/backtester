@@ -3,8 +3,8 @@
 // bundleRef acceptance) — this is the HTTP surface over the same BundleStore.
 
 import type { FastifyInstance } from 'fastify';
-import type { ContentHash } from '@trading-backtester/sdk/artifacts';
-import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
+import type { ContentHash } from '@trdlabs/backtester-sdk/artifacts';
+import type { ModuleBundle } from '@trdlabs/backtester-sdk/contracts';
 import type { ServerDeps } from './server.js';
 // The SAME one-arg structural validator /v1/modules/validate calls on body.moduleBundle.
 // Signature: validateBundle(input: unknown): BundleIssue[]  where BundleIssue = { code: string; message: string }.

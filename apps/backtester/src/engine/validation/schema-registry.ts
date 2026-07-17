@@ -3,7 +3,7 @@
 // Источник истины — TS-типы контракта; схемы ГЕНЕРИРУЮТСЯ из них в
 // schemas/017/*.schema.json (gen:research-schemas). Реестр компилирует эти core-схемы (кэш)
 // и author-supplied paramsSchema. Сами JSON-ассеты теперь предоставляет публичный SDK
-// (@trading-backtester/sdk/contracts) через schemaAsset/allSchemaAssets — этот файл больше
+// (@trdlabs/backtester-sdk/contracts) через schemaAsset/allSchemaAssets — этот файл больше
 // не читает их с диска.
 //
 // Замечание о диалекте: ts-json-schema-generator (мандат D3) эмитит draft-07; поэтому реестр
@@ -18,7 +18,7 @@ import {
   SCHEMA_IDS,
   schemaAsset,
   type CoreSchemaName,
-} from '@trading-backtester/sdk/contracts';
+} from '@trdlabs/backtester-sdk/contracts';
 
 export { SCHEMA_IDS };
 export type { CoreSchemaName };

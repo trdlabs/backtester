@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { ModuleBundle, RunStatusView } from '@trading/research-contracts';
-import { createModuleManifest } from '@trading-backtester/sdk/builder';
+import { createModuleManifest } from '@trdlabs/backtester-sdk/builder';
 import type { BundleStore } from '../src/sandbox/bundle-store';
 import { InMemoryBundleStore } from '../src/sandbox/bundle-store';
 import { InMemoryJobStore } from '../src/jobs/job-store';

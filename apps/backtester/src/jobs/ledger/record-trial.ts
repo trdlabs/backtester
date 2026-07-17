@@ -2,7 +2,7 @@
 // (Deflated Sharpe + trial count N) from the family's history. Called flag-gated by the worker AFTER
 // resultHash is computed; the returned context rides the RunResultSummary projection only.
 
-import type { TrialContext } from '@trading-backtester/sdk/contracts';
+import type { TrialContext } from '@trdlabs/backtester-sdk/contracts';
 import type { EquityPoint } from '../../engine/artifacts.js';
 import { computeDsr } from '../../engine/deflated-sharpe.js';
 import { dsrInputsFromEquity } from '../../engine/metrics.js';

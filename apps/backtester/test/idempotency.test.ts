@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { RunJobHandle } from '@trading/research-contracts';
-import type { ModuleBundle } from '@trading-backtester/sdk/contracts';
-import { createModuleManifest } from '@trading-backtester/sdk/builder';
+import type { ModuleBundle } from '@trdlabs/backtester-sdk/contracts';
+import { createModuleManifest } from '@trdlabs/backtester-sdk/builder';
 import { InMemoryJobStore } from '../src/jobs/job-store';
 import { requestFingerprint, storedRequestFingerprint } from '../src/jobs/fingerprint';
 import { submitRun } from '../src/jobs/submit';

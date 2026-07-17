@@ -7,7 +7,7 @@
 import type {
   RunPeriod, WalkForward, WalkForwardFailure, WalkForwardFailureCode, WalkForwardFoldResult,
   WalkForwardScheme, FoldWindow,
-} from '@trading-backtester/sdk/contracts';
+} from '@trdlabs/backtester-sdk/contracts';
 import type { RunOutcome } from './artifacts.js';
 import { aggregateFolds, splitWalkForward } from './walk-forward.js';
 import { evaluateWindow } from './window-eval.js';

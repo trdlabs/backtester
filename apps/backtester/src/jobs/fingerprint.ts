@@ -2,8 +2,8 @@
 // callback / timeout fields are excluded (a replay that changes only those is the same run). Mirrors
 // trading-platform `mcp-gateway/handlers/submit-run.ts::fingerprintOf`.
 
-import type { ContentHash } from '@trading-backtester/sdk/artifacts';
-import type { RunSubmitRequest } from '@trading-backtester/sdk/contracts';
+import type { ContentHash } from '@trdlabs/backtester-sdk/artifacts';
+import type { RunSubmitRequest } from '@trdlabs/backtester-sdk/contracts';
 import { canonicalJson } from '../determinism/canonical-json';
 import { sha256Hex } from '../determinism/hash';
 import { bundleHash } from '../sandbox/bundle';

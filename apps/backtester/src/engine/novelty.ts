@@ -2,7 +2,7 @@
 // nearest-neighbour novelty score. No I/O. The behavioral (L3) arbiter of family identity. Advisory:
 // results ride the summary projection only.
 
-import type { Novelty } from '@trading-backtester/sdk/contracts';
+import type { Novelty } from '@trdlabs/backtester-sdk/contracts';
 import type { EquityPoint } from './artifacts.js';
 import { quantize } from '../determinism/canonical-json.js';
 

@@ -9,7 +9,7 @@ import type {
   WalkForwardFoldMetrics,
   WalkForwardMetricStats,
   WalkForwardScheme,
-} from '@trading-backtester/sdk/contracts';
+} from '@trdlabs/backtester-sdk/contracts';
 import { quantize } from '../determinism/canonical-json.js';
 
 /** Malformed walk-forward configuration — thrown fail-fast so a bad config never silently no-ops. */

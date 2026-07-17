@@ -6,13 +6,13 @@ describe('SDK release manifest', () => {
     expect(releaseManifest({
       version: '0.1.0',
       sourceSha: 'abc123',
-      asset: 'trading-backtester-sdk-0.1.0.tgz',
+      asset: 'trdlabs-backtester-sdk-0.1.0.tgz',
       sha256: 'f'.repeat(64),
     })).toEqual({
-      package: '@trading-backtester/sdk',
+      package: '@trdlabs/backtester-sdk',
       version: '0.1.0',
       sourceSha: 'abc123',
-      asset: 'trading-backtester-sdk-0.1.0.tgz',
+      asset: 'trdlabs-backtester-sdk-0.1.0.tgz',
       sha256: 'f'.repeat(64),
     });
   });

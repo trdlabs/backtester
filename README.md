@@ -39,9 +39,9 @@ server (`createDataApiServer`, what trading-platform / trading-mock-platform imp
 included for dev + parity tests. The materialized tape + `dataset_fingerprint` are **identical** across
 the in-process and HTTP paths, so the golden `result_hash` is unchanged regardless of transport.
 
-**Slice 5 (trading-lab cutover — client boundary)** — `trading-lab` cut over to `@trading-backtester/sdk`
+**Slice 5 (trading-lab cutover — client boundary)** — `trading-lab` cut over to `@trdlabs/backtester-sdk`
 (the published SDK tarball). `HttpBacktesterAdapter` in `trading-lab` implements `ResearchPlatformPort`
-using `BacktesterClient` from `@trading-backtester/sdk/client` — so backtest submit/status/result/artifacts
+using `BacktesterClient` from `@trdlabs/backtester-sdk/client` — so backtest submit/status/result/artifacts
 flow trading-lab → BacktesterClient → trading-backtester, independent of the platform client. The legacy
 `packages/client` package was removed from this repo in Phase 3 after the cutover was confirmed.
 
@@ -56,7 +56,7 @@ gated by `BACKTESTER_ENABLE_OVERLAY_ENGINE` (default **off**) — an `engine:'ov
 disabled is rejected pre-queue with `validation_error`. Overlay runs return a real
 baseline-vs-variant **`comparison`** block (additive/optional on `RunResultSummary`; momentum
 summaries omit it; `RunResultSummary` and `ComparisonSummary` from
-`@trading-backtester/sdk/contracts` carry it). Determinism is byte-for-byte identical to `trading-platform`'s `runBacktest`: the engine reuses
+`@trdlabs/backtester-sdk/contracts` carry it). Determinism is byte-for-byte identical to `trading-platform`'s `runBacktest`: the engine reuses
 the verbatim `src/determinism/{canonical-json,rng}`, and the lift's overlay `result_hash` is
 **platform-derived** and pinned (`baseline sha256:0be9931c…`, `variant sha256:e381659c…`). Parity is
 enforced by the platform's `scripts/verify_018_{baseline,overlay_variant,determinism}.mjs` run in
@@ -71,13 +71,13 @@ new path becomes the default).**
 
 ## Public SDK
 
-`packages/sdk` is the canonical public package: **`@trading-backtester/sdk`** (Apache-2.0). It
+`packages/sdk` is the canonical public package: **`@trdlabs/backtester-sdk`** (Apache-2.0). It
 ships five subpath exports — the root `.` (for `SDK_VERSION` / capabilities) plus four named
 subpaths (`/contracts`, `/builder`, `/client`, `/artifacts`). Install from a GitHub Release tarball
 — no npm registry required:
 
 ```sh
-pnpm add https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trading-backtester-sdk-0.1.0.tgz
+pnpm add https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trdlabs-backtester-sdk-0.1.0.tgz
 ```
 
 A manual GitHub Actions release workflow (`.github/workflows/sdk-release.yml`) exists but **`0.1.0`
@@ -94,7 +94,7 @@ API-integration library (research-only invariant intact).
 ## Layout
 
 ```
-packages/sdk                  # @trading-backtester/sdk — canonical public SDK (contracts/builder/client/artifacts)
+packages/sdk                  # @trdlabs/backtester-sdk — canonical public SDK (contracts/builder/client/artifacts)
 packages/research-contracts   # @trading/research-contracts — shared 017/022 types + historical data port (parity anchor; PRIVATE)
 apps/backtester               # the service
   src/determinism/            # canonical-json + seeded rng (lifted verbatim from platform 018) + content hashing
