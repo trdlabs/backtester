@@ -1,18 +1,33 @@
 # Manual SDK release workflow — triggered via workflow_dispatch only.
-# Published assets are IMMUTABLE: fail-closed checks refuse to overwrite an existing
-# tag or GitHub release for the same version.
+#
+# Canonical delivery channel: the public npm registry (`@trdlabs/backtester-sdk`).
+# The npm registry is immutable per version, so publishing is the release. A
+# GitHub tag + release is created only as a SECONDARY release note after a
+# successful npm publish — it carries NO consumer tarball and is not a delivery
+# channel. `sdk:pack` / `sdk:verify` / the clean-consumer gate are
+# verification-only, never delivery.
+#
+# Authentication:
+#   Publishing uses the `NPM_TOKEN` repository secret (an npm automation/granular
+#   token scoped to publish `@trdlabs/backtester-sdk`), consumed as
+#   `NODE_AUTH_TOKEN`. The token value lives only in GitHub Actions secrets,
+#   never in git. Provenance is generated via GitHub OIDC (`id-token: write`), so
+#   the published version carries a verifiable build attestation. If/when a
+#   trusted publisher (OIDC) is configured for the package on npmjs.com, the
+#   `NODE_AUTH_TOKEN` env can be dropped in favour of pure OIDC.
 name: SDK Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 0.1.0)'
+        description: 'Version to publish to npm (must equal packages/sdk/package.json version, e.g. 0.8.0)'
         required: true
         type: string
 
 permissions:
-  contents: write
+  contents: write   # secondary git tag + release note only
+  id-token: write   # npm provenance attestation (Sigstore via GitHub OIDC)
 
 jobs:
   release:
@@ -27,6 +42,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          registry-url: 'https://registry.npmjs.org'
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -37,21 +53,25 @@ jobs:
         run: |
           node -e 'if (!/^\d+\.\d+\.\d+$/.test(process.env.VERSION ?? "")) process.exit(1)'
 
+      - name: Assert package name is @trdlabs/backtester-sdk
+        run: |
+          test "$(node -p "require('./packages/sdk/package.json').name")" = "@trdlabs/backtester-sdk"
+
       - name: Assert package.json version matches input
         run: |
           test "$(node -p "require('./packages/sdk/package.json').version")" = "$VERSION"
 
-      - name: Refuse if git tag already exists
+      # Proceeds ONLY on a confirmed E404. An already-published version fails, and so
+      # does any indeterminate registry/DNS/auth error — we never publish on an
+      # unverified "looks absent" state (unit-tested: scripts/assert-version-publishable.test.ts).
+      - name: Fail closed unless this version is confirmably absent from npm
+        run: pnpm exec tsx scripts/assert-version-publishable.ts "@trdlabs/backtester-sdk" "$VERSION"
+
+      - name: Refuse if secondary git tag already exists
         run: |
           ! git ls-remote --exit-code --tags origin "refs/tags/sdk-v$VERSION" >/dev/null 2>&1
 
-      - name: Refuse if GitHub release already exists
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          ! gh release view "sdk-v$VERSION" >/dev/null 2>&1
-
-      # ── Build and verify ───────────────────────────────────────────────────
+      # ── Build and verify (verification only — not delivery) ────────────────
 
       - name: Full check
         run: pnpm check
@@ -59,33 +79,40 @@ jobs:
       - name: Build SDK
         run: pnpm sdk:build
 
-      - name: Pack SDK
+      - name: Pack SDK (verification)
         run: pnpm sdk:pack
 
-      - name: Verify packed SDK
+      - name: Verify packed SDK (verification)
         run: pnpm sdk:verify
 
-      # ── Generate checksum and manifest ─────────────────────────────────────
+      - name: Clean-consumer gate (hermetic install outside the workspace)
+        run: pnpm exec tsx scripts/verify-sdk-clean-consumer.ts ".artifacts/sdk/trdlabs-backtester-sdk-$VERSION.tgz"
 
-      - name: Generate SHA-256 checksum and release manifest
-        run: |
-          ASSET=".artifacts/sdk/trdlabs-backtester-sdk-$VERSION.tgz"
-          SHA256="$(sha256sum "$ASSET" | cut -d' ' -f1)"
-          printf '%s  %s\n' "$SHA256" "$(basename "$ASSET")" > "$ASSET.sha256"
-          pnpm exec tsx scripts/sdk-release-manifest.ts \
-            "$VERSION" "$GITHUB_SHA" "$(basename "$ASSET")" "$SHA256" \
-            ".artifacts/sdk/trdlabs-backtester-sdk-$VERSION.manifest.json"
+      # ── Publish to npm (canonical delivery channel) ────────────────────────
+      # The sdk package has no workspace: dependencies, so a plain `npm publish`
+      # from its dir is clean; `--provenance` uses the OIDC token above.
 
-      # ── Create GitHub release (also creates the tag) ───────────────────────
+      - name: Publish to npm with provenance
+        working-directory: packages/sdk
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Create GitHub release
+      # ── Secondary GitHub release NOTE (after successful npm publish) ────────
+      # Not a delivery channel: no package asset is attached. Consumers install
+      # from npm. This only records a human-readable release note + git tag.
+
+      - name: Create secondary git tag and release note
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "sdk-v$VERSION" \
-            ".artifacts/sdk/trdlabs-backtester-sdk-$VERSION.tgz" \
-            ".artifacts/sdk/trdlabs-backtester-sdk-$VERSION.tgz.sha256" \
-            ".artifacts/sdk/trdlabs-backtester-sdk-$VERSION.manifest.json" \
             --target "$GITHUB_SHA" \
             --title "@trdlabs/backtester-sdk $VERSION" \
-            --notes "Public standalone trading-backtester SDK $VERSION"
+            --notes "Published to npm (canonical delivery): https://www.npmjs.com/package/@trdlabs/backtester-sdk/v/$VERSION
+
+          Install:
+
+              pnpm add @trdlabs/backtester-sdk@$VERSION
+
+          This GitHub release is a secondary release note only. No package archive is attached here — npm is the sole consumer delivery channel."
