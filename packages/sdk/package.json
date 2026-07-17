@@ -4,6 +4,15 @@
   "description": "Standalone authoring, contracts, artifacts and HTTP client SDK for trading-backtester.",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trdlabs/backtester.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/trdlabs/backtester/tree/main/packages/sdk#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist",
     "README.md",
