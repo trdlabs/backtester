@@ -10,17 +10,19 @@ Standalone authoring, contracts, artifacts, and HTTP client SDK for the trading-
 
 ## Installation
 
-Install from the GitHub Release tarball (no registry required):
+Published on the public npm registry — the canonical delivery channel:
 
 ```sh
-npm install https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trdlabs-backtester-sdk-0.1.0.tgz
+npm install @trdlabs/backtester-sdk
 ```
 
 Or with pnpm:
 
 ```sh
-pnpm add https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trdlabs-backtester-sdk-0.1.0.tgz
+pnpm add @trdlabs/backtester-sdk
 ```
+
+`0.7.0` and earlier were distributed as a GitHub Release tarball; those tags stay downloadable but are frozen — `0.8.0`+ ships on npm only.
 
 ---
 
@@ -167,7 +169,7 @@ to bound memory usage. For large artifacts, use the paginated
 
 - **Node >= 22** (uses native `crypto.subtle` for SHA-256)
 - **ESM only** — all entry points are `"type": "module"`; set `"moduleResolution": "NodeNext"` or `"Bundler"` in `tsconfig.json`
-- `decimal.js` is the only runtime dependency (bundled in the tarball; no registry resolution needed at install time)
+- `decimal.js` is the only declared runtime dependency; the kernel `@trdlabs/sdk` (types, runtime, and 017 schemas) is inlined at build time, so the published package is hermetic
 
 ---
 

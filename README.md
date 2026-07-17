@@ -73,15 +73,16 @@ new path becomes the default).**
 
 `packages/sdk` is the canonical public package: **`@trdlabs/backtester-sdk`** (Apache-2.0). It
 ships five subpath exports — the root `.` (for `SDK_VERSION` / capabilities) plus four named
-subpaths (`/contracts`, `/builder`, `/client`, `/artifacts`). Install from a GitHub Release tarball
-— no npm registry required:
+subpaths (`/contracts`, `/builder`, `/client`, `/artifacts`). Install from the public npm registry:
 
 ```sh
-pnpm add https://github.com/alexnikolskiy/trading-backtester/releases/download/sdk-v0.1.0/trdlabs-backtester-sdk-0.1.0.tgz
+pnpm add @trdlabs/backtester-sdk
 ```
 
-A manual GitHub Actions release workflow (`.github/workflows/sdk-release.yml`) exists but **`0.1.0`
-has not been published yet** by this plan.
+Published via the manual GitHub Actions release workflow (`.github/workflows/sdk-release.yml`):
+`npm publish --provenance` from `packages/sdk`, gated by the clean-consumer check and the
+fail-closed version guard. `0.8.0` is the first npm release (the earlier `sdk-v*` GitHub tarballs
+are frozen).
 
 The determinism core (`canonical-json`, content hashing) lives in the SDK; the service consumes it
 via thin re-export wrappers in `apps/backtester/src/`. `@trading/research-contracts` remains
