@@ -1,20 +1,15 @@
 import type { ContentHash } from '../internal/shared-types';
 import type { ArtifactReference } from '../artifacts/types';
 import type { BacktestEngine, ModuleBundle, ModuleKind, ModuleManifest } from './module';
+// 017 primitives are re-sourced from the kernel @trdlabs/sdk — single source of truth, no drift.
+// They are structurally identical to the prior local declarations; the hermetic api-extractor dts
+// rollup inlines them, so the published type surface is unchanged.
+import type { Ref, RunPeriod } from '@trdlabs/sdk/research-contract';
 
 export type { ModuleKind, ModuleManifest, ModuleBundle, BacktestEngine };
+export type { Ref, RunPeriod };
 
 export type RunMode = 'research' | 'review' | 'promotion';
-
-export interface Ref {
-  readonly id: string;
-  readonly version: string;
-}
-
-export interface RunPeriod {
-  readonly from: string;
-  readonly to: string;
-}
 
 // E3a — walk-forward substrate types. Exported as the shared contract; NOT yet wired into any
 // request/result (server-side per-fold execution is E3b). Fold windows reuse RunPeriod.
@@ -196,6 +191,15 @@ export type Novelty =
       readonly policy: { readonly threshold: number; readonly minOverlapDays: number };
     };
 
+/**
+ * Backtester run request. The base fields (`runId`..`artifacts`) MIRROR the kernel's 017
+ * `BacktestRunRequest` (`@trdlabs/sdk/research-contract`) — keep them in sync when the 017 contract
+ * changes. Kept as a standalone flat interface rather than `extends`-ing the kernel type on purpose:
+ * an `extends Omit<Kernel, 'params'>` makes the hermetic api-extractor rollup inline the kernel
+ * interface as a helper (and leak its comments) instead of a single clean declaration. `params` is
+ * `Record<string, unknown>` here (the kernel types it as the wider `object`); the four trailing
+ * fields are backtester-only and never reach the 017 validator.
+ */
 export interface BacktestRunRequest {
   readonly runId: string;
   readonly mode: RunMode;
