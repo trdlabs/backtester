@@ -475,6 +475,15 @@ Canonical status lives in the control-center initiative registry — local statu
 
 Local quick win independent of the cards: set a non-zero `BACKTESTER_QUEUE_MAX_DEPTH` (default `0` = unlimited; the 429 `queue_full` backpressure path already exists in `submit.ts`). Full analysis: control-center [`docs/analysis/06-b2c-readiness-report.md`](../../control-center/docs/analysis/06-b2c-readiness-report.md) §3.2 (incl. the full-history materialization OOM risk and FIFO fairness gap).
 
+### Mock-platform audit (cross-repo, 2026-07-18)
+
+Canonical status lives in the control-center initiative registry — local status only, no plan duplication:
+
+- [wfo-extended-fixture](../../control-center/docs/delivery/initiatives/wfo-extended-fixture.md) — `proposed`. Backtester part: tier-aware fixture selection for WFO/novelty/holdout runs — declare the required history depth up front and fail fast naming the required tier. Today the 6.94-day default fixture makes the novelty gate unsatisfiable (`noveltyMinOverlapDays` 30, `config.ts:489-492`) and WFO folds degenerate (test fold ≈ 1.1 days at F=5); failures surface deep in the contour instead. Consumer facts feeding the 42-day tier design: worst committed warmup default MACD 34 bars (`engine/indicators/catalog.ts`), `holdoutFraction` 0.2, `walkForwardMaxFolds` 20.
+- [mock-contract-parity](../../control-center/docs/delivery/initiatives/mock-contract-parity.md) — `proposed`. Consumer stake, no backtester code change: `RowsDataPort` streams `[tsFrom, tsTo)` while the mock's `/historical/rows` is inclusive on `toMs` — one extra boundary bar, so `result_hash` diverges mock↔real on identical requests until the mock-side fix lands.
+
+Full audit: control-center [`docs/analysis/09-mock-platform-audit.md`](../../control-center/docs/analysis/09-mock-platform-audit.md).
+
 ### Phase A — real platform data path
 
 **Verify-spike DONE (2026-07-05).** The backtester's live `RowsDataPort` (historical.2 contract)
