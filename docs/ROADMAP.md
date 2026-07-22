@@ -495,6 +495,18 @@ Canonical status lives in the control-center initiative registry — local statu
 
 Analysis: control-center [`docs/analysis/10-shared-execution-kernel.md`](../../control-center/docs/analysis/10-shared-execution-kernel.md).
 
+### Asymmetric scaling (cross-repo, 2026-07-23)
+
+Canonical status lives in the control-center initiative registry — local status only, no plan duplication:
+
+- [asymmetric-scaling](../../control-center/docs/delivery/initiatives/asymmetric-scaling.md) — `proposed`. Multi-server worker fleet for backtests. The queue is **already** competing-consumers (`PgJobStore.claimNextQueued` `FOR UPDATE SKIP LOCKED` + lease/heartbeat/reaper, `worker-main.ts` = "M workers + 1 API node", LISTEN/NOTIFY, S3 artifact/bundle stores written, PG result-cache + compute-lock cross-node). Backtester part:
+  - **S0 (config only, actionable now):** `BACKTESTER_AUTO_WORKER=false` on API nodes + dedicated `worker-main.ts` processes, `BACKTESTER_STORE_BACKEND=s3`, `BACKTESTER_QUEUE_NOTIFY=true`, non-zero `BACKTESTER_QUEUE_MAX_DEPTH`; record a `bench-workers.mts` jobs/hour/core baseline.
+  - **S1:** systemd template `backtester-worker@N` (~1 process per 1–2 cores — the engine is single-threaded in-process for momentum jobs), per-host Docker container cap (none exists today), worker health into the alerter. Overlaps [backtester-runtime-hardening](../../control-center/docs/delivery/initiatives/backtester-runtime-hardening.md) (systemd supervision).
+  - **S2 (main engineering work):** content-addressed on-host candle cache + cache-aware `RowsDataPort` — today `materializeFor` pulls whole datasets (up to 5M rows, OOM cap) with only an in-process LRU(16) tape cache, so N cold nodes would hammer the platform historical API.
+  - **S3:** webhook outbox hardening (`listDeliverable` without SKIP LOCKED → duplicate deliveries at N workers; add per-event exponential backoff).
+
+Analysis: control-center [`docs/analysis/11-scaling-architecture.md`](../../control-center/docs/analysis/11-scaling-architecture.md).
+
 ### Phase A — real platform data path
 
 **Verify-spike DONE (2026-07-05).** The backtester's live `RowsDataPort` (historical.2 contract)
