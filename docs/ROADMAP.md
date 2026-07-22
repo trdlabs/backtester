@@ -469,7 +469,7 @@ The core product flow is closed. What's left:
 Canonical status lives in the control-center initiative registry — local status only, no plan duplication:
 
 - [b2c-f1-tenancy](../../control-center/docs/delivery/initiatives/b2c-f1-tenancy.md) — `proposed`. Backtester part: `tenant_id` + `submitted_by` on `backtest_job` (migration), tenant-scoped list/read/cancel — today `GET /v1/runs` is unscoped and `POST /v1/runs/:runId/cancel` authorizes by knowing a runId alone (`src/api/server.ts:111,178`); tenant must derive from the authenticated principal, not the request body.
-- [b2c-sdk-consolidation](../../control-center/docs/delivery/initiatives/b2c-sdk-consolidation.md) — `proposed`. `@trdlabs/backtester-sdk` merges into `@trdlabs/sdk` as a `./backtester` subpath (step 0: lab realigns off the pinned v0.7.0 tarball first).
+- [b2c-sdk-consolidation](../../control-center/docs/delivery/initiatives/b2c-sdk-consolidation.md) — `enabled`. Settled 2026-07-17 as Option A+ (merge **rejected** with a revisit trigger): standalone `@trdlabs/backtester-sdk` on npm, hermetic build kept; npm live, lab migrated, tarball channel retired. The three-package layout was re-confirmed 2026-07-22 by [shared-execution-engine](../../control-center/docs/delivery/initiatives/shared-execution-engine.md).
 - [b2c-ops-hardening](../../control-center/docs/delivery/initiatives/b2c-ops-hardening.md) — `proposed`. Backtester part: systemd units for the VPS deploy (replaces `setsid`/`pkill` in `deploy/vps/up.sh:18-27`), remove the committed VPS IP from `deploy/vps/README.md`.
 - [security-edge-hardening](../../control-center/docs/delivery/initiatives/security-edge-hardening.md) — `proposed`. Backtester part: worker-health binds `0.0.0.0` with an unauthenticated `/statsz` (`src/jobs/worker-health.ts:58`) — bind `config.host` and gate `/statsz`; the reference data API auth is optional (`src/data/data-api-server.ts`); sign outbound completion webhooks (`src/jobs/completion.ts:33`). The run API is already fail-closed and the sandbox is locked down (no P0). Audit: control-center [`docs/analysis/08-security-boundary-audit.md`](../../control-center/docs/analysis/08-security-boundary-audit.md).
 
@@ -483,6 +483,17 @@ Canonical status lives in the control-center initiative registry — local statu
 - [mock-contract-parity](../../control-center/docs/delivery/initiatives/mock-contract-parity.md) — `proposed`. Consumer stake, no backtester code change: `RowsDataPort` streams `[tsFrom, tsTo)` while the mock's `/historical/rows` is inclusive on `toMs` — one extra boundary bar, so `result_hash` diverges mock↔real on identical requests until the mock-side fix lands.
 
 Full audit: control-center [`docs/analysis/09-mock-platform-audit.md`](../../control-center/docs/analysis/09-mock-platform-audit.md).
+
+### Shared execution engine (cross-repo, 2026-07-22)
+
+Canonical status lives in the control-center initiative registry — local status only, no plan duplication:
+
+- [shared-execution-engine](../../control-center/docs/delivery/initiatives/shared-execution-engine.md) — `proposed`. One deterministic execution core for backtester + platform, shipped as a new public `@trdlabs/engine` (revises Q1-083 "engine-core inside the SDK"; `@trdlabs/backtester-sdk` stays standalone — doc 07 A+ upheld). Backtester part:
+  - **Phase 2 — donor.** The engine core is extracted from this repo's engine layer: `engine/{execution,portfolio,risk,market-tape,profiles}.ts`, `determinism/*` (seeded rng, canonical-json/quantize), the R8 intra-bar order (`preBarStages`/`processBar`). The research harness (walk-forward, holdout, promotion gate, jobs/worker, sandbox) stays local — the seam is already `RunDeps`/`finalizeResult`.
+  - **Phase 3 — first consumer.** `apps/backtester` swaps its engine layer for the `@trdlabs/engine` import. Extraction-equivalence gate: SC-008 byte-identical replay + twin-equivalence (in-process vs sandbox) must stay green on unchanged fixtures. `packages/research-contracts` ("parity anchor") retires once the engine is the parity anchor by construction.
+  - Platform paper semantics land as configuration, not a fork: the existing `fillModel.kind = 'same_bar_close'` catalog entry is the reconciliation mechanism (see `scripts/realism-gap-report.mts`).
+
+Analysis: control-center [`docs/analysis/10-shared-execution-kernel.md`](../../control-center/docs/analysis/10-shared-execution-kernel.md).
 
 ### Phase A — real platform data path
 
