@@ -519,15 +519,24 @@ export async function resolveWalkForward(
   if (engine !== 'overlay' && engine !== 'strategy') return undefined;
   const scheme = claimed.request.walkForward;
   if (scheme === undefined) return undefined;
-  // wfo-extended-fixture item 4: up-front (BEFORE any fold runs) sufficiency check. Sized off
-  // `deps.walkForward.maxFolds` (the operator ceiling, config.walkForwardMaxFolds) rather than this
-  // request's own `scheme.folds` — a stable, config-derived estimate independent of any one request.
-  // Short-circuits the WHOLE fold loop (no sandbox session spun up) on a miss; the pre-existing deep
-  // reasons (split_error/all_folds_failed/folds_exceeds_max/insufficient_folds/internal_error) are
-  // unchanged when history is sufficient.
+  // wfo-extended-fixture item 4 (fix wave): up-front (BEFORE any fold runs) sufficiency check. Sized
+  // off THIS REQUEST's own `scheme.folds` — the deep `runWalkForward`/`splitWalkForward` path splits
+  // by `scheme.folds`, not by the operator ceiling, so sizing off `deps.walkForward.maxFolds`
+  // unconditionally could falsely short-circuit a valid low-fold request over a period the deep path
+  // would happily resolve. Clamped to `deps.walkForward.maxFolds` so an oversized request can't
+  // inflate the estimate past the ceiling the deep path itself enforces (`folds_exceeds_max`); falls
+  // back to `maxFolds` only when the request doesn't carry a usable fold count (defensive —
+  // `WalkForwardScheme.folds` is a required field, but test doubles built with `as unknown as ...`
+  // casts can still omit it at runtime). Short-circuits the WHOLE fold loop (no sandbox session spun
+  // up) on a miss; the pre-existing deep reasons
+  // (split_error/all_folds_failed/folds_exceeds_max/insufficient_folds/internal_error) are unchanged
+  // when history is sufficient.
+  const requestFolds = Number.isSafeInteger(scheme.folds) ? scheme.folds : undefined;
+  const foldsForSizing =
+    requestFolds === undefined ? deps.walkForward.maxFolds : Math.min(requestFolds, deps.walkForward.maxFolds);
   const insufficiency = checkSufficientHistory(
     claimed.request.period,
-    requiredWalkForwardDays(claimed.request.timeframe, deps.walkForward.maxFolds),
+    requiredWalkForwardDays(claimed.request.timeframe, foldsForSizing),
   );
   if (insufficiency) {
     return { status: 'unavailable', scheme, reason: 'insufficient_history', failedFolds: [], insufficientFolds: [], ...insufficiency };
@@ -552,15 +561,6 @@ export async function resolveWalkForward(
 
 export async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
   if (!deps.holdout?.enabled) return undefined;
-  // wfo-extended-fixture item 4: up-front (BEFORE listDatasets) sufficiency check. Holdout has no
-  // per-request formula — `requiredHoldoutDays()` is the tier catalog's `minWfoHistoryDays` floor
-  // below which neither `(1-fraction)*span` nor `fraction*span` is a meaningful split. Short-circuits
-  // the dataPort round-trip entirely on a miss; the pre-existing deep reason (`coverage_not_found`) is
-  // unchanged when history is sufficient.
-  const insufficiency = checkSufficientHistory(claimed.request.period, requiredHoldoutDays());
-  if (insufficiency) {
-    return { status: 'unknown', reason: 'insufficient_history', ...insufficiency };
-  }
   let coverage: RunPeriod | undefined;
   try {
     const datasets = await deps.dataPort.listDatasets();
@@ -569,6 +569,21 @@ export async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): P
     coverage = undefined;
   }
   if (coverage === undefined) return { status: 'unknown', reason: 'coverage_not_found' };
+  // wfo-extended-fixture item 4 (fix wave): up-front sufficiency check keyed on the DATASET's
+  // coverage span, NOT the request's. The marker's whole purpose is reporting whether a run's period
+  // intrudes into the dataset's reserved holdout tail (the last `holdoutFraction` of coverage) — a
+  // SHORT run against a well-covered dataset legitimately needs a real resolved marker with
+  // containment (E4b held-out promotion enforcement consumes exactly that field; returning `unknown`
+  // for every short run would either falsely reject or fail-open there). `requiredHoldoutDays()` is
+  // the tier catalog's `minWfoHistoryDays` floor below which neither `(1-fraction)*span` nor
+  // `fraction*span` of the DATASET is a meaningful split — only a dataset that is itself too small
+  // trips this. Sits AFTER the coverage fetch (that round-trip was already unconditional on the deep
+  // path); still short-circuits the heavier containment math below on a miss. `coverage_not_found`
+  // above is unchanged either way.
+  const insufficiency = checkSufficientHistory(coverage, requiredHoldoutDays());
+  if (insufficiency) {
+    return { status: 'unknown', reason: 'insufficient_history', ...insufficiency };
+  }
   return buildHoldoutMarker(coverage, deps.holdout.fraction, claimed.request.period);
 }
 

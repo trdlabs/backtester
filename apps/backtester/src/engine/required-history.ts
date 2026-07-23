@@ -1,11 +1,19 @@
 // wfo-extended-fixture item 4 (backtester part) — pure required-history sizing for the up-front
 // fail-fast that the three advisory resolvers (resolveWalkForward / resolveNovelty /
-// resolveHoldoutMarker, worker.ts) run BEFORE any deep work (running WFO sandbox folds, querying the
-// novelty pool, or fetching dataset coverage). Today those subsystems degrade silently deep in the
-// contour (`insufficient_folds`, `insufficient_overlap`, `coverage_not_found`) without ever saying HOW
-// MUCH history was needed or WHICH committed fixture tier provides it — this module is the "how much"
-// half; `checkSufficientHistory` is the shared comparison the three resolvers each call with their own
-// subsystem-specific `requiredXDays`.
+// resolveHoldoutMarker, worker.ts) run BEFORE each subsystem's HEAVY work (running WFO sandbox folds,
+// querying the novelty pool, or computing holdout containment). Today those subsystems degrade
+// silently deep in the contour (`insufficient_folds`, `insufficient_overlap`, `coverage_not_found`)
+// without ever saying HOW MUCH history was needed or WHICH committed fixture tier provides it — this
+// module is the "how much" half; `checkSufficientHistory` is the shared comparison the three resolvers
+// each call with their own subsystem-specific `requiredXDays`.
+//
+// The three resolvers key the comparison on different spans, matched to what each subsystem's
+// requirement is actually about: WFO and novelty key on the REQUEST's own period span (they size
+// against what the request itself asks to run); holdout keys on the DATASET's coverage span instead
+// (fix wave — the holdout marker reports whether the request intrudes into the dataset's reserved
+// tail, so a short request against a well-covered dataset is legitimate and must NOT short-circuit —
+// only a dataset that is itself too small trips the check). Holdout's check therefore runs AFTER the
+// (already-unconditional) coverage fetch, still BEFORE the containment math.
 //
 // Advisory, NOT part of the hashed result: a caller that can't determine sufficiency (unparseable
 // timeframe/period, or a broken tier catalog) gets `null`/`undefined` back — never a throw — so the
@@ -56,9 +64,11 @@ export function requiredNoveltyDays(minOverlapDays: number): number {
 
 /**
  * Holdout has no per-request formula: `minWfoHistoryDays` from the tier catalog is the floor below
- * which neither `(1-holdoutFraction)*span` nor `holdoutFraction*span` is a meaningful split. Falls
- * back to the committed default (30) if the catalog can't be read, so an up-front check that can't
- * reach the catalog still uses the INTENDED floor rather than 0 (never a false "sufficient").
+ * which neither `(1-holdoutFraction)*span` nor `holdoutFraction*span` is a meaningful split. Compared
+ * against the DATASET's coverage span (not the request's — see the module comment), so this is really
+ * asking "is this dataset itself big enough to reserve a meaningful holdout tail from". Falls back to
+ * the committed default (30) if the catalog can't be read, so an up-front check that can't reach the
+ * catalog still uses the INTENDED floor rather than 0 (never a false "sufficient").
  */
 export function requiredHoldoutDays(): number {
   try {
@@ -86,13 +96,14 @@ function periodSpanDays(period: RunPeriod | null | undefined): number | null {
 }
 
 /**
- * Compare the REQUESTED run period's span against `requiredDays`. `undefined` means "not
- * insufficient" — covers the genuinely-sufficient case, "can't tell" (malformed period), AND
- * `requiredDays === null` (the caller's own sizing function — e.g. `requiredWalkForwardDays` on an
- * unparseable timeframe — couldn't size a requirement, so there is nothing to compare against). A
- * broken/missing tier catalog degrades the SAME WAY here too, though `requiredDays` is still reported
- * with a best-effort tier hint. Never throws: a caller (the three worker.ts resolvers) gets an
- * advisory signal, not a new failure mode.
+ * Compare a period's span against `requiredDays`. The caller decides WHICH period: the run request's
+ * own period for WFO/novelty, or the dataset's coverage period for holdout (see the module comment) —
+ * this function only does the arithmetic. `undefined` means "not insufficient" — covers the
+ * genuinely-sufficient case, "can't tell" (malformed period), AND `requiredDays === null` (the
+ * caller's own sizing function — e.g. `requiredWalkForwardDays` on an unparseable timeframe — couldn't
+ * size a requirement, so there is nothing to compare against). A broken/missing tier catalog degrades
+ * the SAME WAY here too, though `requiredDays` is still reported with a best-effort tier hint. Never
+ * throws: a caller (the three worker.ts resolvers) gets an advisory signal, not a new failure mode.
  */
 export function checkSufficientHistory(
   period: RunPeriod | null | undefined,
