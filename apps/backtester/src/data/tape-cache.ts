@@ -1,4 +1,5 @@
 import type { MarketTapeDataset } from '@trading/research-contracts/research';
+import { readEnvVar } from '../env.js';
 import type { MaterializedDataset } from './reader.js';
 
 /** Build a stable cross-run cache key from the DATA dimensions of a run. Symbol order is normalized. */
@@ -81,7 +82,7 @@ export class TapeCache<V> {
 
 /** Read `TAPE_CACHE_MAX_ENTRIES` (default 16; 0 disables; garbage falls back to 16). */
 export function readMaxEntries(): number {
-  const raw = process.env.TAPE_CACHE_MAX_ENTRIES;
+  const raw = readEnvVar('TAPE_CACHE_MAX_ENTRIES');
   if (raw === undefined || raw === '') return 16;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n >= 0 ? n : 16;

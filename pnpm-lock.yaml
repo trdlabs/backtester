@@ -47,6 +47,9 @@ importers:
       pg:
         specifier: ^8.13.1
         version: 8.21.0
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
     optionalDependencies:
       '@aws-sdk/client-s3':
         specifier: ^3.699.0
@@ -1632,6 +1635,9 @@ packages:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
     engines: {node: '>=0.4'}
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
 snapshots:
 
   '@aws-crypto/crc32@5.2.0':
@@ -3133,3 +3139,5 @@ snapshots:
       stackback: 0.0.2
 
   xtend@4.0.2: {}
+
+  zod@3.25.76: {}

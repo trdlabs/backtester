@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/trdlabs/control-center/blob/main/scripts/src/contracts/env-schema-1.schema.json",
+  "title": "env-schema.1 — per-repo typed environment schema export",
+  "description": "Machine export of a repo's env.ts (env-catalog initiative, item 1). Semantic rules that JSON Schema cannot express — duplicate variable names, sort order by name, default_state membership in flag_states, flag default == default_state — are enforced by scripts/src/contracts/env-schema.ts (validateEnvSchemaDocument). The human contract is docs/architecture/contracts/env-schema.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repo", "generated_from", "variables"],
+  "properties": {
+    "schema_version": {
+      "const": "env-schema.1"
+    },
+    "repo": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Canonical repo id from control-center repos.yaml, e.g. \"trading-platform\"."
+    },
+    "generated_from": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/].*$",
+      "description": "Repo-relative path of the env.ts module the document was exported from."
+    },
+    "variables": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/variable" },
+      "description": "Sorted ascending by name; names unique (enforced by the TS validator)."
+    }
+  },
+  "$defs": {
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "required",
+        "default",
+        "description",
+        "secret",
+        "flag",
+        "owner_unit",
+        "consumers"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "type": {
+          "enum": ["string", "int", "float", "bool", "enum", "url", "duration_ms", "csv"]
+        },
+        "required": {
+          "type": "boolean",
+          "description": "true = the app refuses to start without it (fail-fast); implies default == null."
+        },
+        "default": {
+          "type": ["string", "null"],
+          "description": "String form exactly as it would appear in a .env file; null = no default. Always null for secret and required variables."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "secret": {
+          "type": "boolean",
+          "description": "true = the value never appears in the schema, ENV.md or any .env*.example — only the name and shape."
+        },
+        "flag": {
+          "type": "boolean",
+          "description": "true = deploy-time feature flag; requires flag_states and default_state."
+        },
+        "enum_values": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Allowed values; required iff type == \"enum\"."
+        },
+        "flag_states": {
+          "type": "array",
+          "items": { "enum": ["off", "log", "enforce"] },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Subset of the ecosystem flag vocabulary this flag actually supports."
+        },
+        "default_state": {
+          "enum": ["off", "log", "enforce"],
+          "description": "Must be a member of flag_states (enforced by the TS validator)."
+        },
+        "owner_unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Systemd unit / logical service that owns the variable, e.g. \"trading-platform.service\"."
+        },
+        "consumers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Repo-relative modules that read the variable (importers of env.ts)."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "secret": { "const": true } }, "required": ["secret"] },
+          "then": { "properties": { "default": { "const": null } } }
+        },
+        {
+          "if": { "properties": { "required": { "const": true } }, "required": ["required"] },
+          "then": { "properties": { "default": { "const": null } } }
+        },
+        {
+          "if": { "properties": { "flag": { "const": true } }, "required": ["flag"] },
+          "then": {
+            "required": ["flag_states", "default_state"],
+            "properties": { "required": { "const": false } }
+          }
+        },
+        {
+          "if": { "properties": { "flag": { "const": false } }, "required": ["flag"] },
+          "then": { "properties": { "flag_states": false, "default_state": false } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "enum" } }, "required": ["type"] },
+          "then": { "required": ["enum_values"] }
+        },
+        {
+          "if": { "not": { "properties": { "type": { "const": "enum" } } } },
+          "then": { "properties": { "enum_values": false } }
+        }
+      ]
+    }
+  }
+}

@@ -7,6 +7,7 @@ import { runWorkerLoop } from './jobs/worker.js';
 import { createPgQueueWaker, createTimeoutWaker, type QueueWaker } from './jobs/queue-notify.js';
 import { PgJobStore } from './jobs/pg-job-store.js';
 import { startWorkerHealthServer } from './jobs/worker-health.js';
+import { loadEnv } from './env.js';
 import { pathToFileURL } from 'node:url';
 
 export function assertWorkerConfig(config: AppConfig): void {
@@ -19,6 +20,9 @@ export function assertWorkerConfig(config: AppConfig): void {
 }
 
 async function main(): Promise<void> {
+  // Fail-fast (env-schema.1): все нарушения env разом; accept-set идентичен loadConfig
+  // (пины в test/env-schema.test.ts) — поведение старта не меняется.
+  loadEnv();
   const config = loadConfig();
   assertWorkerConfig(config);
   const app: AppHandles = await buildApp(config);

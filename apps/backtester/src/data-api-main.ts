@@ -9,14 +9,15 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDataApiServer } from './data/data-api-server';
 import { FixtureDataPort } from './data/reader';
+import { readEnvVar } from './env';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 async function main(): Promise<void> {
-  const fixturesDir = process.env.DATA_API_FIXTURES_DIR ?? resolve(HERE, '../fixtures/candles');
-  const host = process.env.DATA_API_HOST ?? '127.0.0.1';
-  const port = Number(process.env.DATA_API_PORT ?? 8081);
-  const token = process.env.DATA_API_TOKEN;
+  const fixturesDir = readEnvVar('DATA_API_FIXTURES_DIR') ?? resolve(HERE, '../fixtures/candles');
+  const host = readEnvVar('DATA_API_HOST') ?? '127.0.0.1';
+  const port = Number(readEnvVar('DATA_API_PORT') ?? 8081);
+  const token = readEnvVar('DATA_API_TOKEN');
 
   const server = createDataApiServer(
     new FixtureDataPort(fixturesDir),

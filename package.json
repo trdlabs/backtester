@@ -18,6 +18,9 @@
     "pretest": "pnpm sdk:build && pnpm run build:sandbox-harness-overlay",
     "test": "vitest run",
     "test:watch": "vitest",
+    "env:schema": "tsx scripts/print-env-schema.ts",
+    "env:docs": "tsx scripts/gen-env-docs.ts",
+    "env:advisory": "node scripts/env-advisory.mjs",
     "dev": "tsx watch apps/backtester/src/index.ts",
     "start": "tsx apps/backtester/src/index.ts"
   },

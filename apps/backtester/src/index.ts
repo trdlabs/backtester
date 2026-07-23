@@ -2,8 +2,12 @@
 
 import { buildApp } from './app';
 import { loadConfig } from './config';
+import { loadEnv } from './env';
 
 async function main(): Promise<void> {
+  // Fail-fast (env-schema.1): валидирует env и печатает ВСЕ нарушения разом; accept-set идентичен
+  // loadConfig (пины в test/env-schema.test.ts), поэтому поведение старта не меняется.
+  loadEnv();
   const config = loadConfig();
   const app = await buildApp(config);
   if (config.autoWorker) app.startWorker();
