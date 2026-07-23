@@ -976,6 +976,24 @@ mechanism — unrequested ⇒ byte-identical results, INV preserved).
     `test/trial-ledger-hash-invariant.test.ts`. Lab consumes `trialContext` into its verdict ladders
     (their side of the card). NOTE: keeps the E4a caveat — family N is same-window by design;
     holdout/period-shopping stays E4's axis, not this item's.
+26. **Cross-repo: env-catalog item 3 — типизированная env-схема (`env-schema.1`) ✅ СДЕЛАНО.**
+    Контракт: control-center `docs/architecture/contracts/env-schema.md`. Один
+    `apps/backtester/src/env.ts` (zod) — единственная точка чтения `process.env` в src:
+    реестр всех 117 переменных репо (тип/дефолт/описание/secret/flag/owner_unit/consumers),
+    fail-fast `loadEnv()` в entrypoints (index.ts, worker-main.ts) с агрегацией ВСЕХ ошибок
+    разом — accept-set строго равен существующим fail-fast проверкам `loadConfig` (паритет
+    пинует `test/env-schema.test.ts`; поведение и дефолты не менялись). Экспорт:
+    `npm run env:schema` → детерминированный JSON в stdout (не коммитится). `ENV.md` и
+    `.env.example` ГЕНЕРИРУЮТСЯ (`npm run env:docs`); дрейф диска с генератором пинует тест.
+    Флаги — E4b-паттерн (`flag_states`/`default_state`); `BACKTESTER_TRIAL_LEDGER`
+    отражён как default ON (#156, `default_state: enforce`), остальные — `off`.
+    **Хвост (осознанный, advisory `npm run env:advisory`, CI не валит):** прямые чтения
+    `process.env` остаются в (a) `apps/backtester/test/**` (~49 чтений — vitest мутирует env
+    напрямую), (b) dev/ops-скриптах `apps/backtester/scripts/*.mts` (переменные ОБЪЯВЛЕНЫ в
+    схеме, чтение прямое), (c) `sandbox-harness-overlay/deny-shims.mjs` (defense-in-depth shim,
+    не потребитель). Перевод хвоста на `env.ts`-хелперы и жёсткий CI-гейт «Полнота схемы»
+    (красный CI на `process.env.` вне env.ts) — follow-up после стабилизации агрегатора
+    env-registry (env-catalog item 6).
 
 Deliberately NOT in Phase E: Nautilus-style L2/L3 matching (our product gates hypotheses on
 bars, and fills are already validated against the live paper engine to 3e-7 — honest by
