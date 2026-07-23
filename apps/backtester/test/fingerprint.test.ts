@@ -63,4 +63,15 @@ describe('requestFingerprint', () => {
       } as any),
     );
   });
+
+  // research-validation-hardening R1(b): trialFamilyHint is the E2 family-identity hint (lab layer L1)
+  // — advisory, and deliberately NOT run-affecting, so it must NOT change the dedup fingerprint. A
+  // relabeled hypothesis (or a run submitted without a hint at all) is still the SAME idempotent run.
+  it('trialFamilyHint is excluded from the fingerprint (advisory, not a dedup axis)', () => {
+    const noHint = requestFingerprint({ ...base } as any);
+    const hintA = requestFingerprint({ ...base, trialFamilyHint: 'oi-divergence-v3' } as any);
+    const hintB = requestFingerprint({ ...base, trialFamilyHint: 'renamed-hypothesis' } as any);
+    expect(hintA).toBe(noHint);
+    expect(hintB).toBe(noHint);
+  });
 });

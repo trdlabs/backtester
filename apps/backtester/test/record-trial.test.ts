@@ -109,4 +109,42 @@ describe('recordTrialAndComputeContext', () => {
     );
     expect(ctx).toBeNull();
   });
+
+  // research-validation-hardening R1(b): a lab experiment (N parameter trials of one hypothesis) shares
+  // ONE trialFamilyHint + market context/window; every trial accumulates into the SAME family with a
+  // monotonically increasing trialCount, regardless of what strategy params produced each equity curve
+  // (params are deliberately NOT part of FamilyKeyInput).
+  const EXPERIMENT = { ...REQUEST, trialFamilyHint: 'oi-divergence-v3' };
+  it('N runs of one experiment (same trialFamilyHint) accumulate under one family, trialCount 1..N', async () => {
+    const ledger = new InMemoryTrialLedger();
+    const N = 4;
+    let lastFamilyKey: string | undefined;
+    for (let i = 1; i <= N; i += 1) {
+      const ctx = await recordTrialAndComputeContext(deps(ledger), {
+        request: EXPERIMENT,
+        requestFingerprint: `fp-experiment-${i}`,
+        runId: `run-experiment-${i}`,
+        resultHash: `sha256:experiment-${i}`,
+        equity: EQUITY,
+      });
+      expect(ctx).not.toBeNull();
+      expect(ctx!.trialCount).toBe(i); // monotonic 1..N
+      if (lastFamilyKey !== undefined) expect(ctx!.familyKey).toBe(lastFamilyKey); // one family throughout
+      lastFamilyKey = ctx!.familyKey;
+    }
+    expect((await ledger.query(lastFamilyKey!)).length).toBe(N);
+  });
+
+  it('a different period is a DIFFERENT family — trialCount resets, does not inherit N', async () => {
+    const ledger = new InMemoryTrialLedger();
+    const ctxJan = await recordTrialAndComputeContext(deps(ledger), {
+      request: EXPERIMENT, requestFingerprint: 'fp-jan', runId: 'run-jan', resultHash: 'sha256:jan', equity: EQUITY,
+    });
+    const febRequest = { ...EXPERIMENT, period: { from: '2024-02-01T00:00:00.000Z', to: '2024-02-08T00:00:00.000Z' } };
+    const ctxFeb = await recordTrialAndComputeContext(deps(ledger), {
+      request: febRequest, requestFingerprint: 'fp-feb', runId: 'run-feb', resultHash: 'sha256:feb', equity: EQUITY,
+    });
+    expect(ctxFeb!.familyKey).not.toBe(ctxJan!.familyKey);
+    expect(ctxFeb!.trialCount).toBe(1);
+  });
 });
