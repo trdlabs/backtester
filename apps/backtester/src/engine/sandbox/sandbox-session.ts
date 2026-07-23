@@ -14,6 +14,7 @@ import { serializeContext, plainBar } from './context-serializer.js';
 import type { SandboxValidationCode } from './errors.js';
 import { toMountSource, type MountConfig } from './mounts.js';
 import type { HookBatchEntry, ReceiveOutcome } from './ipc.js';
+import { readEnvVar } from '../../env.js';
 
 /** Ошибка одного вызова (стабильный код + bounded detail + хук-контекст). */
 export interface SessionError {
@@ -86,7 +87,7 @@ export class SandboxSession {
   private failed = false;
   private lastError?: SessionError;
   // BACKTESTER_IPC_PROFILE=true: accumulate per-session IPC-wait/open timings, dumped on close().
-  private static readonly profileEnabled = process.env.BACKTESTER_IPC_PROFILE === 'true';
+  private static readonly profileEnabled = readEnvVar('BACKTESTER_IPC_PROFILE') === 'true';
   private profOpenMs = 0;
   private profIpcWaitMs = 0;
   private profHookCalls = 0;

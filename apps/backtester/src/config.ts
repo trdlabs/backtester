@@ -1,8 +1,8 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { hostname } from 'node:os';
-import { isIP } from 'node:net';
 
+import { isLoopbackHost, processEnv } from './env';
 import {
   DEFAULT_SANDBOX,
   SANDBOX_IMAGE,
@@ -228,19 +228,10 @@ function nonNegNumEnv(raw: string | undefined, def: number, opts?: { int?: boole
   return opts?.int ? Math.floor(clamped) : clamped;
 }
 
-/** A host bind is loopback-only (safe to run with the dev default token) when it is 127.0.0.0/8,
- *  ::1, or localhost. Everything else (0.0.0.0, a concrete external address, a hostname) is treated as
- *  externally reachable and requires an explicit auth token. */
-function isLoopbackHost(host: string): boolean {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
-  if (h === 'localhost' || h === '::1') return true; // the ONLY hostname / IPv6 literal we trust
-  // 127.0.0.0/8, but ONLY as a real IPv4 literal — a hostname like "127.attacker.internal" merely
-  // starts with "127." yet can resolve to an external interface, so a string prefix is NOT enough.
-  if (isIP(h) === 4) return Number(h.split('.')[0]) === 127;
-  return false;
-}
+// isLoopbackHost перенесён в env.ts (единственная точка env-логики); семантика не изменена —
+// пины в test/env-schema.test.ts.
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+export function loadConfig(env: NodeJS.ProcessEnv = processEnv()): AppConfig {
   // OVERLAY sandbox (Slice-6b-A): default everything to the proven DEFAULT_SANDBOX policy,
   // overriding only image + optional resource limits from BACKTESTER_SANDBOX_OVERLAY_* env.
   const overlayImage = env.BACKTESTER_SANDBOX_OVERLAY_IMAGE ?? SANDBOX_IMAGE;
