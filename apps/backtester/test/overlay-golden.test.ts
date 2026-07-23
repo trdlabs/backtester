@@ -32,10 +32,15 @@ async function overlayDeps(req: BacktestRunRequest) {
   return { registry, marketTape };
 }
 
-// Platform-derived goldens: produced by running the PLATFORM runBacktest over the
-// 018 request fixtures and hashing with the shared canonical-json
-// (scripts/derive_slice6a_goldens.mjs in trading-platform). NEVER frozen from the
-// backtester's own output — the backtester must MATCH these.
+// Owned here. These were once derived by running the PLATFORM runBacktest over the 018 request
+// fixtures (`scripts/derive_slice6a_goldens.mjs` in trading-platform) — that script and that engine
+// no longer exist: 041 removed research/backtest from the platform, which now owns only the
+// contract acceptance gates. Ownership moves to `@trdlabs/engine` at Ф2 of `shared-execution-engine`.
+//
+// Regenerate deliberately, never by hand:
+//   pnpm exec tsx apps/backtester/scripts/derive_goldens.mjs           # check (default)
+//   pnpm exec tsx apps/backtester/scripts/derive_goldens.mjs --write   # rebase
+// A rebase must carry a migration proof — see `contract-version-migration.test.ts`.
 const GB = readFileSync(
   new URL('./fixtures/overlay/goldens/baseline.hash', import.meta.url),
   'utf8',
@@ -45,20 +50,20 @@ const GV = readFileSync(
   'utf8',
 ).trim();
 
-describe('overlay parity — platform-derived result_hash goldens (Slice 6a CP3)', () => {
+describe('overlay parity — committed result_hash goldens (Slice 6a CP3)', () => {
   it('request window covers all 30 fixture bars (period.to = 00:30 → half-open includes the last bar)', async () => {
     const req = loadRequest('variant.json');
     const { marketTape } = await overlayDeps(req);
     expect(marketTape.candles('BTCUSDT')).toHaveLength(30);
   });
 
-  it('overlay baseline result_hash equals the platform-derived golden', async () => {
+  it('overlay baseline result_hash equals the committed golden', async () => {
     const req = loadRequest('baseline.json');
     const out = await runOverlayBacktest(req, await overlayDeps(req));
     expect(contentRef(out)).toBe(GB);
   });
 
-  it('overlay variant result_hash equals the platform-derived golden', async () => {
+  it('overlay variant result_hash equals the committed golden', async () => {
     const req = loadRequest('variant.json');
     const out = await runOverlayBacktest(req, await overlayDeps(req));
     expect(contentRef(out)).toBe(GV);

@@ -144,7 +144,7 @@ describe('buildOverlayDataset — period guard (Slice 6b-a)', () => {
 });
 
 describe('overlay engine — end-to-end through the worker (Slice 6a CP4)', () => {
-  // Platform-derived golden (NEVER frozen from backtester output — the worker run must MATCH it).
+  // Committed golden, owned here (see overlay-golden.test.ts for provenance and how to regenerate).
   const GV = readFileSync(
     new URL('./fixtures/overlay/goldens/variant.hash', import.meta.url),
     'utf8',
@@ -178,7 +178,7 @@ describe('overlay engine — end-to-end through the worker (Slice 6a CP4)', () =
     }
   }
 
-  it('overlay variant job runs end-to-end and result_hash hits the platform golden', async () => {
+  it('overlay variant job runs end-to-end and result_hash hits the committed golden', async () => {
     const variantReq = loadRequest('variant.json');
     const result = await submitDrainResult({ ...variantReq, engine: 'overlay' });
     expect(result.resultHash).toBe(GV);
