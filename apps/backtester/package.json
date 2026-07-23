@@ -9,7 +9,8 @@
     "dev": "tsx watch src/index.ts",
     "worker": "tsx src/worker-main.ts",
     "worker:dev": "tsx watch src/worker-main.ts",
-    "start:data-api": "tsx src/data-api-main.ts"
+    "start:data-api": "tsx src/data-api-main.ts",
+    "verify:goldens": "tsx scripts/derive_goldens.mjs"
   },
   "dependencies": {
     "@trdlabs/backtester-sdk": "workspace:*",

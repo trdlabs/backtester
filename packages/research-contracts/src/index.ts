@@ -2,8 +2,11 @@ export * from './run.js';
 export * from './comparison.js';
 export * from './historical.js';
 
-/** 017 run/module contract version. Must stay in lockstep with trading-platform for byte parity. */
-export const CONTRACT_VERSION = '017.2';
+/** 017 run/module contract version. Must stay in lockstep with the kernel for byte parity — the
+ *  `contract-merge-guard` test asserts it equals PLATFORM_CONTRACT_VERSION. 083 E1 moved it to
+ *  '017.3', ratified platform-side by verify_083_e1_contract_anchor; 017.1/017.2 manifests stay
+ *  valid (append-only SUPPORTED_CONTRACT_VERSIONS). */
+export const CONTRACT_VERSION = '017.3';
 
 /** The platform's lifted 017 contract version (parity anchor). Root CONTRACT_VERSION must equal it. */
 export { CONTRACT_VERSION as PLATFORM_CONTRACT_VERSION } from './research/catalogs.js';

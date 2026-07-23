@@ -1,0 +1,36 @@
+{
+  "contract": {
+    "from": "017.2",
+    "to": "017.3"
+  },
+  "goldens": {
+    "overlay-baseline": {
+      "scenario": "overlay-baseline",
+      "source": "apps/backtester/test/fixtures/overlay/goldens/baseline.hash",
+      "legacy": "sha256:0be9931ce4f3b11f78a4e78810505767e018c4e160dd5b059558259a7e05a2df",
+      "active": "sha256:7149703ebcd596f83f6011b2deaab837ac58bb34a30666253c5db4f9d5020fb1",
+      "diffPaths": [
+        "/baseline/evidence/contractVersion"
+      ]
+    },
+    "overlay-variant": {
+      "scenario": "overlay-variant",
+      "source": "apps/backtester/test/fixtures/overlay/goldens/variant.hash",
+      "legacy": "sha256:e381659c6472cf920b0d30cf682a9748edf7421c88751d7f4db5b34426f74f2c",
+      "active": "sha256:4c7a2303944b44aedb0e1bb060c9f40cf08cb8304125c5dc53a5e2de4cee9ee1",
+      "diffPaths": [
+        "/baseline/evidence/contractVersion",
+        "/variant/evidence/contractVersion"
+      ]
+    },
+    "bar-major": {
+      "scenario": "bar-major",
+      "source": "apps/backtester/test/helpers/bar-major-golden-hash.ts",
+      "legacy": "sha256:9da2192a459e6147bd4d5d52de6a327ed7b40b6520e107f93dabc3cff53ef977",
+      "active": "sha256:e49fd70e6abe348c8090fa08abfa0342df0bab51f5e26205303ab1ace0df5798",
+      "diffPaths": [
+        "/evidence/contractVersion"
+      ]
+    }
+  }
+}
