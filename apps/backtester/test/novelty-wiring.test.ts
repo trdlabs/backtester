@@ -100,3 +100,44 @@ describe('resolveNovelty — E1b-style worker wiring', () => {
     expect(r).toMatchObject({ status: 'no_comparators', reason: 'empty_pool', comparabilityKey: KEY });
   });
 });
+
+// wfo-extended-fixture item 4 — up-front (BEFORE the pool is touched) history sufficiency check.
+// requiredNoveltyDays === deps.novelty.minOverlapDays (config default 30) directly.
+describe('resolveNovelty — up-front insufficient_history (before the pool is queried)', () => {
+  function claimedWithPeriod(days: number) {
+    return {
+      runId: 'r1', requestFingerprint: 'fp1', datasetRef: 'ds',
+      request: { symbols: ['BTC'], timeframe: '1m', period: { from: new Date(0).toISOString(), to: new Date(days * DAY).toISOString() } },
+    } as unknown as Parameters<typeof resolveNovelty>[1];
+  }
+  function spyPool(): NoveltyPool & { queried: boolean; recorded: boolean } {
+    return {
+      queried: false,
+      recorded: false,
+      async query(this: { queried: boolean }) {
+        this.queried = true;
+        return [];
+      },
+      async recordIfNew(this: { recorded: boolean }) {
+        this.recorded = true;
+      },
+    } as unknown as NoveltyPool & { queried: boolean; recorded: boolean };
+  }
+
+  it('7-day request period ⇒ no_comparators:insufficient_history with requiredDays + a T2 hint, pool never touched', async () => {
+    const pool = spyPool();
+    const d = deps({ novelty: { enabled: true, threshold: 0.8, minOverlapDays: 30, pool }, clock: (() => 1) as WorkerDeps['clock'] });
+    const r = await resolveNovelty(d, claimedWithPeriod(7), outcome(SERIES), 'h1');
+    expect(r).toMatchObject({ status: 'no_comparators', reason: 'insufficient_history', requiredDays: 30 });
+    expect((r as { requiredTier?: string }).requiredTier).toContain('T2');
+    expect(pool.queried).toBe(false);
+    expect(pool.recorded).toBe(false);
+  });
+
+  it('42-day request period ⇒ passes the up-front check, falls through to the deep pool logic as before', async () => {
+    const pool = new InMemoryNoveltyPool();
+    const d = deps({ novelty: { enabled: true, threshold: 0.8, minOverlapDays: 30, pool }, clock: (() => 1) as WorkerDeps['clock'] });
+    const r = await resolveNovelty(d, claimedWithPeriod(42), outcome(SERIES), 'h1');
+    expect(r).toMatchObject({ status: 'no_comparators', reason: 'empty_pool', comparabilityKey: KEY });
+  });
+});

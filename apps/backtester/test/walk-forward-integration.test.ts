@@ -38,6 +38,13 @@ const DAY = 86_400_000;
 // baseline.json's overlay/momentum fixture wiring (dedup-equivalence.test.ts / dedup-worker.test.ts):
 // moduleRef short_after_pump@0.1.0 over pump-fixture-1m, resolved via buildTrustedRegistry() — NO
 // bundleHash, so materializeFor's real buildOverlayDataset call succeeds without Docker.
+//
+// wfo-extended-fixture item 4 added an up-front (pre-fold) history check: at the '1m' cadence with
+// maxFolds:20, requiredWalkForwardDays ⇒ 1 day (ceil((20+1)*34 warmup bars / 1440 min-per-day)). The
+// PUMP FIXTURE itself only has 30 real minutes of rows, but materializeFor's tape build tolerates a
+// period wider than the fixture's actual coverage (this run's canonical engine call AND every fold are
+// both mocked below, so no code path here actually needs real bars past minute 30) — widen the
+// REQUESTED period to 2 days purely so it clears the up-front floor; the mocked outcomes are unchanged.
 const REQ = {
   mode: 'research',
   engine: 'overlay',
@@ -45,7 +52,7 @@ const REQ = {
   datasetRef: 'pump-fixture-1m',
   symbols: ['BTCUSDT'],
   timeframe: '1m',
-  period: { from: '2025-01-01T00:00:00Z', to: '2025-01-01T00:30:00Z' },
+  period: { from: '2025-01-01T00:00:00Z', to: '2025-01-03T00:00:00Z' },
   riskProfileRef: { id: 'default_risk', version: '1.0.0' },
   executionProfileRef: { id: 'default_exec', version: '1.0.0' },
   seed: 12345,

@@ -72,6 +72,12 @@ import { computeRunDiagnostics } from '../engine/diagnostics.js';
 import { toDailyPnlDeltas, computeNovelty } from '../engine/novelty.js';
 import { computeComparabilityKey, type NoveltyPool } from './ledger/novelty-pool.js';
 import { runWalkForward, WalkForwardFoldError, type RunFold } from '../engine/walk-forward-exec.js';
+import {
+  checkSufficientHistory,
+  requiredHoldoutDays,
+  requiredNoveltyDays,
+  requiredWalkForwardDays,
+} from '../engine/required-history.js';
 import { resolvePromotionGate } from './promotion/resolve-promotion.js';
 import type { PromotionPolicy } from './promotion/resolve-promotion.js';
 import type { PromotionAttemptLedger } from './promotion/attempt-ledger.js';
@@ -444,12 +450,27 @@ export async function resolveNovelty(
   resultHash: string,
 ): Promise<Novelty | undefined> {
   if (!deps.novelty?.enabled) return undefined;
-  const candidateDeltas = toDailyPnlDeltas(outcome.baseline.evidence.equityCurve);
   const comparabilityKey = computeComparabilityKey({
     datasetRef: claimed.datasetRef,
     symbols: claimed.request.symbols,
     timeframe: claimed.request.timeframe,
   });
+  // wfo-extended-fixture item 4: up-front (BEFORE the pool is touched) sufficiency check — the
+  // requested period's own span vs the configured overlap floor. Short-circuits the pool query/record
+  // entirely on a miss so a too-short request never pollutes or reads the pool for a comparison it was
+  // never going to satisfy; the pre-existing deep reasons (empty_pool/insufficient_overlap/
+  // empty_candidate) are unchanged when history is sufficient.
+  const insufficiency = checkSufficientHistory(claimed.request.period, requiredNoveltyDays(deps.novelty.minOverlapDays));
+  if (insufficiency) {
+    return {
+      status: 'no_comparators',
+      reason: 'insufficient_history',
+      comparabilityKey,
+      policy: { threshold: deps.novelty.threshold, minOverlapDays: deps.novelty.minOverlapDays },
+      ...insufficiency,
+    };
+  }
+  const candidateDeltas = toDailyPnlDeltas(outcome.baseline.evidence.equityCurve);
   let pool: Awaited<ReturnType<NoveltyPool['query']>>;
   try {
     pool = await deps.novelty.pool.query(comparabilityKey, {
@@ -498,6 +519,19 @@ export async function resolveWalkForward(
   if (engine !== 'overlay' && engine !== 'strategy') return undefined;
   const scheme = claimed.request.walkForward;
   if (scheme === undefined) return undefined;
+  // wfo-extended-fixture item 4: up-front (BEFORE any fold runs) sufficiency check. Sized off
+  // `deps.walkForward.maxFolds` (the operator ceiling, config.walkForwardMaxFolds) rather than this
+  // request's own `scheme.folds` — a stable, config-derived estimate independent of any one request.
+  // Short-circuits the WHOLE fold loop (no sandbox session spun up) on a miss; the pre-existing deep
+  // reasons (split_error/all_folds_failed/folds_exceeds_max/insufficient_folds/internal_error) are
+  // unchanged when history is sufficient.
+  const insufficiency = checkSufficientHistory(
+    claimed.request.period,
+    requiredWalkForwardDays(claimed.request.timeframe, deps.walkForward.maxFolds),
+  );
+  if (insufficiency) {
+    return { status: 'unavailable', scheme, reason: 'insufficient_history', failedFolds: [], insufficientFolds: [], ...insufficiency };
+  }
   try {
     const runFold = runFoldOverride ?? workerInternals.makeWalkForwardRunFold(deps, engine, ctx.engineRequest, ctx.sandboxBundle);
     const deadlineMs = claimed.runDeadlineMs;
@@ -518,6 +552,15 @@ export async function resolveWalkForward(
 
 export async function resolveHoldoutMarker(deps: WorkerDeps, claimed: JobRow): Promise<HoldoutMarker | undefined> {
   if (!deps.holdout?.enabled) return undefined;
+  // wfo-extended-fixture item 4: up-front (BEFORE listDatasets) sufficiency check. Holdout has no
+  // per-request formula — `requiredHoldoutDays()` is the tier catalog's `minWfoHistoryDays` floor
+  // below which neither `(1-fraction)*span` nor `fraction*span` is a meaningful split. Short-circuits
+  // the dataPort round-trip entirely on a miss; the pre-existing deep reason (`coverage_not_found`) is
+  // unchanged when history is sufficient.
+  const insufficiency = checkSufficientHistory(claimed.request.period, requiredHoldoutDays());
+  if (insufficiency) {
+    return { status: 'unknown', reason: 'insufficient_history', ...insufficiency };
+  }
   let coverage: RunPeriod | undefined;
   try {
     const datasets = await deps.dataPort.listDatasets();

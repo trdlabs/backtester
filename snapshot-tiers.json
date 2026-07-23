@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "snapshot-tiers.1",
+  "_generated": "control-center `pnpm sync` from ecosystem-defaults.yaml — do not edit by hand",
+  "defaultTier": "T1",
+  "minWfoHistoryDays": 30,
+  "tiers": {
+    "T0": {
+      "ref": "fixtures/historical-golden",
+      "purpose": "conformance + golden byte-identity; not a data source",
+      "native_1m": true,
+      "primary_symbol": "BTCUSDT",
+      "symbols": 2,
+      "bar_timeframes": [],
+      "window": {
+        "from": "2025-01-02T00:00Z",
+        "to": "2025-01-02T00:30Z"
+      },
+      "window_minutes": 30,
+      "primary_present_minutes": 30,
+      "common_present_minutes": 30,
+      "in_demo_image": true
+    },
+    "T1": {
+      "ref": "fixtures/2026-06-22-to-2026-06-28-vps",
+      "purpose": "ecosystem default — demo + dev; real VPS slice with native 1m",
+      "native_1m": true,
+      "primary_symbol": "HUSDT",
+      "symbols": 26,
+      "bar_timeframes": [
+        "1h",
+        "1d"
+      ],
+      "window": {
+        "from": "2026-06-22T00:00Z",
+        "to": "2026-06-29T00:00Z"
+      },
+      "window_minutes": 10080,
+      "primary_present_minutes": 9914,
+      "common_present_minutes": 6123,
+      "in_demo_image": true
+    },
+    "T2": {
+      "ref": "wfo/2026-06-09-to-2026-07-20-vps-wfo42d",
+      "purpose": "walk-forward optimization / holdout — the only tier clearing the 30d floor",
+      "native_1m": true,
+      "primary_symbol": "HUSDT",
+      "symbols": 5,
+      "bar_timeframes": [
+        "1h",
+        "1d"
+      ],
+      "window": {
+        "from": "2026-06-09T00:00Z",
+        "to": "2026-07-21T00:00Z"
+      },
+      "window_minutes": 60480,
+      "primary_present_minutes": 59893,
+      "common_present_minutes": 59893,
+      "in_demo_image": false
+    }
+  }
+}

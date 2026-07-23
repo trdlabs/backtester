@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveWalkForward, type WorkerDeps } from '../src/jobs/worker.js';
 import type { RunFold, CompletedOutcome } from '../src/engine/walk-forward-exec.js';
+import type { FoldWindow } from '@trdlabs/backtester-sdk/contracts';
 
 const DAY = 86_400_000;
 function co(): CompletedOutcome {
@@ -45,5 +46,58 @@ describe('resolveWalkForward — gate + orchestration', () => {
     const bad: RunFold = async () => { throw new Error('boom'); };
     const wf = await resolveWalkForward(deps(on), claimed(), 'overlay', ctx, bad);
     expect(wf?.status).toBe('unavailable');
+  });
+});
+
+// wfo-extended-fixture item 4 — up-front (BEFORE any fold runs) history sufficiency check. At the 1h
+// cadence, (maxFolds+1)*MACD-warmup(34) ⇒ ~30 required days (see required-history.test.ts). A 7-day
+// request period is short of that; a 42-day one clears it — mirrors the T1/T2 fixture tiers.
+describe('resolveWalkForward — up-front insufficient_history (before any fold runs)', () => {
+  let foldCalls: number;
+  // Equity anchored INSIDE the fold's own test window (not the fixed `co()` helper, which is only
+  // 0-3 days in and would land outside a 42-day-period fold's test slice) — the assertion this block
+  // cares about is whether runFold is invoked at all, not per-fold metric values.
+  function coForFold(fold: FoldWindow): CompletedOutcome {
+    const from = Date.parse(fold.test.from);
+    const to = Date.parse(fold.test.to);
+    const mid = Math.round((from + to) / 2);
+    return {
+      status: 'completed',
+      baseline: { trades: [], evidence: { equityCurve: [
+        { barIndex: 0, barTs: from, equity: 100 },
+        { barIndex: 1, barTs: mid, equity: 110 },
+        { barIndex: 2, barTs: to, equity: 120 },
+      ] } },
+    } as unknown as CompletedOutcome;
+  }
+  const countingFold: RunFold = async (fold) => {
+    foldCalls += 1;
+    return { outcome: coForFold(fold), hash: 'h' };
+  };
+
+  function claimedWithSpan(days: number, over: object = {}) {
+    return claimed({
+      request: {
+        symbols: ['BTCUSDT'], timeframe: '1h', metrics: ['returns_count'],
+        period: { from: new Date(0).toISOString(), to: new Date(days * DAY).toISOString() },
+        walkForward: { folds: 2, mode: 'rolling' },
+      },
+      ...over,
+    });
+  }
+
+  it('7-day period, 1h timeframe ⇒ unavailable:insufficient_history with requiredDays + a T2 hint, runFold never called', async () => {
+    foldCalls = 0;
+    const wf = await resolveWalkForward(deps(on), claimedWithSpan(7), 'overlay', ctx, countingFold);
+    expect(wf).toMatchObject({ status: 'unavailable', reason: 'insufficient_history', requiredDays: 30 });
+    expect((wf as { requiredTier?: string }).requiredTier).toContain('T2');
+    expect(foldCalls).toBe(0);
+  });
+
+  it('42-day period, 1h timeframe ⇒ resolves normally, no insufficient-history reason', async () => {
+    foldCalls = 0;
+    const wf = await resolveWalkForward(deps(on), claimedWithSpan(42), 'overlay', ctx, countingFold);
+    expect(wf?.status).toBe('resolved');
+    expect(foldCalls).toBeGreaterThan(0);
   });
 });
