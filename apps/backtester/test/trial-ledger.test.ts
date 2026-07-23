@@ -45,6 +45,14 @@ describe('computeFamilyKey', () => {
     const byModule = computeFamilyKey(famInput({ trialFamilyHint: undefined }));
     expect(hinted).not.toBe(byModule);
   });
+  // research-validation-hardening R1(b): absent trialFamilyHint falls back to moduleRef.id. Proven by
+  // equivalence rather than re-deriving the sha256 formula: a hint that EQUALS moduleRef.id must key
+  // identically to hint absent, since both feed the SAME `hint` value into the canonical-json input.
+  it('falls back to moduleRef.id when trialFamilyHint is absent', () => {
+    const noHint = computeFamilyKey(famInput({ trialFamilyHint: undefined, moduleRef: { id: 'short_after_pump' } }));
+    const hintEqualsModuleId = computeFamilyKey(famInput({ trialFamilyHint: 'short_after_pump', moduleRef: { id: 'short_after_pump' } }));
+    expect(noHint).toBe(hintEqualsModuleId);
+  });
 });
 
 function rec(over: Partial<TrialRecord> = {}): TrialRecord {

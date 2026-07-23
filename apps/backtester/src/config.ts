@@ -158,7 +158,12 @@ export interface AppConfig {
   readonly universeMemPerSymbolMb: number;
   /** Queue-wake LISTEN/NOTIFY enabled (Phase D item 16). Default off. */
   readonly queueNotify: boolean;
-  /** E2: trial ledger + advisory Deflated Sharpe enabled. Default off (dark launch). */
+  /**
+   * E2: trial ledger + advisory Deflated Sharpe enabled. Default **ON** (research-contour rollout,
+   * research-validation-hardening item 1) — fail-open-in-advisory: the ledger/DSR are advisory-only
+   * (never part of `resultHash`; a ledger I/O fault degrades to no `trialContext`, never fails the
+   * run), so defaulting them on is safe. Disable explicitly with `BACKTESTER_TRIAL_LEDGER=false`.
+   */
   readonly trialLedger: boolean;
   /** E2: N at/above which V[SR] switches asymptotic→empirical. Default 5. */
   readonly trialEmpiricalMinN: number;
@@ -473,7 +478,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     universeMemBaseMb: Math.max(1, Math.floor(Number(env.BACKTESTER_UNIVERSE_MEM_BASE_MB ?? 128))) || 128,
     universeMemPerSymbolMb: Math.max(1, Math.floor(Number(env.BACKTESTER_UNIVERSE_MEM_PER_SYMBOL_MB ?? 8))) || 8,
     queueNotify: env.BACKTESTER_QUEUE_NOTIFY === 'true',
-    trialLedger: env.BACKTESTER_TRIAL_LEDGER === 'true',
+    trialLedger: env.BACKTESTER_TRIAL_LEDGER !== 'false',
     trialEmpiricalMinN: Math.max(2, Math.floor(Number(env.BACKTESTER_TRIAL_EMPIRICAL_MIN_N ?? 5))) || 5,
     holdout: env.BACKTESTER_HOLDOUT_ENABLED === 'true',
     holdoutFraction: Number(env.BACKTESTER_HOLDOUT_FRACTION) || 0.2,

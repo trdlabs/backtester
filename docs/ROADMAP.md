@@ -955,14 +955,24 @@ mechanism — unrequested ⇒ byte-identical results, INV preserved).
 25. **Cross-repo: research-validation-hardening — E2 trial ledger wired into consumer verdicts.**
     Canonical status:
     [research-validation-hardening card in control-center](../../control-center/docs/delivery/initiatives/research-validation-hardening.md)
-    (analysis: control-center `docs/analysis/13-backtesting-validation-audit.md`). Backtester-local
-    slice: (a) verify/complete the production wiring of `computeDsr` →
-    `recordTrialAndComputeContext` (the call-graph shows no production caller today; `TrialContext`
-    is contract-ready but flag-dark) and move `BACKTESTER_TRIAL_LEDGER` to ON in the research
-    contour; (b) family-key semantics for lab experiments so every grid point AND every hypothesis
-    of an experiment accumulates the family's trial count N (hypothesis-level trials are new — today
-    only parameter trials count); (c) ledger-completeness gate: an N-point WFO sweep must produce N
-    ledger rows with a monotonic `trialCount`. Lab consumes `trialContext` into its verdict ladders
+    (analysis: control-center `docs/analysis/13-backtesting-validation-audit.md`). **Backtester-local
+    slice (item 1 / R1) — (a)/(b)/(c) done, see the card:** (a) the production wiring of
+    `computeDsr` → `recordTrialAndComputeContext` already existed in `finalizeResult`
+    (worker.ts) — it was flag-dark, not caller-less; `BACKTESTER_TRIAL_LEDGER` now defaults **ON**
+    in the research contour (fail-open-in-advisory, opt out with an explicit `false`), pinned by
+    `test/trial-ledger-config.test.ts`; (b) family-key semantics for lab experiments — same
+    `trialFamilyHint`/datasetRef/symbols/timeframe/period ⇒ one family, `trialCount` monotonic
+    1..N across N parameter trials, absent hint falls back to `moduleRef.id`, a different `period`
+    is a different family, `trialFamilyHint` stays excluded from `requestFingerprint` — pinned by
+    `test/trial-ledger.test.ts` + `test/record-trial.test.ts` + `test/fingerprint.test.ts` (no
+    `computeFamilyKey` defect found; existing semantics were already correct, only the default flag
+    changed); hypothesis-level trials (new hypotheses, not just parameter grid points, accumulating
+    the same family) are lab-side follow-up, not this slice; (c) the Ledger-completeness gate — an
+    N-point grid experiment produces exactly N ledger rows under one familyKey with a monotonic
+    `trialCount` and every `summary.trialContext` populated — pinned on the REAL finalize path by
+    `test/ledger-completeness-gate.test.ts`. The `resultHash` invariant (advisory `trialContext` is
+    computed AFTER `contentRef(payload)`, so flag ON/OFF stays byte-identical) is pinned by
+    `test/trial-ledger-hash-invariant.test.ts`. Lab consumes `trialContext` into its verdict ladders
     (their side of the card). NOTE: keeps the E4a caveat — family N is same-window by design;
     holdout/period-shopping stays E4's axis, not this item's.
 
