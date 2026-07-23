@@ -73,9 +73,18 @@ export type WalkForward =
   | {
       readonly status: 'unavailable';
       readonly scheme: WalkForwardScheme;
-      readonly reason: 'split_error' | 'all_folds_failed' | 'folds_exceeds_max' | 'insufficient_folds' | 'internal_error';
+      readonly reason:
+        | 'split_error' | 'all_folds_failed' | 'folds_exceeds_max' | 'insufficient_folds' | 'internal_error'
+        // wfo-extended-fixture item 4: up-front (pre-fold) sufficiency check on the requested period's
+        // span vs `(maxFolds+1)*warmupBars` at the run's timeframe. Additive — never emitted unless the
+        // check trips; existing reasons/shape are unchanged.
+        | 'insufficient_history';
       readonly failedFolds: readonly WalkForwardFailure[];
       readonly insufficientFolds: readonly number[];
+      /** Present only when `reason === 'insufficient_history'`: how many days of history the request
+       *  would need, and which committed fixture tier provides them (e.g. "T2 (wfo/2026-06-09-...)"). */
+      readonly requiredDays?: number;
+      readonly requiredTier?: string;
     };
 
 // E4b — held-out promotion enforcement (advisory feedback + signed-evidence gate; NOT hashed).
@@ -134,7 +143,13 @@ export interface HoldoutResolved {
 }
 export interface HoldoutUnknown {
   readonly status: 'unknown';
-  readonly reason: 'coverage_not_found';
+  // wfo-extended-fixture item 4: 'insufficient_history' is an up-front (pre-`listDatasets`) reason —
+  // additive alongside the pre-existing 'coverage_not_found' (deep lookup found no matching dataset).
+  readonly reason: 'coverage_not_found' | 'insufficient_history';
+  /** Present only when `reason === 'insufficient_history'`. See `WalkForward`'s fields for the same
+   *  shape/semantics. */
+  readonly requiredDays?: number;
+  readonly requiredTier?: string;
 }
 export type HoldoutMarker = HoldoutResolved | HoldoutUnknown;
 
@@ -186,9 +201,15 @@ export type Novelty =
     }
   | {
       readonly status: 'no_comparators';
-      readonly reason: 'empty_pool' | 'insufficient_overlap' | 'empty_candidate';
+      // wfo-extended-fixture item 4: 'insufficient_history' is an up-front (pre-pool-query) reason —
+      // additive alongside the three pre-existing deep-check reasons.
+      readonly reason: 'empty_pool' | 'insufficient_overlap' | 'empty_candidate' | 'insufficient_history';
       readonly comparabilityKey: string;
       readonly policy: { readonly threshold: number; readonly minOverlapDays: number };
+      /** Present only when `reason === 'insufficient_history'`. See `WalkForward`'s fields for the same
+       *  shape/semantics. */
+      readonly requiredDays?: number;
+      readonly requiredTier?: string;
     };
 
 /**
