@@ -54,18 +54,22 @@ describe('017 schema assets', () => {
 });
 
 describe('version parity', () => {
-  // Раньше здесь стояло строгое равенство с research CONTRACT_VERSION. Оно держалось, пока обе
-  // величины двигались вместе, — но это две РАЗНЫЕ оси: API_CONTRACT_VERSION версионирует wire-API
-  // backtester-сервиса, а research CONTRACT_VERSION — конверт манифеста. 083 E1 бампнул второй
-  // (`lifecycle`/`onEvent`), не тронув первый: HTTP-поверхность этого пакета не изменилась.
+  // Что здесь на самом деле проверяется — СОВМЕСТИМОСТЬ AUTHORING-ДЕФОЛТА, а не равенство двух
+  // version axes.
   //
-  // Настоящий инвариант — не равенство, а СОВМЕСТИМОСТЬ: версия, которую объявляет наш API, обязана
-  // оставаться в наборе, который kernel принимает. Иначе сервис объявлял бы контракт, по которому
-  // его собственный валидатор отказывается работать.
+  // `createModuleManifest` (builder/manifest.ts) проставляет в манифест `contractVersion:
+  // API_CONTRACT_VERSION`, то есть каждый бандл, собранный этим пакетом, объявляет `017.2`. Значит
+  // инвариант такой: версия, которую эмитит наш builder, обязана оставаться в наборе, который
+  // kernel принимает. Иначе пакет authoring'а штамповал бы бандлы, которые kernel-валидатор
+  // отвергает — и ломался бы не он, а его пользователи.
   //
-  // Поднять API_CONTRACT_VERSION до 017.3 — отдельное решение и отдельный релиз
-  // @trdlabs/backtester-sdk; в rollout kernel'а 0.13.0 этот пакет намеренно не трогается.
-  it('API_CONTRACT_VERSION stays within the kernel-supported set', () => {
+  // Строгое равенство с research `CONTRACT_VERSION` держалось, пока обе величины двигались вместе,
+  // но оси разные: research-версия версионирует КОНВЕРТ МАНИФЕСТА, а `API_CONTRACT_VERSION` —
+  // wire-API сервиса. 083 E1 бампнул первую (`lifecycle`/`onEvent`) и не тронул вторую.
+  //
+  // Поднять authoring-дефолт до `017.3` — отдельное решение и отдельный релиз
+  // @trdlabs/backtester-sdk; в rollout kernel'а 0.13.0 пакет не переиздавался.
+  it('the authoring default this package emits stays kernel-acceptable', () => {
     expect([...SUPPORTED_CONTRACT_VERSIONS]).toContain(API_CONTRACT_VERSION);
   });
 

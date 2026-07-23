@@ -36,7 +36,7 @@ void bundle;
 // Smoke test — runtime ESM
 const smokeMjs = `\
 import { SDK_VERSION } from '@trdlabs/backtester-sdk';
-import { allSchemaAssets } from '@trdlabs/backtester-sdk/contracts';
+import { allSchemaAssets, SCHEMA_IDS } from '@trdlabs/backtester-sdk/contracts';
 import { createModuleManifest, createModuleBundle, computeInlineBundleHash } from '@trdlabs/backtester-sdk/builder';
 import { BacktesterClient } from '@trdlabs/backtester-sdk/client';
 import { isContentHash } from '@trdlabs/backtester-sdk/artifacts';
@@ -46,7 +46,15 @@ if (SDK_VERSION !== expected) { console.error('SDK_VERSION', SDK_VERSION, '!== p
 if (typeof createModuleManifest !== 'function') process.exit(1);
 if (typeof BacktesterClient !== 'function') process.exit(1);
 if (!isContentHash(\`sha256:\${'a'.repeat(64)}\`)) process.exit(1);
-if (allSchemaAssets().length !== 5) process.exit(1);
+// Набор schema assets сверяется с SCHEMA_IDS пакета, а не с литералом. Захардкоженная пятёрка
+// молча устаревала при каждом росте kernel'а (sdk 0.13.0 добавил четыре схемы) и проверяла лишь
+// количество; точное сравнение $id ловит и пропажу, и подмену, и лишний ассет.
+const ids = allSchemaAssets().map((a) => a.$id).sort();
+const expectedIds = Object.values(SCHEMA_IDS).sort();
+if (JSON.stringify(ids) !== JSON.stringify(expectedIds)) {
+  console.error('schema assets', JSON.stringify(ids), '!== SCHEMA_IDS', JSON.stringify(expectedIds));
+  process.exit(1);
+}
 const manifest = createModuleManifest({
   id: 'smoke',
   version: '1.0.0',
