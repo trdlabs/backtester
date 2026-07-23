@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@trdlabs/backtester-sdk": "workspace:*",
-    "@trdlabs/sdk": "^0.10.0",
+    "@trdlabs/sdk": "^0.13.0",
     "@trading/research-contracts": "workspace:*",
     "ajv": "^8.20.0",
     "decimal.js": "^10.4.3",

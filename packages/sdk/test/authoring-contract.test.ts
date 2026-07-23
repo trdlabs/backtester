@@ -32,9 +32,12 @@ describe('authoring ABI', () => {
 });
 
 describe('017 schema assets', () => {
-  it('loads all five assets whose $id matches SCHEMA_IDS', () => {
+  // Count is derived from the kernel's own SCHEMA_IDS, not a literal. A hardcoded five broke the
+  // moment the kernel grew a schema (sdk 0.13.0 added four) — and it was asserting nothing the
+  // $id comparison below does not already assert more precisely.
+  it('loads every kernel asset, and their $ids match SCHEMA_IDS exactly', () => {
     const assets = allSchemaAssets();
-    expect(assets.length).toBe(5);
+    expect(assets.length).toBe(Object.keys(SCHEMA_IDS).length);
     const ids = assets.map((a) => a.$id).sort();
     expect(ids).toEqual(Object.values(SCHEMA_IDS).sort());
   });

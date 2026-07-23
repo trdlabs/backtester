@@ -25,6 +25,10 @@ export const CODE_SEVERITY: Readonly<Record<ValidationCode, Severity>> = {
   unsupported_market_data_kind: 'error',
   missing_required_market_data: 'error',
   unsupported_fill_model_kind: 'error',
+  // sdk 0.13.0 (Ф1 shared-execution-engine): замкнутые каталоги слотов модели среды.
+  unsupported_reality_model_kind: 'error',
+  // sdk 0.13.0 (083 E1): соответствие набора хуков объявленной форме стратегии.
+  lifecycle_form_invalid: 'error',
   empty_baseline_variant_diff: 'warning',
 };
 
