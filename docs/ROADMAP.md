@@ -952,6 +952,19 @@ mechanism — unrequested ⇒ byte-identical results, INV preserved).
     retro-merges families (fixing the N counter) and feeds corrections back to the lab-side
     semantic layer (L2). E2 and E5 are two ends of one defense — E2 punishes search *within* an
     acknowledged family, E5 stops passing an old family off as a new one.
+25. **Cross-repo: research-validation-hardening — E2 trial ledger wired into consumer verdicts.**
+    Canonical status:
+    [research-validation-hardening card in control-center](../../control-center/docs/delivery/initiatives/research-validation-hardening.md)
+    (analysis: control-center `docs/analysis/13-backtesting-validation-audit.md`). Backtester-local
+    slice: (a) verify/complete the production wiring of `computeDsr` →
+    `recordTrialAndComputeContext` (the call-graph shows no production caller today; `TrialContext`
+    is contract-ready but flag-dark) and move `BACKTESTER_TRIAL_LEDGER` to ON in the research
+    contour; (b) family-key semantics for lab experiments so every grid point AND every hypothesis
+    of an experiment accumulates the family's trial count N (hypothesis-level trials are new — today
+    only parameter trials count); (c) ledger-completeness gate: an N-point WFO sweep must produce N
+    ledger rows with a monotonic `trialCount`. Lab consumes `trialContext` into its verdict ladders
+    (their side of the card). NOTE: keeps the E4a caveat — family N is same-window by design;
+    holdout/period-shopping stays E4's axis, not this item's.
 
 Deliberately NOT in Phase E: Nautilus-style L2/L3 matching (our product gates hypotheses on
 bars, and fills are already validated against the live paper engine to 3e-7 — honest by
