@@ -236,3 +236,12 @@ git add -A && git commit -m "docs: замер bar-batching трио + ROADMAP (d
 - Спека §«Референс-прогон» → Task 2 Step 1; §«Матрица вариантов» → Task 1 (VARIANTS/parseVariants); §«Измеряется» → Task 1 (IpcProfile/median) + Task 2 Step 1 (сбор); §«Вывод» → Task 1 (`formatBenchMarkdown`) + Task 2 (`--json`); §«Вердикт byte-identity» → Task 1 (`identityVerdict`) + Task 3 Step 2 (эскалация); §«Тесты» → Task 1; критерии готовности 1–3 → Task 2 Step 2 / Task 3 Step 1 / Task 3 Step 4; критерий 4 (карточка) → PR в control-center, вне этого плана.
 - Плейсхолдеров нет.
 - Имена согласованы с Task 1 во всех последующих задачах (`VARIANTS`, `parseVariants`, `identityVerdict`, `formatBenchMarkdown`, `parseIpcProfileLine`, `sumIpcProfiles`, `median`).
+
+---
+
+## Поправка после ревью (2026-07-24)
+
+План описывает `identityVerdict` с единственным baseline и полем `baselineHash: string`. Реализация
+использует `IDENTITY_BASELINE` (референс на флаг) + `baselineHashes` + `unanchored`, матрица
+расширена до пяти вариантов, добавлен предикат `engagementProblem`. Обоснование — в поправке к
+спеке. Task 2 Step 3 (npm-скрипт `bench:reference`) был пропущен в первом заходе и выполнен здесь же.
