@@ -32,10 +32,11 @@ describe('golden-sync: vendored platform golden integrity', () => {
     expect(sha256Hex(bytes)).toBe(expected);
   });
 
+  // Канонический паттерн гейтинга (см. `test/store-factories.ts`): условный пропуск через
+  // `skipIf`, а не подмена `it` на `it.skip` — иначе skip-аудит (TQ-1) видит безусловный skip.
   const platformReachable = existsSync(PLATFORM_GOLDEN_PATH);
-  const crossRepo = platformReachable ? it : it.skip;
 
-  crossRepo('vendored copy is byte-identical to upstream platform golden (drift detection)', () => {
+  it.skipIf(!platformReachable)('vendored copy is byte-identical to upstream platform golden (drift detection)', () => {
     const vendored = readFileSync(VENDORED_PATH);
     const upstream = readFileSync(PLATFORM_GOLDEN_PATH);
     expect(vendored.equals(upstream)).toBe(true);

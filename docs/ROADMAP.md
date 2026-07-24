@@ -330,6 +330,17 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   `BacktesterClient` (a different, lab-facing SDK — not the P2-12 target); that change was reverted from
   #140 and re-homed to its own `@trdlabs/backtester-sdk` 0.9 PR. Happy path byte-identical (transport only;
   no engine/`result_hash` change). `MockPlatformDataPort`/`FixtureDataPort` untouched.
+- **2026-07-24 — skip-аудит тестовой поверхности (TQ-1)** ([`docs/reports/2026-07-24-test-skip-audit.md`](reports/2026-07-24-test-skip-audit.md),
+  карточка control-center [`test-quality-hardening`](../../control-center/docs/delivery/initiatives/test-quality-hardening.md)):
+  «51 файл со skip» из отчёта 15 разобран машинно — **52 сайта модификаторов, из них 51 условный**
+  (`skipIf` по среде: docker 21, postgres 15, store-factory 8, fixture-file 4, именованные локальные
+  константы 3), безусловных без обоснования и `.only` — **ноль**. Единственный намеренно отложенный
+  `it.skip` (паритет сигналов long_oi, ждёт фикса `ctx.market` на платформе) помечен прагмой
+  `// skip-audit:allow — <причина>`; `golden-sync.test.ts` переведён с тернарной подмены
+  `platformReachable ? it : it.skip` на канонический `it.skipIf(!platformReachable)`.
+  Классификатор — `apps/backtester/scripts/lib/skip-audit.ts` (`pnpm test:skips`, режим `--check`),
+  анти-дрейф — гейт `test/skip-audit.test.ts` внутри обычного `pnpm test` (новый `.only` или молчаливый
+  `.skip` роняет прогон). Продакшн-код не затронут.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 

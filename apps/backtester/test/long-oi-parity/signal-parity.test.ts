@@ -46,6 +46,7 @@ describe('long_oi signal-parity (G7 Stage 1)', () => {
 
   // DEFERRED — exact golden parity awaits the platform live-adapter ctx.market fix (or a post-fix
   // golden); params are already identical. Kept as it.skip so the matchTrades infra + intent survive.
+  // skip-audit:allow — DEFERRED: ждёт фикса ctx.market в live-адаптере платформы; инфраструктура matchTrades сохраняется намеренно
   it.skip('reproduces the 8 scorable golden trades exactly (DEFERRED: platform ctx.market fix)', async () => {
     const generated = await runLongOiOnRows(fx.rows, fx.symbol);
     const scorable = scorableGolden(fx.trades, firstTs, WARMUP);
