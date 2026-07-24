@@ -98,6 +98,7 @@ export class SandboxSession {
   // Slice B: one hookBarMajor round-trip (N symbols' bars collapsed into a single IPC envelope).
   // Distinct from profHookCalls, which still counts the underlying per-symbol logical hook calls.
   private profBarMajorBatches = 0;
+  private profHookBatches = 0;
   private profClosed = false;
 
   constructor(
@@ -434,6 +435,10 @@ export class SandboxSession {
 
     this.seq += 1;
     channel.send({ t: 'hookBatch', seq: this.seq, hook: 'onBarClose', bars });
+    // Счётчик РЕАЛЬНО отправленных батчей 17b (профиль-онли, как profBarMajorBatches у Slice B).
+    // Без него отчёт не может отличить работающий флаг от выключенного: profHookCalls логический
+    // (кредитуется stoppedAt+1) и при батчинге остаётся тем же, что и в lockstep.
+    if (SandboxSession.profileEnabled) this.profHookBatches += 1;
     const profT0 = SandboxSession.profileEnabled ? performance.now() : 0;
     const outcome = this.assertSeq(await channel.receive(this.callDeadline()), this.seq);
     if (SandboxSession.profileEnabled) {
@@ -600,6 +605,7 @@ export class SandboxSession {
         hookCalls: this.profHookCalls,
         symbolInits: this.profInitCalls,
         barMajorBatches: this.profBarMajorBatches,
+        hookBatches: this.profHookBatches,
         ipcWaitMs: Math.round(this.profIpcWaitMs),
         openMs: Math.round(this.profOpenMs),
         avgIpcWaitMsPerHook: Number((this.profIpcWaitMs / this.profHookCalls).toFixed(3)),

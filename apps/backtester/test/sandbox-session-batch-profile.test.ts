@@ -114,9 +114,17 @@ describe('SandboxSession.callHookBatch profiling parity (17b review item a)', ()
       .map((args) => String(args[0]))
       .find((s) => s.includes('"evt":"ipc_profile"'));
     expect(profileLine).toBeDefined();
-    const parsed = JSON.parse(profileLine as string) as { hookCalls: number; ipcWaitMs: number };
+    const parsed = JSON.parse(profileLine as string) as {
+      hookCalls: number;
+      hookBatches: number;
+      ipcWaitMs: number;
+    };
     // stoppedAt (2) + 1 = 3 bars actually executed by the harness in this one batch call.
     expect(parsed.hookCalls).toBe(3);
+    // hookBatches считает РЕАЛЬНО отправленные батч-сообщения: одно на этот вызов. Без этого
+    // счётчика по профилю нельзя отличить работающий 17b от выключенного — `hookCalls` логический
+    // и в lockstep-режиме дал бы те же 3 (см. bench-reference-harness.test.ts, ревью PR #160).
+    expect(parsed.hookBatches).toBe(1);
     expect(parsed.ipcWaitMs).toBeGreaterThanOrEqual(0);
   });
 

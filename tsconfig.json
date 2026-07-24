@@ -6,6 +6,8 @@
   "include": [
     "packages/*/src",
     "packages/*/test",
+    "apps/*/scripts/**/*.ts",
+    "apps/*/scripts/**/*.mts",
     "apps/*/src",
     "apps/*/test",
     "scripts/**/*.ts",

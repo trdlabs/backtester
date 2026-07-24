@@ -347,16 +347,22 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   карточка control-center [`dark-flag-validation`](../../control-center/docs/delivery/initiatives/dark-flag-validation.md) item 3):
   `pnpm bench:reference` гоняет один референс-бэктест через РЕАЛЬНЫЙ Docker-сэндбокс под матрицей
   флагов и печатает byte-identity + тайминги + агрегаты штатного `BACKTESTER_IPC_PROFILE`; фикстура
-  и число повторов параметризуются (`BENCH_REQUEST`/`BENCH_BUNDLE`/`BENCH_REPEATS`), так что тот же
-  станок обслуживает U8-перф-гейт. Референс сверки задан по флагу, а не «всё против `off`»:
-  `BAR_BATCHING` → `off`, `BAR_MAJOR_BATCH` → `BAR_MAJOR`, а сам `BAR_MAJOR` — сам с собой, потому
-  что он меняет модель исполнения (per-symbol portfolio + equal-weight агрегация) и расходится с
-  symbol-major дефолтом **по дизайну**. Локальный прогон (WSL2, 4 ядра, 3 символа, 3 повтора):
-  **byte-identity PASS** для обоих транспортных флагов; ускорения нет (1.00–1.12×, шум) — прогон
-  на этой фикстуре на 60–75 % состоит из открытия контейнеров (`openMs` 12–16 с из 19–21 с), а всё
-  per-bar IPC-ожидание 1.5–1.9 с при 90 hook-вызовах, то есть схлопывать нечего. Вывод: фикстура
-  golden-гейта не годится как инструмент замера транспорта — нужен прогон с бо́льшим N и длинным
-  периодом (профиль VPS-замера). Дефолты не менялись, флаги остаются `default off`.
+  и повторы параметризуются (`BENCH_REQUEST`/`BENCH_BUNDLE`/`BENCH_REPEATS`), так что тот же станок
+  обслуживает U8-перф-гейт. Референс сверки задан ПО ФЛАГУ: `BAR_BATCHING`→`off`,
+  `BAR_MAJOR_BATCH`→`BAR_MAJOR`+universe, а сам `BAR_MAJOR` — сам с собой (он меняет модель
+  исполнения и расходится с symbol-major **по дизайну**). У каждого варианта есть предикат «флаг
+  задействован» (`hookBatches`/`barMajorBatches`/число сессий/расхождение хэша), и прогон без следа
+  флага объявляется НЕДЕЙСТВИТЕЛЬНЫМ — первая редакция станка передавала `barBatching: true` вместо
+  `{ maxBars }` и гоняла Slice B без universe, отчего два флага молча исполняли baseline при зелёном
+  вердикте (поймано ревью; заодно `apps/*/scripts` заведены под `tsc` — там эта ошибка и пряталась).
+  Для 17b добавлен профиль-счётчик `hookBatches` в `SandboxSession` (профиль-онли).
+  Замер (WSL2, 4 ядра, 3 символа, 30 баров, 3 повтора + прогрев), **byte-identity PASS**:
+  17b — **0.88×, медленнее** baseline (63 батча отправлено, `ipcWait` 255→320) — независимо
+  воспроизводит parked-вердикт VPS-A/B; `bar_major` сам по себе 0.93×; **universe-сессия 1.67×**
+  (3 контейнера → 1, `openMs` 3262→1582, byte-identical); **Slice B поверх universe ещё 1.37×,
+  итого 2.28× к baseline**, `ipcWait` 315→136 (**2.3×** — тот же порядок, что VPS-замер при N=3),
+  `barMajorBatches` = 30 = число баров. Практический вывод: **Slice B без universe-сессии — no-op**
+  (per-symbol lockstep), включать флаги можно только парой. Дефолты не менялись.
 
 ## Feature 1: Client Contract Alignment ✅ DONE
 
