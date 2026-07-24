@@ -25,7 +25,10 @@ if (args.has('--json')) {
 
 if (args.has('--check')) {
   if (violations.length > 0) {
-    console.error(`skip-audit: ${violations.length} нарушение(й) — см. таблицу выше`);
+    // В stderr, вместе со списком: stdout может быть перенаправлен в файл отчёта, и тогда
+    // «см. таблицу выше» осталось бы без таблицы.
+    console.error(`skip-audit: ${violations.length} нарушение(й):`);
+    for (const v of violations) console.error(`  ${v.file}:${v.line} ${v.block}.${v.modifier} (${v.cls})`);
     process.exit(1);
   }
   console.error('skip-audit: нарушений нет');

@@ -10,12 +10,12 @@
 // Чистый модуль: без I/O в разборе (`scanSource`), файловый обход вынесен в `collectTestFiles`/
 // `auditTree`. CLI-обёртка — `../audit-test-skips.mts`.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 export type SkipClass = 'gated' | 'allowed' | 'unconditional' | 'focused';
 export type GateKind = 'docker' | 'postgres' | 'store-factory' | 'fixture-file' | 'env-opt-in' | 'other';
-export type BlockKind = 'describe' | 'it' | 'test';
+export type BlockKind = 'describe' | 'suite' | 'it' | 'test' | 'bench';
 export type Modifier = 'skip' | 'skipIf' | 'runIf' | 'only' | 'todo';
 
 export interface SkipSite {
@@ -34,7 +34,14 @@ export interface SkipSite {
 }
 
 const PRAGMA = /^\s*\/\/\s*skip-audit:allow\s*(?:[—:-]\s*)?(.*)$/;
-const SITE = /\b(describe|it|test)\.(skipIf|runIf|skip|only|todo)\b/g;
+
+// Промежуточные звенья (`it.concurrent.skip`) и пробелы вокруг точек допускаются: гейт существует
+// ради завтрашнего дрейфа, а `it.concurrent.skip` — обычная запись vitest. Форма с вызовом между
+// звеньями (`it.each([…]).skip`) регуляркой не ловится — в репо не используется.
+const SITE = /\b(describe|suite|it|test|bench)(?:\s*\.\s*(?:concurrent|sequential|shuffle|fails|extend))*\s*\.\s*(skipIf|runIf|skip|only|todo)\b/g;
+
+// Ключевые слова, после которых `/` открывает regex-литерал, а не делит (`return /re/.test(x)`).
+const REGEX_KEYWORD = /\b(?:return|typeof|case|in|of|instanceof|delete|void|await|yield|do|else)$/;
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.worktrees', '.claude', 'coverage', '.data', '.artifacts']);
 
@@ -48,7 +55,8 @@ export function blankNonCode(source: string): string {
     for (let k = i - 1; k >= 0; k -= 1) {
       const c = source[k]!;
       if (c === ' ' || c === '\t' || c === '\n' || c === '\r') continue;
-      return '(,=:[!&|?{};+-*%~^<>'.includes(c);
+      if ('(,=:[!&|?{};+-*%~^<>'.includes(c)) return true;
+      return REGEX_KEYWORD.test(source.slice(Math.max(0, k - 12), k + 1));
     }
     return true;
   };
@@ -80,28 +88,37 @@ export function blankNonCode(source: string): string {
     if (c === '/' && isRegexPosition(i)) {
       let j = i + 1;
       let inClass = false;
+      let closed = false;
       while (j < source.length) {
         const d = source[j]!;
         if (d === '\\') { j += 2; continue; }
-        if (d === '\n') break; // незакрытый regex — значит это было деление, не трогаем
+        if (d === '\n') break;
         if (d === '[') inClass = true;
         else if (d === ']') inClass = false;
-        else if (d === '/' && !inClass) { j += 1; break; }
+        else if (d === '/' && !inClass) { j += 1; closed = true; break; }
         j += 1;
       }
+      // Незакрытый на строке `/` — это было деление, а не regex: НИЧЕГО не вырезаем. Иначе
+      // ошибка эвристики глушила бы код до конца строки (тихий false negative гейта).
+      if (!closed) { i += 1; continue; }
       blank(i, j);
       i = j;
       continue;
     }
     if (c === "'" || c === '"' || c === '`') {
       let j = i + 1;
+      let closed = false;
       while (j < source.length) {
         const d = source[j]!;
         if (d === '\\') { j += 2; continue; }
-        if (d === c) { j += 1; break; }
-        if (d === '\n' && c !== '`') { break; } // незакрытая строка — не съедаем остаток файла
+        if (d === c) { j += 1; closed = true; break; }
+        if (d === '\n' && c !== '`') break;
         j += 1;
       }
+      // Незакрытый литерал (в т.ч. бэктик, у которого нет строчной границы) НЕ вырезается: иначе
+      // одна ошибка разбора забивала бы пробелами весь остаток файла и прятала от гейта все
+      // последующие `.only`/`.skip`.
+      if (!closed) { i += 1; continue; }
       blank(i, j);
       i = j;
       continue;
@@ -185,8 +202,11 @@ export function scanSource(source: string, file: string): SkipSite[] {
       site.gate = gate;
       site.gateKind = classifyGate(gate ?? '');
     } else {
-      const reason = pragmas.get(line - 1) ?? pragmas.get(line);
-      if (reason !== undefined) {
+      // Прагма читается ТОЛЬКО со строки выше (сама она якорится на `^\s*//`, так что на строке
+      // сайта её быть не может). Пустое обоснование не считается: аллоулист без причины — тот же
+      // невидимый skip, только с наклейкой.
+      const reason = pragmas.get(line - 1);
+      if (reason !== undefined && reason !== '') {
         site.cls = 'allowed';
         site.reason = reason;
       }
@@ -216,10 +236,11 @@ export function collectTestFiles(roots: string[]): string[] {
       const full = join(dir, name);
       let st;
       try {
-        st = statSync(full);
+        st = lstatSync(full); // lstat, а не stat: симлинки не разыменовываем — цикл уронил бы обход
       } catch {
-        continue; // битый симлинк
+        continue;
       }
+      if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) walk(full);
       else if (name.endsWith('.test.ts')) files.push(full);
     }
@@ -228,9 +249,16 @@ export function collectTestFiles(roots: string[]): string[] {
   return files.sort();
 }
 
-/** Аудит всего репозитория: `apps/` + `packages/`. Пути в результате — относительные от корня. */
+/**
+ * Корни аудита. Должны покрывать всё, что исполняет vitest (`vitest.config.ts` include:
+ * `apps/*` + `packages/*` + `scripts/**`): иначе тест, который реально гоняется в `pnpm test`,
+ * остаётся невидимым для гейта.
+ */
+export const AUDIT_ROOTS: string[] = ['apps', 'packages', 'scripts'];
+
+/** Аудит всего репозитория по `AUDIT_ROOTS`. Пути в результате — относительные от корня. */
 export function auditTree(repoRoot: string): SkipSite[] {
-  const roots = [join(repoRoot, 'apps'), join(repoRoot, 'packages')];
+  const roots = AUDIT_ROOTS.map((r) => join(repoRoot, r));
   const sites: SkipSite[] = [];
   for (const abs of collectTestFiles(roots)) {
     const rel = relative(repoRoot, abs).split(sep).join('/');

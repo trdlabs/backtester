@@ -6,10 +6,11 @@
 //   2. репо-гейт: аудит реального дерева не находит ни `.only`, ни безусловных `.skip` без прагмы.
 //      Именно он не даёт skip-поверхности молча разъехаться после закрытия TQ-1.
 
+import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { auditTree, classifyGate, isViolation, scanSource } from '../scripts/lib/skip-audit.js';
+import { AUDIT_ROOTS, auditTree, classifyGate, isViolation, scanSource } from '../scripts/lib/skip-audit.js';
 
 describe('classifyGate', () => {
   it('распознаёт канонические гейты', () => {
@@ -82,6 +83,42 @@ describe('scanSource', () => {
     expect(scanSource(src, 'a.test.ts')[0].line).toBe(4);
   });
 
+  // Регресс ревью C1: ошибка разбора литерала не имеет права глушить остаток файла. Здесь regex в
+  // return-позиции содержит бэктик и кавычки; если счесть бэктик открытием шаблонной строки, всё
+  // ниже уедет в «комментарий» и гейт молча пропустит `.only` и `.skip`.
+  it('regex с кавычками и бэктиком не глушит последующие сайты', () => {
+    const src = [
+      'function fmt(s: string) {',
+      "  return /[`'\"]/.test(s) ? JSON.stringify(s) : s;",
+      '}',
+      "it.only('фокус', () => {});",
+      "it.skip('молча выключен', () => {});",
+    ].join('\n');
+    expect(scanSource(src, 'a.test.ts').map((s) => s.cls)).toEqual(['focused', 'unconditional']);
+  });
+
+  it('незакрытый шаблонный литерал не съедает файл до конца', () => {
+    const src = ["const broken = `не закрыт;", "it.only('всё ещё виден', () => {});"].join('\n');
+    expect(scanSource(src, 'a.test.ts').map((s) => s.cls)).toEqual(['focused']);
+  });
+
+  // Регресс ревью I1: цепочки vitest и пробелы вокруг точек.
+  it('цепочки (concurrent) и пробелы вокруг точек — тоже сайты', () => {
+    expect(scanSource("it.concurrent.skip('x', () => {});", 'a.test.ts')[0]).toMatchObject({
+      block: 'it',
+      modifier: 'skip',
+      cls: 'unconditional',
+    });
+    expect(scanSource("describe . only('x', () => {});", 'a.test.ts')[0]!.cls).toBe('focused');
+    expect(scanSource("suite.skip('x', () => {});", 'a.test.ts')[0]!.cls).toBe('unconditional');
+  });
+
+  // Регресс ревью I2: аллоулист без причины — тот же невидимый skip, только с наклейкой.
+  it('прагма без причины не считается обоснованием', () => {
+    expect(scanSource("// skip-audit:allow\nit.skip('x', () => {});", 'a.test.ts')[0]!.cls).toBe('unconditional');
+    expect(scanSource("// skip-audit:allow —\nit.skip('x', () => {});", 'a.test.ts')[0]!.cls).toBe('unconditional');
+  });
+
   it('todo без прагмы — тоже unconditional', () => {
     const [site] = scanSource("it.todo('когда-нибудь');", 'a.test.ts');
     expect(site.modifier).toBe('todo');
@@ -96,12 +133,26 @@ describe('scanSource', () => {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 describe('репо-гейт: skip-поверхность backtester', () => {
+  // Обход дерева стоит ~1 с — считаем один раз на весь describe.
+  const sites = auditTree(REPO_ROOT);
+
   it('не содержит .only и безусловных .skip без прагмы', () => {
-    const violations = auditTree(REPO_ROOT).filter(isViolation);
+    const violations = sites.filter(isViolation);
     expect(violations.map((v) => `${v.file}:${v.line} ${v.block}.${v.modifier}`)).toEqual([]);
   });
 
   it('находит непустую условную поверхность (сканер реально дошёл до файлов)', () => {
-    expect(auditTree(REPO_ROOT).filter((s) => s.cls === 'gated').length).toBeGreaterThan(20);
+    expect(sites.filter((s) => s.cls === 'gated').length).toBeGreaterThan(20);
+  });
+
+  // Регресс ревью C2: корни аудита разъехались с include vitest, и `scripts/**/*.test.ts` —
+  // реально исполняемые тесты — были невидимы гейту.
+  it('корни аудита покрывают каждый include из vitest.config.ts', () => {
+    const cfg = readFileSync(resolve(REPO_ROOT, 'vitest.config.ts'), 'utf8');
+    const includes = [...cfg.matchAll(/'([^']*\*\*[^']*\.test\.ts)'/g)].map((m) => m[1]!);
+    expect(includes.length).toBeGreaterThan(0);
+    for (const include of includes) {
+      expect(AUDIT_ROOTS).toContain(include.split('/')[0]!);
+    }
   });
 });
