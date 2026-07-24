@@ -106,30 +106,61 @@ export function median(xs: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
+/**
+ * С чем сверяется хэш каждого варианта.
+ *
+ * `bar_batching` — чистый транспорт: обязан повторить `off`.
+ * `bar_major` — НЕ транспортный флаг: это смена модели исполнения (per-symbol portfolio +
+ * equal-weight агрегация по union-таймлайну), результат отличается от symbol-major ПО ДИЗАЙНУ,
+ * и golden-тесты репо сверяют его с собственным замороженным golden, а не с `off`. Поэтому его
+ * референс — он сам: проверяется только стабильность между повторами.
+ * `bar_major_batch` — Slice B, схлопывание транспорта ВНУТРИ bar-major: обязан повторить `bar_major`.
+ */
+export const IDENTITY_BASELINE: Record<VariantName, VariantName> = {
+  off: 'off',
+  bar_batching: 'off',
+  bar_major: 'bar_major',
+  bar_major_batch: 'bar_major',
+};
+
 export interface IdentityVerdict {
   pass: boolean;
-  baselineHash: string;
-  mismatches: { variant: VariantName; hash: string }[];
+  /** Хэш первого прогона каждого варианта-референса, встреченного в выборке. */
+  baselineHashes: Record<string, string>;
+  mismatches: { variant: VariantName; hash: string; baseline: VariantName; expected: string }[];
+  /** Варианты, чей референс не попал в выборку — сверялись сами с собой. */
+  unanchored: VariantName[];
 }
 
 /**
- * Byte-identity: КАЖДЫЙ сэмпл КАЖДОГО варианта обязан повторить хэш первого baseline-прогона.
- * Baseline сверяется сам с собой намеренно — нестабильность между повторами так же ломает
- * основание для сравнения, как и расхождение флага.
+ * Byte-identity: КАЖДЫЙ сэмпл КАЖДОГО варианта обязан повторить хэш первого прогона своего
+ * референса (см. `IDENTITY_BASELINE`). Вариант сверяется в том числе сам с собой — нестабильность
+ * между повторами ломает основание для сравнения так же, как и расхождение флага.
  */
 export function identityVerdict(results: VariantResult[]): IdentityVerdict {
-  const baseline = results.find((r) => r.variant === 'off');
-  if (baseline === undefined || baseline.samples.length === 0) {
-    throw new Error('нет baseline-варианта `off` — сверять byte-identity не с чем');
-  }
-  const baselineHash = baseline.samples[0]!.resultHash;
-  const mismatches: { variant: VariantName; hash: string }[] = [];
+  const firstHash = new Map<VariantName, string>();
   for (const r of results) {
+    if (r.samples.length > 0) firstHash.set(r.variant, r.samples[0]!.resultHash);
+  }
+  if (firstHash.size === 0) throw new Error('нет ни одного прогона — сверять byte-identity не с чем');
+
+  const mismatches: IdentityVerdict['mismatches'] = [];
+  const unanchored: VariantName[] = [];
+  const baselineHashes: Record<string, string> = {};
+
+  for (const r of results) {
+    const wanted = IDENTITY_BASELINE[r.variant];
+    const anchor = firstHash.has(wanted) ? wanted : r.variant;
+    if (anchor !== wanted) unanchored.push(r.variant);
+    const expected = firstHash.get(anchor)!;
+    baselineHashes[anchor] = expected;
     for (const s of r.samples) {
-      if (s.resultHash !== baselineHash) mismatches.push({ variant: r.variant, hash: s.resultHash });
+      if (s.resultHash !== expected) {
+        mismatches.push({ variant: r.variant, hash: s.resultHash, baseline: anchor, expected });
+      }
     }
   }
-  return { pass: mismatches.length === 0, baselineHash, mismatches };
+  return { pass: mismatches.length === 0, baselineHashes, mismatches, unanchored };
 }
 
 export interface BenchMeta {
@@ -142,7 +173,8 @@ export interface BenchMeta {
 
 export function formatBenchMarkdown(results: VariantResult[], meta: BenchMeta): string {
   const verdict = identityVerdict(results);
-  const baselineMedian = median(results.find((r) => r.variant === 'off')!.samples.map((s) => s.wallMs));
+  const off = results.find((r) => r.variant === 'off');
+  const baselineMedian = off === undefined ? Number.NaN : median(off.samples.map((s) => s.wallMs));
 
   const lines: string[] = [];
   lines.push(
@@ -150,27 +182,45 @@ export function formatBenchMarkdown(results: VariantResult[], meta: BenchMeta): 
       `повторов: ${meta.repeats}, стенд: ${meta.host}`,
     '',
   );
-  lines.push('| Вариант | min ms | median ms | speedup | hash == baseline | hookCalls | barMajorBatches | ipcWaitMs | openMs |');
-  lines.push('| --- | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: |');
+  lines.push('| Вариант | min ms | median ms | speedup к `off` | референс | hash == референс | hookCalls | barMajorBatches | ipcWaitMs | openMs |');
+  lines.push('| --- | ---: | ---: | ---: | --- | :---: | ---: | ---: | ---: | ---: |');
   for (const r of results) {
     const walls = r.samples.map((s) => s.wallMs);
     const med = median(walls);
     const ipc = sumIpcProfiles(r.samples.map((s) => s.ipc));
     const n = Math.max(1, r.samples.length);
-    const same = r.samples.every((s) => s.resultHash === verdict.baselineHash);
+    const bad = verdict.mismatches.some((m) => m.variant === r.variant);
     lines.push(
       `| \`${r.variant}\` | ${Math.min(...walls).toFixed(0)} | ${med.toFixed(0)} | ` +
-        `${(baselineMedian / med).toFixed(2)}× | ${same ? '✅' : '❌'} | ` +
+        `${(baselineMedian / med).toFixed(2)}× | \`${IDENTITY_BASELINE[r.variant]}\` | ${bad ? '❌' : '✅'} | ` +
         `${Math.round(ipc.hookCalls / n)} | ${Math.round(ipc.barMajorBatches / n)} | ` +
         `${Math.round(ipc.ipcWaitMs / n)} | ${Math.round(ipc.openMs / n)} |`,
     );
   }
   lines.push('');
-  lines.push(`byte-identity: ${verdict.pass ? 'PASS' : 'FAIL'} (baseline \`${verdict.baselineHash}\`)`);
+  lines.push(`byte-identity: ${verdict.pass ? 'PASS' : 'FAIL'}`);
   if (!verdict.pass) {
     lines.push('');
     lines.push('Расхождения:');
-    for (const m of verdict.mismatches) lines.push(`- \`${m.variant}\` → \`${m.hash}\``);
+    for (const m of verdict.mismatches) {
+      lines.push(`- \`${m.variant}\` → \`${m.hash}\` (референс \`${m.baseline}\` → \`${m.expected}\`)`);
+    }
+  }
+  if (verdict.unanchored.length > 0) {
+    lines.push('');
+    lines.push(`Без своего референса в выборке (сверялись сами с собой): ${verdict.unanchored.map((v) => `\`${v}\``).join(', ')}.`);
+  }
+
+  // Отдельной строкой — факт, который таблица с per-variant референсами иначе прячет.
+  const offHash = results.find((r) => r.variant === 'off')?.samples[0]?.resultHash;
+  const bmHash = results.find((r) => r.variant === 'bar_major')?.samples[0]?.resultHash;
+  if (offHash !== undefined && bmHash !== undefined) {
+    lines.push('');
+    lines.push(
+      bmHash === offHash
+        ? '`bar_major` совпал с `off` побайтово.'
+        : '`bar_major` ОТЛИЧАЕТСЯ от `off` побайтово — это смена модели исполнения (per-symbol portfolio + equal-weight агрегация), а не транспорт; включение флага меняет результат.',
+    );
   }
   lines.push('');
   lines.push('IPC-колонки — сумма по всем sandbox-сессиям прогона, усреднённая по повторам.');

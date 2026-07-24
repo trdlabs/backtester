@@ -342,6 +342,22 @@ is now closed end-to-end — proven green by `cross-repo-e2e.integration.test.ts
   анти-дрейф — гейт `test/skip-audit.test.ts` внутри обычного `pnpm test` (новый `.only` или молчаливый
   `.skip` роняет прогон). Продакшн-код не затронут.
 
+- **2026-07-24 — бенчмарк-станок референс-бэктеста + замер bar-batching трио**
+  ([`docs/reports/2026-07-24-bar-batching-bench.md`](reports/2026-07-24-bar-batching-bench.md),
+  карточка control-center [`dark-flag-validation`](../../control-center/docs/delivery/initiatives/dark-flag-validation.md) item 3):
+  `pnpm bench:reference` гоняет один референс-бэктест через РЕАЛЬНЫЙ Docker-сэндбокс под матрицей
+  флагов и печатает byte-identity + тайминги + агрегаты штатного `BACKTESTER_IPC_PROFILE`; фикстура
+  и число повторов параметризуются (`BENCH_REQUEST`/`BENCH_BUNDLE`/`BENCH_REPEATS`), так что тот же
+  станок обслуживает U8-перф-гейт. Референс сверки задан по флагу, а не «всё против `off`»:
+  `BAR_BATCHING` → `off`, `BAR_MAJOR_BATCH` → `BAR_MAJOR`, а сам `BAR_MAJOR` — сам с собой, потому
+  что он меняет модель исполнения (per-symbol portfolio + equal-weight агрегация) и расходится с
+  symbol-major дефолтом **по дизайну**. Локальный прогон (WSL2, 4 ядра, 3 символа, 3 повтора):
+  **byte-identity PASS** для обоих транспортных флагов; ускорения нет (1.00–1.12×, шум) — прогон
+  на этой фикстуре на 60–75 % состоит из открытия контейнеров (`openMs` 12–16 с из 19–21 с), а всё
+  per-bar IPC-ожидание 1.5–1.9 с при 90 hook-вызовах, то есть схлопывать нечего. Вывод: фикстура
+  golden-гейта не годится как инструмент замера транспорта — нужен прогон с бо́льшим N и длинным
+  периодом (профиль VPS-замера). Дефолты не менялись, флаги остаются `default off`.
+
 ## Feature 1: Client Contract Alignment ✅ DONE
 
 **Goal:** remove the contract gap between `trading-backtester` and `trading-lab`.

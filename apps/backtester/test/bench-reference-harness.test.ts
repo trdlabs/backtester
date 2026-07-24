@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  IDENTITY_BASELINE,
   VARIANTS,
   formatBenchMarkdown,
   identityVerdict,
@@ -89,32 +90,68 @@ describe('sumIpcProfiles / median', () => {
 });
 
 describe('identityVerdict', () => {
-  it('PASS, когда все варианты повторили хэш baseline', () => {
-    expect(
-      identityVerdict([
-        { variant: 'off', samples: [sample(100, 'h1'), sample(110, 'h1')] },
-        { variant: 'bar_major', samples: [sample(80, 'h1')] },
-      ]),
-    ).toEqual({ pass: true, baselineHash: 'h1', mismatches: [] });
+  it('`bar_batching` сверяется с `off`, `bar_major_batch` — с `bar_major`', () => {
+    expect(IDENTITY_BASELINE).toEqual({
+      off: 'off',
+      bar_batching: 'off',
+      bar_major: 'bar_major',
+      bar_major_batch: 'bar_major',
+    });
   });
 
-  it('FAIL с перечислением расхождений', () => {
+  it('PASS: транспортные флаги повторили свои референсы', () => {
+    const v = identityVerdict([
+      { variant: 'off', samples: [sample(100, 'h1'), sample(110, 'h1')] },
+      { variant: 'bar_batching', samples: [sample(90, 'h1')] },
+      { variant: 'bar_major', samples: [sample(80, 'hBM')] },
+      { variant: 'bar_major_batch', samples: [sample(70, 'hBM')] },
+    ]);
+    expect(v.pass).toBe(true);
+    expect(v.mismatches).toEqual([]);
+    expect(v.baselineHashes).toEqual({ off: 'h1', bar_major: 'hBM' });
+  });
+
+  it('семантическое расхождение bar_major с off НЕ считается нарушением byte-identity', () => {
     const v = identityVerdict([
       { variant: 'off', samples: [sample(100, 'h1')] },
-      { variant: 'bar_major', samples: [sample(80, 'h2')] },
+      { variant: 'bar_major', samples: [sample(80, 'hBM')] },
+    ]);
+    expect(v.pass).toBe(true);
+  });
+
+  it('FAIL: bar_major_batch разошёлся со своим референсом bar_major', () => {
+    const v = identityVerdict([
+      { variant: 'off', samples: [sample(100, 'h1')] },
+      { variant: 'bar_major', samples: [sample(80, 'hBM')] },
+      { variant: 'bar_major_batch', samples: [sample(70, 'hX')] },
     ]);
     expect(v.pass).toBe(false);
-    expect(v.mismatches).toEqual([{ variant: 'bar_major', hash: 'h2' }]);
+    expect(v.mismatches).toEqual([{ variant: 'bar_major_batch', hash: 'hX', baseline: 'bar_major', expected: 'hBM' }]);
   });
 
-  it('нестабильный baseline между повторами — тоже FAIL', () => {
+  it('FAIL: bar_batching разошёлся с off (транспортный флаг обязан быть прозрачным)', () => {
+    const v = identityVerdict([
+      { variant: 'off', samples: [sample(100, 'h1')] },
+      { variant: 'bar_batching', samples: [sample(90, 'h2')] },
+    ]);
+    expect(v.pass).toBe(false);
+    expect(v.mismatches).toEqual([{ variant: 'bar_batching', hash: 'h2', baseline: 'off', expected: 'h1' }]);
+  });
+
+  it('нестабильность между повторами — тоже FAIL', () => {
     const v = identityVerdict([{ variant: 'off', samples: [sample(100, 'h1'), sample(100, 'hX')] }]);
     expect(v.pass).toBe(false);
-    expect(v.mismatches).toEqual([{ variant: 'off', hash: 'hX' }]);
+    expect(v.mismatches).toEqual([{ variant: 'off', hash: 'hX', baseline: 'off', expected: 'h1' }]);
   });
 
-  it('требует наличия baseline-варианта', () => {
-    expect(() => identityVerdict([{ variant: 'bar_major', samples: [sample(80, 'h1')] }])).toThrow(/baseline/);
+  it('вариант без своего референса в выборке помечается unanchored и сверяется сам с собой', () => {
+    const v = identityVerdict([{ variant: 'bar_major_batch', samples: [sample(70, 'hX'), sample(71, 'hX')] }]);
+    expect(v.pass).toBe(true);
+    expect(v.unanchored).toEqual(['bar_major_batch']);
+  });
+
+  it('пустая выборка — ошибка', () => {
+    expect(() => identityVerdict([])).toThrow(/сверять byte-identity не с чем/);
   });
 });
 
@@ -141,5 +178,17 @@ describe('formatBenchMarkdown', () => {
     );
     expect(md).toContain('byte-identity: FAIL');
     expect(md).toContain('`bar_batching` → `h2`');
+  });
+
+  it('расхождение bar_major с off выносится отдельной строкой как смена модели, а не как FAIL', () => {
+    const md = formatBenchMarkdown(
+      [
+        { variant: 'off', samples: [sample(200, 'h1')] },
+        { variant: 'bar_major', samples: [sample(300, 'hBM')] },
+      ],
+      { request: 'r.json', bundle: 'b.json', symbols: 3, repeats: 1, host: 'test' },
+    );
+    expect(md).toContain('byte-identity: PASS');
+    expect(md).toContain('ОТЛИЧАЕТСЯ от `off` побайтово');
   });
 });
