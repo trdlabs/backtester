@@ -53,7 +53,15 @@ const hashMap = JSON.parse(
     'utf8',
   ),
 ) as {
-  migration: { initiative: string; phase: string; to: string; enginePin: string; cause: string };
+  migration: {
+    initiative: string;
+    phase: string;
+    to: string;
+    provenOnEngineCommit: string;
+    consumedAs: string;
+    engineSemanticsVersion: string;
+    cause: string;
+  };
   goldens: Record<string, Entry>;
 };
 
@@ -69,18 +77,22 @@ describe('Ф3 extraction-equivalence: backtester on @trdlabs/engine', () => {
     expect(hashMap.migration.initiative).toBe('shared-execution-engine');
     expect(hashMap.migration.phase).toBe('Ф3');
     expect(hashMap.migration.to).toBe('@trdlabs/engine');
-    // Пин — это адрес доказательства. Без него запись «эквивалентно» не проверяема задним числом.
-    expect(hashMap.migration.enginePin).toMatch(/^[0-9a-f]{40}$/);
+    // Адрес доказательства. Без него запись «эквивалентно» не проверяема задним числом; коммит
+    // сохраняется и после переезда на релиз — именно против него голдены были доказаны.
+    expect(hashMap.migration.provenOnEngineCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(hashMap.migration.consumedAs).toContain('@trdlabs/engine@');
     expect(Object.keys(hashMap.goldens).sort()).toEqual(GOLDEN_SCENARIOS.map((s) => s.id).sort());
   });
 
   it('the run records WHICH core produced it (identity is not a constant the host invents)', () => {
     expect(EVIDENCE_FORMAT_VERSION).toBe('1');
-    expect(ENGINE_VERSION).toBe(
-      // Версия приходит из самого пакета: если ядро сменит версию, а голдены не перебазируются под
-      // пруф, это падение, а не молчаливое расхождение идентичности.
-      JSON.parse(readFileSync(resolve(REPO_ROOT, 'vendor/engine/package.json'), 'utf8')).version,
-    );
+    // `ENGINE_VERSION` — версия СЕМАНТИКИ исполнения, а НЕ версия npm-пакета (решение владельца
+    // 2026-07-26). Раньше здесь стояла сверка с версией пакета: она была верна ровно пока два числа
+    // случайно совпадали, и стала бы ловушкой при первом же релизе — выпуск, не меняющий в
+    // исполнении ничего, «доказывал» бы смену идентичности прогона.
+    //
+    // Проверяется то, что обязано держаться: голдены доказаны под ЭТОЙ генерацией семантики.
+    expect(ENGINE_VERSION).toBe(hashMap.migration.engineSemanticsVersion);
   });
 
   for (const scenario of GOLDEN_SCENARIOS) {

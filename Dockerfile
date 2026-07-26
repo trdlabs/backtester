@@ -16,17 +16,11 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/research-contracts/package.json packages/research-contracts/
 COPY packages/sdk/package.json packages/sdk/
 COPY apps/backtester/package.json apps/backtester/
-# Ф3 (shared-execution-engine): the deterministic execution core is a workspace member vendored as
-# a git submodule pinned at an exact `trdlabs/engine` commit. Its manifest must be present before
-# install or pnpm cannot resolve the `@trdlabs/engine` workspace link.
-COPY vendor/engine/package.json vendor/engine/
 RUN pnpm install --frozen-lockfile --ignore-scripts || pnpm install --ignore-scripts
 
 # Source files (tsx reads at runtime; also compile SDK)
 COPY tsconfig.base.json ./
 COPY packages/ packages/
-# Engine sources — the service imports `@trdlabs/engine` at runtime, so its `dist` is built below.
-COPY vendor/engine vendor/engine/
 COPY apps/backtester/src apps/backtester/src/
 COPY apps/backtester/tsconfig.json apps/backtester/
 # sandbox harnesses are required at runtime (strategy + overlay sandbox execution)
@@ -38,7 +32,6 @@ COPY apps/backtester/migrations apps/backtester/migrations/
 # fixtures used by FixtureDataPort (BACKTESTER_DATA_SOURCE=fixture)
 COPY apps/backtester/fixtures apps/backtester/fixtures/
 
-RUN pnpm --filter @trdlabs/engine build
 RUN pnpm --filter @trdlabs/backtester-sdk build
 # Build the overlay harness _engine (gitignored; compiled from src/engine/indicators/**).
 RUN node apps/backtester/scripts/build-sandbox-harness-overlay.mjs
