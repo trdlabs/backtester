@@ -42,8 +42,33 @@ function hashDir(root: string): string {
   return h.digest('hex').slice(0, 16);
 }
 
+// Files the in-container harness needs to even START: the entrypoint, and the build-generated
+// indicator engine that `rehydrate.mjs` imports (`./_engine/engine.js`). `_engine/` is a gitignored
+// artifact produced by `pnpm run build:sandbox-harness-overlay`; a deploy that skips that build ships
+// an overlay that crashes the container at ESM resolve as a cryptic per-run `bundle_load_failed`.
+const REQUIRED_HARNESS_FILES = ['entry.mjs', '_engine/engine.js'] as const;
+
+/**
+ * Fail fast if the SOURCE overlay is incomplete — surface a missing build once, with an actionable
+ * message, instead of one opaque `bundle_load_failed` per strategy run (F1, 2026-07-26).
+ */
+export function assertHarnessComplete(harnessDir: string): void {
+  const missing = REQUIRED_HARNESS_FILES.filter(
+    (rel) => !existsSync(join(harnessDir, ...rel.split('/'))),
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `sandbox harness overlay is incomplete at ${harnessDir}: missing ${missing.join(', ')}. ` +
+        'The `_engine/` tree is build-generated — run `pnpm run build:sandbox-harness-overlay` ' +
+        '(after `pnpm engine:build && pnpm sdk:build`) before starting the backtester, or include ' +
+        'it in the deploy. Without it the sandbox container dies at ESM resolve (bundle_load_failed).',
+    );
+  }
+}
+
 /** Ensure the harness tree is present under <mountpoint>/harness/<hash>; return that abs path. */
 export function ensureHarnessInVolume(harnessDir: string, mountpoint: string): string {
+  assertHarnessComplete(harnessDir);
   const harnessRoot = join(mountpoint, 'harness');
   mkdirSync(harnessRoot, { recursive: true });
   chmodSync(harnessRoot, 0o755);

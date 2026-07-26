@@ -35,4 +35,28 @@ describe('ensureHarnessInVolume', () => {
     expect(a).toBe(b);
     expect(existsSync(a)).toBe(true);
   });
+
+  // Regression (F1, 2026-07-26): the overlay's `_engine/` is a gitignored, build-generated tree
+  // (`pnpm run build:sandbox-harness-overlay`). A deploy that skips that build ships an overlay whose
+  // `rehydrate.mjs` imports a missing `./_engine/engine.js`; the container then dies at ESM resolve as
+  // a cryptic per-run `bundle_load_failed`. Materialization must fail fast at the source with an
+  // actionable message instead — so a missing build surfaces once, clearly, not once per strategy run.
+  it('throws an actionable error when the source overlay is missing _engine/engine.js', () => {
+    const src = mkdtempSync(join(tmpdir(), 'btx-harness-incomplete-'));
+    writeFileSync(join(src, 'entry.mjs'), '// entry\n'); // entrypoint present, _engine/ never built
+    const mp = mkdtempSync(join(tmpdir(), 'btx-mp-'));
+
+    expect(() => ensureHarnessInVolume(src, mp)).toThrowError(/_engine\/engine\.js/);
+    expect(() => ensureHarnessInVolume(src, mp)).toThrowError(/build:sandbox-harness-overlay/);
+    // Nothing partial published on rejection.
+    expect(existsSync(join(mp, 'harness'))).toBe(false);
+  });
+
+  it('throws when the source overlay is missing entry.mjs', () => {
+    const src = mkdtempSync(join(tmpdir(), 'btx-harness-noentry-'));
+    mkdirSync(join(src, '_engine'));
+    writeFileSync(join(src, '_engine', 'engine.js'), 'export const x = 1;\n');
+    const mp = mkdtempSync(join(tmpdir(), 'btx-mp-'));
+    expect(() => ensureHarnessInVolume(src, mp)).toThrowError(/entry\.mjs/);
+  });
 });
