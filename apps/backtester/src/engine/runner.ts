@@ -407,12 +407,12 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
     } else if (final.kind === 'add_to_position') {
       // 024 (US1): `add_to_position` при flat → детерминированный reject `add_without_position`;
       // новая позиция НЕ открывается (ни ордера, ни pending).
-      const outcome = risk.evaluate(final, t, portfolio.openPositions);
+      const outcome = risk.evaluate(final, t, riskCtxAt(portfolio, bar.close));
       acc.riskDecisions.push(outcome.record);
       riskDecision = outcome.record;
     } else if (final.kind === 'update_protection') {
       // 024 (US3): `update_protection` при flat → reject `update_without_position` (запись, без мутации).
-      const outcome = risk.evaluate(final, t, portfolio.openPositions);
+      const outcome = risk.evaluate(final, t, riskCtxAt(portfolio, bar.close));
       acc.riskDecisions.push(outcome.record);
       riskDecision = outcome.record;
     }

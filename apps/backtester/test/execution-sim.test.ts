@@ -1,6 +1,10 @@
 // Characterization tests for ExecutionSimulator — the audit flagged the private fillPrice/fee as
 // untested; they are pinned here through the public computeOpenFill / computeCloseFill surface.
-// DEFAULT_EXEC = next_bar_open, slippage 5 bps, fee 10 bps. No source change; no golden touched.
+// DEFAULT_EXEC = next_bar_open, slippage 5 bps, fee 10 bps.
+//
+// Ф3 / SSOT decision 3: `computeOpenFill` takes a risk-authored NOTIONAL instead of `(sizingPct,
+// cash)` — the simulator no longer re-derives sizing. The numbers below are unchanged: the previous
+// `(0.5, 1000)` pair IS a notional of 500.
 
 import { describe, expect, it } from 'vitest';
 import { ExecutionSimulator } from '../src/engine/execution';
@@ -10,7 +14,7 @@ const sim = new ExecutionSimulator(DEFAULT_EXEC);
 
 describe('ExecutionSimulator — slippage direction + fee (via public fills)', () => {
   it('open long (buy) moves the fill price UP by slippage; fee = notional·feeBps/1e4', () => {
-    const f = sim.computeOpenFill('long', 100, 0.5, 1000);
+    const f = sim.computeOpenFill('long', 100, 500);
     expect(f.fillPrice).toBeCloseTo(100.05, 8); // 100·(1 + 5/1e4)
     expect(f.baseOpen).toBe(100);
     expect(f.slippageBps).toBe(5);
@@ -20,7 +24,7 @@ describe('ExecutionSimulator — slippage direction + fee (via public fills)', (
   });
 
   it('open short (sell) moves the fill price DOWN by slippage', () => {
-    const f = sim.computeOpenFill('short', 100, 0.5, 1000);
+    const f = sim.computeOpenFill('short', 100, 500);
     expect(f.fillPrice).toBeCloseTo(99.95, 8); // 100·(1 − 5/1e4)
     expect(f.fee).toBeCloseTo(0.5, 8);
   });

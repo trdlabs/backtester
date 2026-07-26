@@ -4,6 +4,8 @@
 //   pnpm exec vitest run apps/backtester/test/overlay-summary.test.ts
 
 import { describe, expect, it } from 'vitest';
+import { ENGINE_VERSION } from '@trdlabs/engine';
+import { EVIDENCE_FORMAT_VERSION } from '../src/engine/artifacts';
 
 import type { EquityPoint, RunOutcome } from '../src/engine/artifacts.js';
 import { toOverlaySummary } from '../src/jobs/overlay-summary.js';
@@ -39,6 +41,9 @@ const OUTCOME: Extract<RunOutcome, { status: 'completed' }> = {
     validationIssues: [],
     artifactRefs: [],
     evidence: {
+      // Ф3 / run identity (A): evidence carries its own format version + the engine that ran it.
+      evidenceFormatVersion: EVIDENCE_FORMAT_VERSION,
+      engineVersion: ENGINE_VERSION,
       seed: 42,
       datasetRef: 'short_after_pump-overlay',
       contractVersion: '017.1',
