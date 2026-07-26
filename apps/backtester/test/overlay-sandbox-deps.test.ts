@@ -1,6 +1,6 @@
 // apps/backtester/test/overlay-sandbox-deps.test.ts
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { overlaySandboxDeps, bundleBaseDir } from '../src/jobs/worker.js';
@@ -17,6 +17,10 @@ function settings(extra: Record<string, unknown>) {
 function makeHarness(): string {
   const dir = mkdtempSync(join(tmpdir(), 'btx-h-'));
   writeFileSync(join(dir, 'entry.mjs'), '// entry\n');
+  // A complete overlay also carries the build-generated `_engine/engine.js`
+  // (assertHarnessComplete requires it — see harness-volume.ts).
+  mkdirSync(join(dir, '_engine'));
+  writeFileSync(join(dir, '_engine', 'engine.js'), 'export const x = 1;\n');
   return dir;
 }
 
