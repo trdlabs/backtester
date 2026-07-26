@@ -13,6 +13,7 @@ import type { BacktestRunRequest, Ref } from '@trading/research-contracts/resear
 import type { ValidationCode, ValidationIssue, ValidationResult } from '@trading/research-contracts/research';
 import { validate } from './validation/index.js';
 
+import { EVIDENCE_FORMAT_VERSION } from './artifacts.js';
 import type {
   BacktestRunResult,
   ComparisonSummary,
@@ -44,8 +45,11 @@ import { parseTimeframeMs } from './timeframe.js';
 import { SUPPORTED_FILL_MODEL_KINDS } from './profiles.js';
 import { detectProtection } from './protection.js';
 import { type TrustedModuleRegistry } from './registry.js';
-import { RiskEngine } from './risk.js';
+import { RiskEngine, type RiskContext } from './risk.js';
 import { createSeededRng } from '../determinism/rng.js';
+// Ф3: the run records WHICH execution core produced it (initiative «Contract / API / schema
+// changes»). `ENGINE_VERSION` is the shared core's own version, not a host constant.
+import { ENGINE_VERSION } from '@trdlabs/engine';
 import { mergeAccumulators } from './bar-major-aggregate.js';
 
 /** Зависимости прогона (contracts/runner-api.md §RunDeps; 019 additive — всё опционально). */
@@ -156,6 +160,16 @@ function orderId(symbol: string, barIndex: number, intent: 'open' | 'close' | 'a
   return `ord-${symbol}-${barIndex}-${intent}`;
 }
 
+/**
+ * Ф3 (shared-execution-engine): the portfolio view the core risk engine sizes against. SSOT
+ * decision 3 bases `equity_pct` on MARK-TO-MARKET equity rather than the donor's cash proxy — for a
+ * FLAT portfolio (every `enter`) the two are the same number by construction, so only decisions
+ * taken with a position already open (`add_to_position`) see a different base.
+ */
+function riskCtxAt(portfolio: Portfolio, mark: number): RiskContext {
+  return { equity: portfolio.equityAt(mark), openPositions: portfolio.openPositions };
+}
+
 /** Снимок состояния портфеля/позиции для контекста на mark-цене. */
 function stateAt(portfolio: Portfolio, mark: number): PerBarState {
   const pos = portfolio.position;
@@ -207,8 +221,18 @@ function settlePending(
   if (pending === null) return;
   const order = acc.orders.find((o) => o.id === pending.id);
 
+  // Ф3: `notional` is risk-authored (SSOT decision 3) and the core simulator no longer re-derives
+  // sizing. An open/add order without one is a programming error, not a 0-sized fill: fail closed.
+  const requireNotional = (): number => {
+    const notional = pending.notional;
+    if (notional === undefined) {
+      throw new Error(`settlePending: ${pending.intent} order ${pending.id} has no risk-authored notional`);
+    }
+    return notional;
+  };
+
   if (pending.intent === 'open') {
-    const calc = exec.computeOpenFill(pending.side, fillBase, pending.sizingPct ?? 1, portfolio.cash);
+    const calc = exec.computeOpenFill(pending.side, fillBase, requireNotional());
     portfolio.settleOpen({ fillPrice: calc.fillPrice, fee: calc.fee, size: calc.size, barIndex, ts: bar.ts });
     acc.fills.push({
       orderId: pending.id,
@@ -222,11 +246,8 @@ function settlePending(
     });
   } else if (pending.intent === 'add') {
     // 024 (US1): доливка исполняется по open(t+1) механикой open-fill (R4/§5); вторая позиция не создаётся.
-    const calc = exec.computeOpenFill(pending.side, fillBase, pending.sizingPct ?? 1, portfolio.cash);
-    portfolio.settleAdd(
-      { fillPrice: calc.fillPrice, fee: calc.fee, size: calc.size, barIndex, ts: bar.ts },
-      pending.mode ?? 'dca',
-    );
+    const calc = exec.computeOpenFill(pending.side, fillBase, requireNotional());
+    portfolio.settleAdd({ fillPrice: calc.fillPrice, fee: calc.fee, size: calc.size, barIndex, ts: bar.ts });
     acc.fills.push({
       orderId: pending.id,
       fillBarIndex: barIndex,
@@ -247,7 +268,7 @@ function settlePending(
     const calc = exec.computeCloseFill(pending.side, fillBase, closedSize);
     const reason = pending.closeReason ?? 'strategy_exit';
     const trade = isPartial
-      ? portfolio.settlePartialClose({ fillPrice: calc.fillPrice, fee: calc.fee, barIndex, ts: bar.ts }, fraction, reason)
+      ? portfolio.settleClose({ fillPrice: calc.fillPrice, fee: calc.fee, barIndex, ts: bar.ts }, reason, fraction)
       : portfolio.settleClose({ fillPrice: calc.fillPrice, fee: calc.fee, barIndex, ts: bar.ts }, reason);
     acc.fills.push({
       orderId: pending.id,
@@ -369,7 +390,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
   const final = comp.finalDecision;
   if (final !== null && portfolio.isFlat && portfolio.pending === null) {
     if (final.kind === 'enter') {
-      const outcome = risk.evaluate(final, t, portfolio.openPositions);
+      const outcome = risk.evaluate(final, t, riskCtxAt(portfolio, bar.close));
       acc.riskDecisions.push(outcome.record);
       riskDecision = outcome.record;
       if (outcome.action !== 'reject') {
@@ -381,7 +402,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
           ...(outcome.take !== undefined ? { take: outcome.take } : {}),
         };
         acc.orders.push({ id, decisionBarIndex: t, side: final.side, intent: 'open', status: 'pending' });
-        portfolio.placePending({ id, symbol, side: final.side, intent: 'open', decisionBarIndex: t, sizingPct: outcome.sizingPct, ...prot });
+        portfolio.placePending({ id, symbol, side: final.side, intent: 'open', decisionBarIndex: t, notional: outcome.notional, ...prot });
       }
     } else if (final.kind === 'add_to_position') {
       // 024 (US1): `add_to_position` при flat → детерминированный reject `add_without_position`;
@@ -428,7 +449,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
       if (posFinal.kind === 'exit') {
         // 024 (US2): risk нормализует `exit.percent` (R3). reject (`invalid_exit_percent`) → нет ордера;
         // accept partial → `closeFraction` несётся в ордер/pending; accept/clamp full → ключ опущен.
-        const outcome = risk.evaluate(posFinal, t, portfolio.openPositions);
+        const outcome = risk.evaluate(posFinal, t, riskCtxAt(portfolio, bar.close));
         acc.riskDecisions.push(outcome.record);
         posRisk = outcome.record;
         if (outcome.action !== 'reject') {
@@ -441,19 +462,21 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
       } else if (posFinal.kind === 'add_to_position') {
         // 024 (US1): доливка существующей позиции — risk(add) → placePending(add) → settleAdd по open(t+1).
         const pos = portfolio.position;
-        const posCtx = { size: pos.size, entryPrice: pos.entryPrice, addCount: pos.addCount ?? 0, cash: portfolio.cash };
-        const outcome = risk.evaluate(posFinal, t, portfolio.openPositions, posCtx);
+        const outcome = risk.evaluate(posFinal, t, {
+          ...riskCtxAt(portfolio, bar.close),
+          position: { size: pos.size, entryPrice: pos.entryPrice, addCount: pos.addCount ?? 0 },
+        });
         acc.riskDecisions.push(outcome.record);
         posRisk = outcome.record;
         if (outcome.action !== 'reject') {
           const id = orderId(symbol, t, 'add');
           acc.orders.push({ id, decisionBarIndex: t, side: pos.side, intent: 'add', status: 'pending', mode: outcome.mode });
-          portfolio.placePending({ id, symbol, side: pos.side, intent: 'add', decisionBarIndex: t, sizingPct: outcome.sizingPct, mode: outcome.mode });
+          portfolio.placePending({ id, symbol, side: pos.side, intent: 'add', decisionBarIndex: t, notional: outcome.notional, mode: outcome.mode });
         }
       } else if (posFinal.kind === 'update_protection') {
         // 024 (US3): применяется к `_position` немедленно; по порядку прохода (protection-check бара t
         // уже прошёл) активно со СЛЕДУЮЩЕГО бара (структурный no-lookahead, R7). Без pending/ордера.
-        const outcome = risk.evaluate(posFinal, t, portfolio.openPositions);
+        const outcome = risk.evaluate(posFinal, t, riskCtxAt(portfolio, bar.close));
         acc.riskDecisions.push(outcome.record);
         posRisk = outcome.record;
         if (outcome.action !== 'reject') {
@@ -504,7 +527,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
       barMinutes,
       intervalHours: exec.fundingIntervalHours(),
     }).toNumber();
-    portfolio.chargeFunding(cost);
+    portfolio.settleFunding(cost);
     acc.fundingLedger.push({ barIndex: t, ts: bar.ts, rate, covered, cost });
   }
 
@@ -850,6 +873,10 @@ function assembleResult(
   const evidence: RunEvidence = {
     seed: request.seed,
     datasetRef: request.datasetRef,
+    // Ф3 / run identity, owner decision (A): the evidence format carries its own version, bumped
+    // only when the evidence SHAPE changes; `contractVersion` stays an ordinary hashed field.
+    evidenceFormatVersion: EVIDENCE_FORMAT_VERSION,
+    engineVersion: ENGINE_VERSION,
     contractVersion: CONTRACT_VERSION,
     moduleVersions: [refOf(target.strategy.manifest.id, target.strategy.manifest.version), ...overlayRefs],
     riskProfileRef,

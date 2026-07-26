@@ -1,20 +1,9 @@
-// Parse a `<count><unit>` timeframe string (e.g. '1m', '4h', '1d') to milliseconds. Trusted grid step —
-// derived from the request's declared timeframe, NOT inferred from tape bar spacing (a leading gap would
-// inflate an inferred step and mask a missing tail). Returns null for anything unrecognized so callers
-// can FAIL CLOSED rather than guess. Units: s(econd) m(inute) h(our) d(ay) w(eek). 'M' is deliberately
-// rejected (month/minute ambiguity).
-const UNIT_MS: Readonly<Record<string, number>> = {
-  s: 1_000,
-  m: 60_000,
-  h: 3_600_000,
-  d: 86_400_000,
-  w: 604_800_000,
-};
+// Ф3 (shared-execution-engine, rollout шаг 4) — this module is now an IMPORT of the shared core.
+//
+// `parseTimeframeMs` moved to `@trdlabs/engine` (`src/core/timeframe.ts`) during the Ф2 extraction,
+// ported verbatim from this file. The behaviour is unchanged; the address moved. Do NOT reintroduce
+// a local copy: the engine is the single owner of execution semantics (initiative decision
+// «one owner of execution semantics»), and a second copy is exactly the two-interpreter drift the
+// initiative exists to end.
 
-export function parseTimeframeMs(timeframe: string): number | null {
-  const match = /^(\d+)([smhdw])$/.exec(timeframe);
-  if (!match) return null;
-  const count = Number(match[1]);
-  if (!Number.isInteger(count) || count <= 0) return null;
-  return count * UNIT_MS[match[2]];
-}
+export { parseTimeframeMs } from '@trdlabs/engine';

@@ -26,21 +26,11 @@ export interface OverlayEffect {
   readonly detail: object;
 }
 
-/** Зажатое поле hint'а при clamp (§4.3). */
-export interface RiskClamp {
-  readonly field: string;
-  readonly from: number;
-  readonly to: number;
-}
-
-/** Решение risk-движка по одному (в т.ч. patched) решению (§4.3, FR-017). */
-export interface RiskDecision {
-  readonly barIndex: number;
-  readonly decisionKind: string;
-  readonly action: 'accept' | 'clamp' | 'reject';
-  readonly reason: string;
-  readonly clamped?: readonly RiskClamp[];
-}
+// Ф3 (shared-execution-engine): the risk verdict shapes are PRODUCED by the shared core
+// (`RiskEngine.evaluate` returns them), so the engine owns them and the host re-exports. Keeping a
+// second local definition is how the two-interpreter drift this initiative ends got started.
+import type { RiskClamp, RiskDecision } from '@trdlabs/engine';
+export type { RiskClamp, RiskDecision };
 
 /** Запись решения по одному хуку на одном баре (§4.1, FR-022). */
 export interface DecisionRecord {
@@ -98,46 +88,21 @@ export interface SimulatedFill {
   readonly kind?: 'open' | 'add' | 'close' | 'protection';
 }
 
-/** Причина закрытия позиции (§4.6). Принудительное end-of-data → `end_of_data` (семантика `forced_mtm`).
+/**
+ * Ф3 (shared-execution-engine): `CloseReason` and `Trade` are PRODUCED by the shared core
+ * (`Portfolio.settleClose` / `closePosition` / `forcedMtmClose` return them), so the engine owns
+ * them and the host re-exports.
  *
- * 024 (additive, data-model §8): += `'stop_hit'|'take_hit'` — **только** для protection-triggered
- * закрытия (runner-owned intrabar hard-guard). Литерал `partial_exit` **НЕ** вводится: частичность
- * сигнализируется через `Trade.closeKind:'partial'`, а `closeReason` несёт strategy-authored причину
- * (см. правило `closeReason` vs `closeKind`, data-model §8).
+ * Two fields the core added over the donor shape, both prescribed by the SSOT and recorded in the
+ * initiative card as Ф3 migration notes:
+ *   • `fundingPaid?` — SSOT decision 4: funding is a settlement that adjusts the position's realized
+ *     PnL, apportioned to the closed share. Key omitted when zero, so the funding-free default path
+ *     stays byte-identical.
+ *   • `synthetic?: 'end_of_data'` — SSOT decision 5: the forced MTM close is flagged so metrics and
+ *     reconciliation can exclude it instead of inferring it from `closeReason`.
  */
-export type CloseReason =
-  | 'overlay_early_exit'
-  | 'end_of_data'
-  | 'forced_mtm'
-  | 'stop_hit'
-  | 'take_hit'
-  | (string & {});
-
-/** Закрытая сделка (§4.6, FR-022).
- *
- * 024 (additive, data-model §8): опц. `closeKind:'partial'` (частичный выход; full → ключ опущен),
- * `closeSeq` (per-position 0-based порядковый номер закрытия — несётся только на «богатых» путях для
- * уникальности `Trade.id`). Legacy единственное полное закрытие опускает оба ключа → байт-идентичность.
- */
-export interface Trade {
-  readonly id: string;
-  readonly symbol: string;
-  readonly side: 'long' | 'short';
-  readonly entryBarIndex: number;
-  readonly entryTs: number;
-  readonly entryFillPrice: number;
-  readonly exitBarIndex: number;
-  readonly exitTs: number;
-  readonly exitFillPrice: number;
-  readonly size: number;
-  readonly feePaid: number;
-  readonly realizedPnl: number;
-  readonly closeReason: CloseReason;
-  /** Частичный выход → `'partial'`; полное закрытие опускает ключ (024, data-model §8). */
-  readonly closeKind?: 'partial';
-  /** Per-position 0-based порядковый номер закрытия (024); опущен на legacy single full-close. */
-  readonly closeSeq?: number;
-}
+import type { CloseReason, Trade } from '@trdlabs/engine';
+export type { CloseReason, Trade };
 
 /** Точка equity curve (§4.7, FR-022): mark-to-market `cash + unrealized(close)`. */
 export interface EquityPoint {
@@ -173,8 +138,32 @@ export interface RunSummary {
   readonly closedTradesCount: number;
 }
 
+/**
+ * Ф3 / run identity — owner decision **(A)** of 2026-07-25 (control-center
+ * `docs/delivery/initiatives/shared-execution-engine.md`, «Open question — does run identity need
+ * its own format version?»).
+ *
+ * The version of the SHAPE of `RunEvidence`. Bumped if and ONLY IF the evidence shape changes —
+ * never because a research contract moved. The precedent that forced the decision: `017.2 → 017.3`
+ * widened the manifest envelope, changed nothing about how a run executes or what its evidence
+ * contains, and still invalidated every committed byte-identity golden.
+ */
+export const EVIDENCE_FORMAT_VERSION = '1';
+
 /** Evidence bundle прогона. */
 export interface RunEvidence {
+  /**
+   * Decision (A): run identity carries its OWN evidence-format version. `contractVersion` below
+   * remains an ordinary hashed field — it participates in the hash, but a research-contract bump
+   * does not by itself declare a new evidence format.
+   */
+  readonly evidenceFormatVersion: string;
+  /**
+   * Which execution core produced this run. Per the initiative's «Contract / API / schema changes»,
+   * run and evidence records gain an `engineVersion`: a semantics change IS an engine version
+   * change, so a run's identity must record which core executed it.
+   */
+  readonly engineVersion: string;
   readonly seed: number;
   readonly datasetRef: string;
   readonly contractVersion: string;
