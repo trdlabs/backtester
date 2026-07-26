@@ -14,7 +14,7 @@ export {
   SUPPORTED_FILL_MODEL_KINDS,
   type AddLimits,
 } from './profiles.js';
-export { RiskEngine, type RiskOutcome, type AddPositionContext } from './risk.js';
+export { RiskEngine, coreRiskProfile, type RiskContext, type RiskOutcome } from './risk.js';
 export { InProcessTrustedModuleExecutor, type ModuleExecutor } from './module-executor.js';
 export { OverlayComposer, type OverlayComposition } from './overlay.js';
 export { canonicalJson } from '../determinism/canonical-json.js';

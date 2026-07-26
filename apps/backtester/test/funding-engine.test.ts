@@ -48,18 +48,48 @@ describe('ExecutionSimulator — funding accessors + guard', () => {
   });
 });
 
-describe('Portfolio.chargeFunding', () => {
-  it('positive cost reduces cash; equityAt(flat) reflects it', () => {
+// Ф3 / SSOT decision 4 — `chargeFunding` (cash-only) became `settleFunding`: a settlement moves
+// cash AND accrues against the open position, so the closing `Trade` carries the holding cost in
+// `realizedPnl`. Two consequences pinned here: funding without an open position is now an error
+// rather than a silently-dropped charge, and the accrual reaches the trade.
+describe('Portfolio.settleFunding (SSOT decision 4)', () => {
+  const held = (): Portfolio => {
     const p = new Portfolio(1000);
-    p.chargeFunding(2.5);
-    expect(p.cash).toBeCloseTo(997.5, 8);
-    expect(p.equityAt(123)).toBeCloseTo(997.5, 8); // flat → equity == cash
+    p.placePending({ id: 'o1', symbol: 'BTCUSDT', side: 'long', intent: 'open', decisionBarIndex: 0, notional: 500 });
+    p.settleOpen({ fillPrice: 100, fee: 0, size: 5, barIndex: 1, ts: 1_000 });
+    return p;
+  };
+
+  it('positive cost is an outflow: cash falls by exactly the cost', () => {
+    const p = held();
+    const before = p.cash;
+    p.settleFunding(2.5);
+    expect(p.cash).toBeCloseTo(before - 2.5, 8);
   });
 
-  it('negative cost (credit) increases cash', () => {
-    const p = new Portfolio(1000);
-    p.chargeFunding(-1.25);
-    expect(p.cash).toBeCloseTo(1001.25, 8);
+  it('negative cost (credit) is an inflow of exactly the credit', () => {
+    const p = held();
+    const before = p.cash;
+    p.settleFunding(-1.25);
+    expect(p.cash).toBeCloseTo(before + 1.25, 8);
+  });
+
+  it('accrues against the position: the closing trade carries fundingPaid in realizedPnl', () => {
+    const p = held();
+    p.settleFunding(2.5);
+    expect(p.position?.fundingAccrued).toBeCloseTo(2.5, 8);
+    const flatClose = new Portfolio(1000);
+    flatClose.placePending({ id: 'o1', symbol: 'BTCUSDT', side: 'long', intent: 'open', decisionBarIndex: 0, notional: 500 });
+    flatClose.settleOpen({ fillPrice: 100, fee: 0, size: 5, barIndex: 1, ts: 1_000 });
+    const free = flatClose.closePosition({ fillPrice: 100, fee: 0, barIndex: 2, ts: 2_000 }, 'strategy_exit');
+    const charged = p.closePosition({ fillPrice: 100, fee: 0, barIndex: 2, ts: 2_000 }, 'strategy_exit');
+    expect(charged.fundingPaid).toBeCloseTo(2.5, 8);
+    // The whole cost of holding lands in realizedPnl — that IS decision 4 against the donor.
+    expect(free.realizedPnl - charged.realizedPnl).toBeCloseTo(2.5, 8);
+  });
+
+  it('a settlement with no open position is an error, not a dropped charge', () => {
+    expect(() => new Portfolio(1000).settleFunding(2.5)).toThrow(/no open position/);
   });
 });
 

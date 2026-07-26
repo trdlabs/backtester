@@ -32,6 +32,10 @@ jobs:
       BACKTESTER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/trading_test
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Ф3: the deterministic execution core is consumed from the `vendor/engine` submodule
+          # (pinned commit of trdlabs/engine). Without it `pnpm install` cannot link @trdlabs/engine.
+          submodules: true
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:

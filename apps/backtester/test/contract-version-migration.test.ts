@@ -36,6 +36,14 @@ interface HashMapEntry {
   readonly diffPaths: readonly string[];
 }
 
+/** Карта следующего звена цепи миграций: Ф3, переезд исполнительного ядра на `@trdlabs/engine`. */
+const f3HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, HashMapEntry> };
+
 const hashMap = JSON.parse(
   readFileSync(resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-migration/hash-map.json'), 'utf8'),
 ) as { contract: { from: string; to: string }; goldens: Record<string, HashMapEntry> };
@@ -63,11 +71,18 @@ describe('017.2 → 017.3 golden migration proof', () => {
         expect([...proof.diffPaths].sort()).toEqual([...hashMap.goldens[scenario.id].diffPaths].sort());
       });
 
-      it('the committed active golden is the 017.3 hash recorded in the mapping', async () => {
+      it('the 017.3 hash recorded here is the pre-Ф3 anchor the next migration starts from', async () => {
         const proof = proveContractVersionMigration(await scenario.run());
         const recorded = hashMap.goldens[scenario.id];
         expect(proof.activeHash).toBe(recorded.active);
-        expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(recorded.active);
+        // Ф3 (переезд на `@trdlabs/engine`) перебазировала committed-голдены ещё раз, поэтому файл
+        // на диске больше НЕ равен 017.3-хешу. Чтобы это доказательство не протухло, а осталось
+        // звеном цепи, оно сцепляется с Ф3-картой: `active` 017-миграции обязан быть `legacy`
+        // Ф3-миграции, а на диске лежит `active` Ф3. Разрыв цепи — падение здесь, а не тихий дрейф.
+        expect(recorded.active).toBe(f3HashMap.goldens[scenario.id].legacy);
+        expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
+          f3HashMap.goldens[scenario.id].active,
+        );
       });
     });
   }

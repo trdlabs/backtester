@@ -9,6 +9,8 @@
 // Dev run from monorepo root: pnpm exec vitest run apps/backtester/test/produce-strategy-evidence.test.ts
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ENGINE_VERSION } from '@trdlabs/engine';
+import { EVIDENCE_FORMAT_VERSION } from '../src/engine/artifacts';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -89,6 +91,9 @@ function makeRunOutcome(
       validationIssues: [],
       artifactRefs: [],
       evidence: {
+        // Ф3 / run identity (A): evidence carries its own format version + the engine that ran it.
+        evidenceFormatVersion: EVIDENCE_FORMAT_VERSION,
+        engineVersion: ENGINE_VERSION,
         seed: 42,
         datasetRef: 'short_after_pump-overlay',
         contractVersion: '017.1',

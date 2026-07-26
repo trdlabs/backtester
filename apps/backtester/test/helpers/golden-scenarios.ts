@@ -83,6 +83,68 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/** Поля идентичности прогона, которые Ф3 добавила в `RunEvidence` (решение владельца (A)). */
+export const F3_EVIDENCE_IDENTITY_FIELDS = ['evidenceFormatVersion', 'engineVersion'] as const;
+
+/**
+ * Ключи, которые Ф3 добавила к ФОРМЕ выхода, — вместе с КОНТЕЙНЕРОМ, в котором они разрешены.
+ * Сегодня запись одна: `synthetic` внутри элемента массива `trades`.
+ *
+ * Ядро помечает принудительное end-of-data закрытие (SSOT решение 5) явным маркером
+ * `synthetic: 'end_of_data'`, вместо того чтобы заставлять потребителя выводить синтетичность из
+ * `closeReason`. Донор такого ключа не писал. Это расхождение ФОРМЫ, а не поведения: ни одно
+ * число — цена, размер, комиссия, realizedPnl, equity — не сдвинулось (проверено структурным diff'ом
+ * до-Ф3 и после-Ф3 payload'ов: 13 расходящихся путей, все три вида добавленных ключей и ничего
+ * больше). Именно такие изменения и обязана версионировать `evidenceFormatVersion`.
+ *
+ * Почему привязка к контейнеру, а не просто имя ключа: снятие `synthetic` ВЕЗДЕ означало бы, что
+ * доказательство молча проглотит появление такого же ключа в любом другом месте payload'а — то
+ * есть перестанет ловить ровно тот дрейф, ради которого существует. Allowlist обязан быть узким.
+ */
+export const F3_ARTIFACT_SHAPE_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  trades: ['synthetic'],
+};
+
+/**
+ * Клон payload'а БЕЗ полей идентичности, добавленных Ф3 — то есть ровно та форма evidence, которая
+ * была до переезда на `@trdlabs/engine`. Это база обоих доказательств:
+ *
+ *  • Ф3-пруф требует, чтобы хеш этой проекции совпал с ДО-Ф3 голденом. Совпал — значит переезд
+ *    исполнительного ядра не сдвинул ни одного байта payload'а, кроме двух новых полей: это и есть
+ *    extraction-equivalence, доказанная, а не заявленная.
+ *  • 017-пруф (`proveContractVersionMigration`) продолжает работать на этой же проекции, поэтому
+ *    его историческое утверждение «откат одного поля восстанавливает 017.2» остаётся проверяемым
+ *    и после Ф3, а не тихо протухает.
+ */
+export function projectToPreF3Shape(payload: unknown): unknown {
+  if (Array.isArray(payload)) return payload.map((item) => projectToPreF3Shape(item));
+  if (!isRecord(payload)) return payload;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(payload)) {
+    if (k === 'evidence' && isRecord(v)) {
+      const evidence: Record<string, unknown> = { ...v };
+      for (const field of F3_EVIDENCE_IDENTITY_FIELDS) delete evidence[field];
+      out[k] = projectToPreF3Shape(evidence);
+      continue;
+    }
+    const shapeFields = F3_ARTIFACT_SHAPE_FIELDS[k];
+    if (shapeFields !== undefined && Array.isArray(v)) {
+      // Снимаем добавленные Ф3 ключи ТОЛЬКО у элементов объявленного контейнера. Одноимённый ключ
+      // где-либо ещё остаётся в проекции и, если появится, честно провалит доказательство.
+      out[k] = v.map((item) => {
+        const projected = projectToPreF3Shape(item);
+        if (!isRecord(projected)) return projected;
+        const stripped: Record<string, unknown> = { ...projected };
+        for (const field of shapeFields) delete stripped[field];
+        return stripped;
+      });
+      continue;
+    }
+    out[k] = projectToPreF3Shape(v);
+  }
+  return out;
+}
+
 /**
  * Клон payload'а с откатом ТОЛЬКО `evidence.contractVersion` к legacy-значению. Обход рекурсивный:
  * у overlay-прогона evidence лежит и в `baseline`, и в `variant`, и оба обязаны откатиться —
@@ -134,12 +196,42 @@ export interface MigrationProof {
  * Не совпал — значит вместе с версией уехало что-то ещё, и перебазировка спрятала бы регрессию.
  */
 export function proveContractVersionMigration(payload: unknown): MigrationProof & { id: string } {
-  const legacyPayload = projectToLegacyContractVersion(payload);
+  // Ф3: доказательство ведётся на ДО-Ф3 проекции evidence. Иначе бамп идентичности прогона
+  // (решение (A)) утащил бы за собой исторический 017-пруф, и тот перестал бы что-либо утверждать.
+  const activePayload = projectToPreF3Shape(payload);
+  const legacyPayload = projectToLegacyContractVersion(activePayload);
   return {
     id: '',
-    activeHash: contentRef(payload),
+    activeHash: contentRef(activePayload),
     legacyHash: contentRef(legacyPayload),
-    diffPaths: structuralDiffPaths(legacyPayload, payload),
+    diffPaths: structuralDiffPaths(legacyPayload, activePayload),
+  };
+}
+
+/** Исход Ф3-доказательства для одного сценария. */
+export interface ExtractionProof {
+  /** Хеш свежего прогона на `@trdlabs/engine` — это и есть новый committed golden. */
+  readonly activeHash: string;
+  /** Хеш того же прогона с откаченной идентичностью Ф3 — обязан совпасть с ДО-Ф3 голденом. */
+  readonly preF3Hash: string;
+  /** Пути, по которым active и pre-Ф3 расходятся. */
+  readonly diffPaths: readonly string[];
+}
+
+/**
+ * Доказать, что перебазировка голдена вызвана РОВНО материализацией run identity (A), а не дрейфом
+ * исполнительного ядра при переезде на `@trdlabs/engine`.
+ *
+ * Убираем из свежего результата два новых поля evidence и требуем, чтобы хеш совпал с замороженным
+ * до Ф3. Совпал — значит весь остальной payload (ордера, филлы, risk-решения, сделки, equity)
+ * байт-в-байт прежний: извлечённое ядро эквивалентно донорскому на этих фикстурах.
+ */
+export function proveEngineExtraction(payload: unknown): ExtractionProof {
+  const preF3Payload = projectToPreF3Shape(payload);
+  return {
+    activeHash: contentRef(payload),
+    preF3Hash: contentRef(preF3Payload),
+    diffPaths: structuralDiffPaths(preF3Payload, payload),
   };
 }
 

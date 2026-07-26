@@ -1,6 +1,11 @@
 packages:
   - "packages/*"
   - "apps/*"
+  # Ф3 (shared-execution-engine): the deterministic execution core is consumed from
+  # `trdlabs/engine`, pinned as a git submodule at an exact commit — no npm publish involved.
+  # The submodule is the pin; `pnpm install` links it as `@trdlabs/engine` from source and
+  # `pnpm engine:build` emits its `dist` (the package's declared entrypoint).
+  - "vendor/engine"
 
 # esbuild (pulled by vitest/tsx) runs a postinstall that links its platform binary. Approve it so
 # `pnpm install` exits clean (in CI too).

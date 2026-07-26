@@ -1,0 +1,49 @@
+{
+  "migration": {
+    "initiative": "shared-execution-engine",
+    "phase": "Ф3",
+    "from": "backtester-owned engine layer",
+    "to": "@trdlabs/engine",
+    "enginePin": "7a3216b09c3673144ded699b7f833c3381b04272",
+    "cause": "run identity (A): RunEvidence carries its own evidenceFormatVersion + engineVersion (the research contract version stays an ordinary hashed field), plus SSOT decision 5: the forced end-of-data MTM close is now marked Trade.synthetic. Shape-only — no numeric field moved."
+  },
+  "goldens": {
+    "overlay-baseline": {
+      "scenario": "overlay-baseline",
+      "source": "apps/backtester/test/fixtures/overlay/goldens/baseline.hash",
+      "legacy": "sha256:7149703ebcd596f83f6011b2deaab837ac58bb34a30666253c5db4f9d5020fb1",
+      "active": "sha256:742e4d45d64daff7fbdc50e6fb1e13574ef717a36444c9cb1f13f721032e9eb7",
+      "diffPaths": [
+        "/baseline/evidence/engineVersion",
+        "/baseline/evidence/evidenceFormatVersion",
+        "/baseline/trades/0/synthetic"
+      ]
+    },
+    "overlay-variant": {
+      "scenario": "overlay-variant",
+      "source": "apps/backtester/test/fixtures/overlay/goldens/variant.hash",
+      "legacy": "sha256:4c7a2303944b44aedb0e1bb060c9f40cf08cb8304125c5dc53a5e2de4cee9ee1",
+      "active": "sha256:e3ea31bab25cd42558b3282aada7905820f71d0455d48a0f68aa2a7bf228d8d9",
+      "diffPaths": [
+        "/baseline/evidence/engineVersion",
+        "/baseline/evidence/evidenceFormatVersion",
+        "/baseline/trades/0/synthetic",
+        "/variant/evidence/engineVersion",
+        "/variant/evidence/evidenceFormatVersion",
+        "/variant/trades/2/synthetic"
+      ]
+    },
+    "bar-major": {
+      "scenario": "bar-major",
+      "source": "apps/backtester/test/helpers/bar-major-golden-hash.ts",
+      "legacy": "sha256:e49fd70e6abe348c8090fa08abfa0342df0bab51f5e26205303ab1ace0df5798",
+      "active": "sha256:b231679cf84930329d96d6bb1b27e79596b9ac6945d91a99a656a8cb291bf1a1",
+      "diffPaths": [
+        "/evidence/engineVersion",
+        "/evidence/evidenceFormatVersion",
+        "/trades/0/synthetic",
+        "/trades/1/synthetic"
+      ]
+    }
+  }
+}
