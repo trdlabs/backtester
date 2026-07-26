@@ -97,6 +97,26 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Verify the published version actually carries provenance
+        # A step named «with provenance» that nobody checks is a claim, not a fact. `--provenance`
+        # is silently a no-op outside a supported CI/OIDC context, which is exactly how the only
+        # version of this package on npm (0.8.0) ended up unattested: it was published locally
+        # rather than through this workflow. npm is immutable per version, so an unattested publish
+        # can only be fixed by cutting the next one — which makes catching it HERE the whole point.
+        # Registry reads lag a fresh publish, hence the bounded retry rather than a single shot.
+        run: |
+          for attempt in $(seq 1 20); do
+            body=$(curl -sf "https://registry.npmjs.org/-/npm/v1/attestations/@trdlabs/backtester-sdk@${VERSION}" || true)
+            if echo "$body" | grep -q 'slsa.dev/provenance'; then
+              echo "provenance attestation present for ${VERSION}"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "PUBLISHED WITHOUT PROVENANCE: no attestation for @trdlabs/backtester-sdk@${VERSION}"
+          echo "npm is immutable, so this version cannot be fixed in place — cut the next patch."
+          exit 1
+
       # ── Secondary GitHub release NOTE (after successful npm publish) ────────
       # Not a delivery channel: no package asset is attached. Consumers install
       # from npm. This only records a human-readable release note + git tag.

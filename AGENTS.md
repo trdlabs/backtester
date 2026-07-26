@@ -50,10 +50,14 @@ If `../control-center` is absent (standalone clone), use local repo docs only.
 ## Структура
 - `apps/backtester/` — сам сервис: `src/`, `test/`, `migrations/`, `fixtures/`, `sandbox-harness/`
 - `packages/sdk/` — **`@trdlabs/backtester-sdk`** (Apache-2.0) — канонический публичный пакет с
-  4 subpath-экспортами (`/contracts`, `/builder`, `/client`, `/artifacts`). Устанавливается через
-  GitHub Release `.tgz` (без npm-регистри) через `.github/workflows/sdk-release.yml`.
-  Не хардкодь список опубликованных версий в документации: сверяй `packages/sdk/package.json`,
-  git-теги `sdk-v*` и GitHub Releases перед release/consumer rollout.
+  4 subpath-экспортами (`/contracts`, `/builder`, `/client`, `/artifacts`). Каноническая доставка —
+  **public npm registry**; выпуск идёт через `.github/workflows/sdk-release.yml`. GitHub Release и
+  git-тег `sdk-v*` создаются ПОСЛЕ успешной публикации как release note и каналом доставки не
+  являются (до 0.8.0 канал был обратный — `.tgz` из GitHub Release; в старых документах и обсуждениях
+  встречается именно та схема).
+  Не хардкодь список опубликованных версий в документации: сверяй `packages/sdk/package.json` и
+  `npm view @trdlabs/backtester-sdk versions` перед release/consumer rollout — в реестре может быть
+  меньше версий, чем git-тегов, именно из-за смены канала.
   Ядро детерминизма (`canonical-json`, хэширование) живёт в SDK; сервис потребляет его через
   тонкие re-export обёртки. Живых кредов и биржевого исполнения нет — SDK чисто для авторинга и
   интеграции с API.
@@ -61,13 +65,14 @@ If `../control-center` is absent (standalone clone), use local repo docs only.
 
   | Пакет | Владелец | Назначение | Каноническая доставка |
   | --- | --- | --- | --- |
-  | `@trdlabs/backtester-sdk` | этот репозиторий, `packages/sdk/` | API/контракты backtester для lab | GitHub Release `.tgz` |
+  | `@trdlabs/backtester-sdk` | этот репозиторий, `packages/sdk/` | API/контракты backtester для lab | public npm registry (`npm install @trdlabs/backtester-sdk`) |
   | `@trdlabs/sdk` | sibling `../sdk` (`trdlabs/sdk`) | platform-facing client, включая `/historical` | public npm registry (`npm install @trdlabs/sdk`) |
 
   Для изменений, релиза или bump `@trdlabs/sdk` сначала читай
   `../control-center/docs/operations/npm-publishing.md` и
-  `../control-center/docs/delivery/sdk-consumer-rollout-checklist.md`. Не используй GitHub `.tgz`
-  workflow `@trdlabs/backtester-sdk` как модель публикации `@trdlabs/sdk`.
+  `../control-center/docs/delivery/sdk-consumer-rollout-checklist.md`. Оба пакета публикуются в npm,
+  но это РАЗНЫЕ пакеты с разными владельцами и своими release-путями — не переноси workflow одного
+  на другой.
 - `packages/research-contracts/` — `@trading/research-contracts` — **приватный** пакет для
   исторических/engine-only типов (`HistoricalDatasetReader`, canonical rows, engine
   context/decisions/indicators/market-tape). Остаётся приватным.
