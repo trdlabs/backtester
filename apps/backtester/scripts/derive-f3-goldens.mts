@@ -45,6 +45,20 @@ interface Entry {
   readonly diffPaths: readonly string[];
 }
 
+/**
+ * Скрипт одноразовый по своей природе: он сверяет откат с ФАЙЛОМ голдена, а тот после перебазировки
+ * уже содержит пост-Ф3 значение. Чтобы повторный запуск не читался как «дрейф», уже перебазированное
+ * состояние распознаётся по коммитнутой карте и называется своим именем. Постоянную проверку ведёт
+ * `test/engine-extraction-migration.test.ts` — он сверяется с `legacy` из карты, а не с файлом.
+ */
+const priorMap: { goldens?: Record<string, Entry> } = (() => {
+  try {
+    return JSON.parse(readFileSync(MAP_PATH, 'utf8')) as { goldens?: Record<string, Entry> };
+  } catch {
+    return {};
+  }
+})();
+
 const goldens: Record<string, Entry> = {};
 let failed = 0;
 
@@ -54,13 +68,17 @@ for (const scenario of GOLDEN_SCENARIOS) {
 
   // Гейт extraction-equivalence на одном сценарии: всё, кроме двух полей идентичности, обязано
   // остаться байт-в-байт прежним.
-  const equivalent = proof.preF3Hash === committed;
+  const recorded = priorMap.goldens?.[scenario.id];
+  const alreadyRebased = recorded !== undefined && committed === recorded.active;
+  // После перебазировки на диске лежит пост-Ф3 хеш, поэтому якорь эквивалентности — `legacy` карты.
+  const anchor = alreadyRebased ? recorded.legacy : committed;
+  const equivalent = proof.preF3Hash === anchor;
   const onlyShape = proof.diffPaths.every((p) =>
-    /\/evidence\/(evidenceFormatVersion|engineVersion)$|\/synthetic$/.test(p),
+    /\/evidence\/(evidenceFormatVersion|engineVersion)$|\/trades\/\d+\/synthetic$/.test(p),
   );
 
-  console.log(`${scenario.id}:`);
-  console.log(`  committed (pre-Ф3): ${committed}`);
+  console.log(`${scenario.id}:${alreadyRebased ? ' (already rebased — verifying against the committed map)' : ''}`);
+  console.log(`  pre-Ф3 anchor     : ${anchor}`);
   console.log(`  rolled back       : ${proof.preF3Hash} ${equivalent ? '✓ equivalent' : '✗ DRIFTED'}`);
   console.log(`  new active        : ${proof.activeHash}`);
   console.log(`  diffPaths         : ${proof.diffPaths.join(', ') || '(none)'}`);
@@ -75,7 +93,7 @@ for (const scenario of GOLDEN_SCENARIOS) {
   goldens[scenario.id] = {
     scenario: scenario.id,
     source: scenario.goldenSource,
-    legacy: committed,
+    legacy: anchor,
     active: proof.activeHash,
     diffPaths: [...proof.diffPaths].sort(),
   };

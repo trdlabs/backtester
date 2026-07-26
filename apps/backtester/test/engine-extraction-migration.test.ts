@@ -57,8 +57,12 @@ const hashMap = JSON.parse(
   goldens: Record<string, Entry>;
 };
 
-/** Только эти пути имеют право разойтись. Список закрыт: новый ключ формы — новая правка ЗДЕСЬ. */
-const ALLOWED_DIFF = /\/evidence\/(evidenceFormatVersion|engineVersion)$|\/synthetic$/;
+/**
+ * Только эти пути имеют право разойтись. Список закрыт и привязан к КОНТЕЙНЕРУ: `synthetic`
+ * разрешён исключительно у элемента `trades`, а не по имени ключа где угодно. Новый ключ формы —
+ * новая правка ЗДЕСЬ.
+ */
+const ALLOWED_DIFF = /\/evidence\/(evidenceFormatVersion|engineVersion)$|\/trades\/\d+\/synthetic$/;
 
 describe('Ф3 extraction-equivalence: backtester on @trdlabs/engine', () => {
   it('mapping fixture names the migration and the exact engine commit it was proven against', () => {
@@ -106,6 +110,13 @@ describe('Ф3 extraction-equivalence: backtester on @trdlabs/engine', () => {
       });
     });
   }
+
+  it('the allowlist is container-scoped: a `synthetic` key outside trades is NOT stripped', () => {
+    // Ревью #161: снятие ключа по одному лишь имени означало бы, что доказательство молча
+    // проглотит такой же ключ в любом другом месте payload'а — то есть перестанет ловить дрейф.
+    const payload = { summary: { synthetic: 'nope' }, trades: [{ id: 't', synthetic: 'end_of_data' }] };
+    expect(projectToPreF3Shape(payload)).toEqual({ summary: { synthetic: 'nope' }, trades: [{ id: 't' }] });
+  });
 
   it('the projection is not vacuous: it actually removes the keys it claims to', () => {
     // Проверка проверки. Если бы проекция ничего не убирала, все утверждения выше проходили бы ни

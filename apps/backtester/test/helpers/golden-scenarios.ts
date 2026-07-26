@@ -87,7 +87,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 export const F3_EVIDENCE_IDENTITY_FIELDS = ['evidenceFormatVersion', 'engineVersion'] as const;
 
 /**
- * Ключи артефактов, которые Ф3 добавила к ФОРМЕ выхода. Сегодня один: `Trade.synthetic`.
+ * Ключи, которые Ф3 добавила к ФОРМЕ выхода, — вместе с КОНТЕЙНЕРОМ, в котором они разрешены.
+ * Сегодня запись одна: `synthetic` внутри элемента массива `trades`.
  *
  * Ядро помечает принудительное end-of-data закрытие (SSOT решение 5) явным маркером
  * `synthetic: 'end_of_data'`, вместо того чтобы заставлять потребителя выводить синтетичность из
@@ -95,8 +96,14 @@ export const F3_EVIDENCE_IDENTITY_FIELDS = ['evidenceFormatVersion', 'engineVers
  * число — цена, размер, комиссия, realizedPnl, equity — не сдвинулось (проверено структурным diff'ом
  * до-Ф3 и после-Ф3 payload'ов: 13 расходящихся путей, все три вида добавленных ключей и ничего
  * больше). Именно такие изменения и обязана версионировать `evidenceFormatVersion`.
+ *
+ * Почему привязка к контейнеру, а не просто имя ключа: снятие `synthetic` ВЕЗДЕ означало бы, что
+ * доказательство молча проглотит появление такого же ключа в любом другом месте payload'а — то
+ * есть перестанет ловить ровно тот дрейф, ради которого существует. Allowlist обязан быть узким.
  */
-export const F3_ARTIFACT_SHAPE_FIELDS = ['synthetic'] as const;
+export const F3_ARTIFACT_SHAPE_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  trades: ['synthetic'],
+};
 
 /**
  * Клон payload'а БЕЗ полей идентичности, добавленных Ф3 — то есть ровно та форма evidence, которая
@@ -110,7 +117,7 @@ export const F3_ARTIFACT_SHAPE_FIELDS = ['synthetic'] as const;
  *    и после Ф3, а не тихо протухает.
  */
 export function projectToPreF3Shape(payload: unknown): unknown {
-  if (Array.isArray(payload)) return payload.map(projectToPreF3Shape);
+  if (Array.isArray(payload)) return payload.map((item) => projectToPreF3Shape(item));
   if (!isRecord(payload)) return payload;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(payload)) {
@@ -120,7 +127,19 @@ export function projectToPreF3Shape(payload: unknown): unknown {
       out[k] = projectToPreF3Shape(evidence);
       continue;
     }
-    if ((F3_ARTIFACT_SHAPE_FIELDS as readonly string[]).includes(k)) continue;
+    const shapeFields = F3_ARTIFACT_SHAPE_FIELDS[k];
+    if (shapeFields !== undefined && Array.isArray(v)) {
+      // Снимаем добавленные Ф3 ключи ТОЛЬКО у элементов объявленного контейнера. Одноимённый ключ
+      // где-либо ещё остаётся в проекции и, если появится, честно провалит доказательство.
+      out[k] = v.map((item) => {
+        const projected = projectToPreF3Shape(item);
+        if (!isRecord(projected)) return projected;
+        const stripped: Record<string, unknown> = { ...projected };
+        for (const field of shapeFields) delete stripped[field];
+        return stripped;
+      });
+      continue;
+    }
     out[k] = projectToPreF3Shape(v);
   }
   return out;
