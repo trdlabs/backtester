@@ -20,10 +20,6 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Ф3: the deterministic execution core is consumed from the `vendor/engine` submodule
-          # (pinned commit of trdlabs/engine). Without it `pnpm install` cannot link @trdlabs/engine.
-          submodules: true
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:

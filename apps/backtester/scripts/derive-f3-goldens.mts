@@ -16,8 +16,11 @@
 // Запуск: pnpm exec tsx apps/backtester/scripts/derive-f3-goldens.mts [--write]
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { ENGINE_VERSION } from '@trdlabs/engine';
 
 import {
   GOLDEN_SCENARIOS,
@@ -29,12 +32,13 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '
 const MAP_PATH = resolve(REPO_ROOT, 'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json');
 const WRITE = process.argv.includes('--write');
 
-/** Коммит `trdlabs/engine`, на который запинован submodule `vendor/engine`. */
-function enginePin(): string {
-  const raw = readFileSync(resolve(REPO_ROOT, '.git/modules/vendor/engine/HEAD'), 'utf8').trim();
-  return raw.startsWith('ref:')
-    ? readFileSync(resolve(REPO_ROOT, '.git/modules/vendor/engine', raw.slice(4).trim()), 'utf8').trim()
-    : raw;
+/** How the engine is consumed today: a released npm version, read from the installed manifest. */
+function engineRelease(): string {
+  const req = createRequire(import.meta.url);
+  const pkg = JSON.parse(readFileSync(req.resolve('@trdlabs/engine/package.json'), 'utf8')) as {
+    version: string;
+  };
+  return `@trdlabs/engine@${pkg.version}`;
 }
 
 interface Entry {
@@ -51,9 +55,12 @@ interface Entry {
  * состояние распознаётся по коммитнутой карте и называется своим именем. Постоянную проверку ведёт
  * `test/engine-extraction-migration.test.ts` — он сверяется с `legacy` из карты, а не с файлом.
  */
-const priorMap: { goldens?: Record<string, Entry> } = (() => {
+const priorMap: { goldens?: Record<string, Entry>; migration?: { provenOnEngineCommit?: string } } = (() => {
   try {
-    return JSON.parse(readFileSync(MAP_PATH, 'utf8')) as { goldens?: Record<string, Entry> };
+    return JSON.parse(readFileSync(MAP_PATH, 'utf8')) as {
+      goldens?: Record<string, Entry>;
+      migration?: { provenOnEngineCommit?: string };
+    };
   } catch {
     return {};
   }
@@ -110,7 +117,9 @@ const mapping = {
     phase: 'Ф3',
     from: 'backtester-owned engine layer',
     to: '@trdlabs/engine',
-    enginePin: enginePin(),
+    provenOnEngineCommit: priorMap.migration?.provenOnEngineCommit ?? '',
+    consumedAs: engineRelease(),
+    engineSemanticsVersion: ENGINE_VERSION,
     cause:
       'run identity (A): RunEvidence carries its own evidenceFormatVersion + engineVersion (the research contract version stays an ordinary hashed field), plus SSOT decision 5: the forced end-of-data MTM close is now marked Trade.synthetic. Shape-only — no numeric field moved.',
   },
