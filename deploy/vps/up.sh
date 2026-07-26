@@ -19,6 +19,15 @@ pkill -f "src/inde[x].ts" 2>/dev/null || true
 pkill -f "worker-mai[n]"  2>/dev/null || true
 sleep 2
 
+# The in-container sandbox harness imports `./_engine/engine.js`, a gitignored artifact built from the
+# single-source indicator engine. Since Ф3 (engine lifted to @trdlabs/engine) nothing on the stand
+# built it, so every strategy run died as a cryptic `bundle_load_failed`. Build it here (from the repo
+# root — these are root scripts); `set -e` aborts the bring-up if it fails, and the runtime keeps a
+# second guard (`assertHarnessComplete` in harness-volume.ts).
+echo "==> building sandbox harness overlay (_engine/ is build-generated)"
+( cd "$REPO" && pnpm engine:build && pnpm sdk:build && pnpm run build:sandbox-harness-overlay ) \
+  > "$LOG_DIR/overlay-build.log" 2>&1
+
 cd "$REPO/apps/backtester"
 echo "==> starting API on :$BACKTESTER_PORT (AUTO_WORKER=false)"
 BACKTESTER_AUTO_WORKER=false setsid pnpm exec tsx src/index.ts > "$LOG_DIR/api.log" 2>&1 < /dev/null &
