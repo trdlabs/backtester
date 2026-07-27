@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { FileBundleStore } from '../src/sandbox/bundle-store.js';
-import type { ModuleBundle } from '../src/sandbox/bundle.js';
+import type { ModuleBundle } from '@trading/research-contracts';
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
