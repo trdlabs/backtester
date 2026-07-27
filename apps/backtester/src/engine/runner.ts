@@ -148,12 +148,45 @@ export interface FundingLedgerEntry {
 export interface RunAccumulators {
   readonly decisionRecords: DecisionRecord[];
   readonly orders: MutableOrder[];
+  /**
+   * Индекс `orders` по id. Существует ради `findOrder`: settle и expire ищут ордер по id, а
+   * `Array.find` сканирует с нуля, так что стоимость поиска росла вместе с числом ордеров.
+   * Ведётся ТОЛЬКО через `recordOrder`/`indexOrders` — прямой push в `orders` его рассинхронит.
+   * На порядок и состав `orders` не влияет: массив остаётся единственным источником для артефактов.
+   */
+  readonly orderIndex: Map<string, MutableOrder>;
   readonly fills: SimulatedFill[];
   readonly riskDecisions: RiskDecision[];
   readonly trades: Trade[];
   readonly equityCurve: EquityPoint[];
   readonly fundingLedger: FundingLedgerEntry[];
   readonly validationIssues: ValidationIssue[];
+}
+
+
+/**
+ * Слитые per-symbol аккумуляторы: те же списки, но БЕЗ `orderIndex`. Индекс — рабочая структура
+ * раннера для поиска по id, а не часть полезной нагрузки артефактов, и слияние его не производит.
+ */
+export type MergedAccumulators = Omit<RunAccumulators, 'orderIndex'>;
+
+/** Добавить ордер в аккумулятор, держа индекс в согласии с массивом. Единственная точка вставки. */
+function recordOrder(acc: RunAccumulators, order: MutableOrder): void {
+  acc.orders.push(order);
+  acc.orderIndex.set(order.id, order);
+}
+
+/** Проиндексировать пачку уже добавленных ордеров (слияние per-symbol аккумуляторов). */
+function indexOrders(acc: RunAccumulators, orders: readonly MutableOrder[]): void {
+  for (const o of orders) acc.orderIndex.set(o.id, o);
+}
+
+/**
+ * Найти ордер по id. Мутируется найденный объект, а не копия: индекс хранит те же ссылки, что и
+ * массив, поэтому `order.status = ...` виден в артефактах ровно как раньше.
+ */
+function findOrder(acc: RunAccumulators, id: string): MutableOrder | undefined {
+  return acc.orderIndex.get(id);
 }
 
 function orderId(symbol: string, barIndex: number, intent: 'open' | 'close' | 'add'): string {
@@ -219,7 +252,7 @@ function settlePending(
 ): void {
   const pending = portfolio.pending;
   if (pending === null) return;
-  const order = acc.orders.find((o) => o.id === pending.id);
+  const order = findOrder(acc, pending.id);
 
   // Ф3: `notional` is risk-authored (SSOT decision 3) and the core simulator no longer re-derives
   // sizing. An open/add order without one is a programming error, not a 0-sized fill: fail closed.
@@ -310,7 +343,7 @@ function runProtectionCheck(
   const calc = exec.computeProtectionFill(pos.side, hit.fillBase, pos.size);
   const id = `ord-${symbol}-${barIndex}-protection`;
   const size = pos.size;
-  acc.orders.push({ id, decisionBarIndex: barIndex, side: pos.side, intent: 'close', status: 'filled', origin: 'protection' });
+  recordOrder(acc, { id, decisionBarIndex: barIndex, side: pos.side, intent: 'close', status: 'filled', origin: 'protection' });
   const trade = portfolio.closePosition({ fillPrice: calc.fillPrice, fee: calc.fee, barIndex, ts: bar.ts }, hit.kind);
   acc.fills.push({
     orderId: id,
@@ -401,7 +434,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
           ...(outcome.stop !== undefined ? { stop: outcome.stop } : {}),
           ...(outcome.take !== undefined ? { take: outcome.take } : {}),
         };
-        acc.orders.push({ id, decisionBarIndex: t, side: final.side, intent: 'open', status: 'pending' });
+        recordOrder(acc, { id, decisionBarIndex: t, side: final.side, intent: 'open', status: 'pending' });
         portfolio.placePending({ id, symbol, side: final.side, intent: 'open', decisionBarIndex: t, notional: outcome.notional, ...prot });
       }
     } else if (final.kind === 'add_to_position') {
@@ -456,7 +489,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
           const pos = portfolio.position;
           const id = orderId(symbol, t, 'close');
           const frac = outcome.closeFraction !== undefined ? { closeFraction: outcome.closeFraction } : {};
-          acc.orders.push({ id, decisionBarIndex: t, side: pos.side, intent: 'close', status: 'pending', ...frac });
+          recordOrder(acc, { id, decisionBarIndex: t, side: pos.side, intent: 'close', status: 'pending', ...frac });
           portfolio.placePending({ id, symbol, side: pos.side, intent: 'close', decisionBarIndex: t, closeReason: posFinal.target, ...frac });
         }
       } else if (posFinal.kind === 'add_to_position') {
@@ -470,7 +503,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
         posRisk = outcome.record;
         if (outcome.action !== 'reject') {
           const id = orderId(symbol, t, 'add');
-          acc.orders.push({ id, decisionBarIndex: t, side: pos.side, intent: 'add', status: 'pending', mode: outcome.mode });
+          recordOrder(acc, { id, decisionBarIndex: t, side: pos.side, intent: 'add', status: 'pending', mode: outcome.mode });
           portfolio.placePending({ id, symbol, side: pos.side, intent: 'add', decisionBarIndex: t, notional: outcome.notional, mode: outcome.mode });
         }
       } else if (posFinal.kind === 'update_protection') {
@@ -581,7 +614,7 @@ async function finalizeSymbol(env: BarEnv): Promise<void> {
   // (без сделки, без ошибки; FR-020, US5-AC3).
   const expired = portfolio.expirePending();
   if (expired !== null) {
-    const order = acc.orders.find((o) => o.id === expired.id);
+    const order = findOrder(acc, expired.id);
     if (order !== undefined) order.status = 'expired';
   }
 
@@ -674,6 +707,7 @@ async function simulateTarget(
   const acc: RunAccumulators = {
     decisionRecords: [],
     orders: [],
+    orderIndex: new Map(),
     fills: [],
     riskDecisions: [],
     trades: [],
@@ -764,7 +798,7 @@ async function runBarMajor(
         ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
         : target.strategy;
       const symAcc: RunAccumulators = {
-        decisionRecords: [], orders: [], fills: [], riskDecisions: [],
+        decisionRecords: [], orders: [], orderIndex: new Map(), fills: [], riskDecisions: [],
         trades: [], equityCurve: [], fundingLedger: [], validationIssues: [],
       };
       const portfolio = new Portfolio(INITIAL_EQUITY);
@@ -824,6 +858,7 @@ async function runBarMajor(
     const merged = mergeAccumulators(perAcc);
     acc.decisionRecords.push(...merged.decisionRecords);
     acc.orders.push(...merged.orders);
+    indexOrders(acc, merged.orders);
     acc.fills.push(...merged.fills);
     acc.riskDecisions.push(...merged.riskDecisions);
     acc.trades.push(...merged.trades);
