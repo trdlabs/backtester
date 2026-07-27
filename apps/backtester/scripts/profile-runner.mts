@@ -20,11 +20,14 @@ import { cpus } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { assertQuietBench, minOf } from './lib/bench-gate.js';
 import { makeIsolateDeps, makeRequest, makeTrustedDeps, DEFAULT_PROBE, type WorkloadSpec } from './lib/profile-runner-fixture.js';
 import { runBacktest, type RunDeps } from '../src/engine/runner.js';
 import { contentRef } from '../src/determinism/hash.js';
 import { materializeBundle } from '../src/engine/sandbox/bundle-materialize.js';
 import type { ModuleBundle as InlineModuleBundle } from '@trading/research-contracts';
+
+assertQuietBench('profile-runner');
 
 const BARS = Math.max(1, Number(process.env.PROFILE_BARS ?? 60_000));
 const REPEATS = Math.max(1, Number(process.env.PROFILE_REPEATS ?? 3));
@@ -146,7 +149,8 @@ try {
 }
 
 const walls = samples.map((s) => s.wallMs).sort((a, b) => a - b);
-const median = walls.length % 2 === 1 ? walls[walls.length >> 1]! : (walls[(walls.length >> 1) - 1]! + walls[walls.length >> 1]!) / 2;
+// Минимум, а не медиана и не среднее: см. `lib/bench-gate.ts` — GC-паузы ложатся случайно.
+const best = minOf(walls);
 const bars = samples[0]!.barsProcessed;
 
 // Нестабильность результата между повторами ломает основание сравнения так же, как и ошибка замера.
@@ -157,7 +161,7 @@ if (distinct.size > 1) {
 }
 
 console.log(
-  `\n[profile-runner] median ${median.toFixed(0)} мс на ${bars} баров = ` +
-    `${((median * 1000) / bars).toFixed(1)} мкс/бар (min ${walls[0]!.toFixed(0)} мс, max ${walls[walls.length - 1]!.toFixed(0)} мс)`,
+  `\n[profile-runner] min ${best.toFixed(0)} мс на ${bars} баров = ` +
+    `${((best * 1000) / bars).toFixed(1)} мкс/бар (max ${walls[walls.length - 1]!.toFixed(0)} мс из ${walls.length} повторов)`,
 );
 console.log(`[profile-runner] result_hash=${samples[0]!.hash}`);

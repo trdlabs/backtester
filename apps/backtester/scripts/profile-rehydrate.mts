@@ -12,8 +12,12 @@
 //   REHYDRATE_BARS=1000,2000,4000,8000 pnpm exec tsx apps/backtester/scripts/profile-rehydrate.mts
 
 import { createRequire } from 'node:module';
+
+import { assertQuietBench } from './lib/bench-gate.js';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+assertQuietBench('profile-rehydrate');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HARNESS = resolve(HERE, '../sandbox-harness-overlay');
