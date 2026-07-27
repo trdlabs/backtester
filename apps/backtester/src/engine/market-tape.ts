@@ -308,6 +308,9 @@ function materialize(
     if (cols.taker !== undefined) takerColumns.set(symbol, minuteColumn(cols.taker));
   }
 
+  /** Мемо `coverage()`: лента после постройки неизменна (см. комментарий у метода). */
+  let coverageMemo: CoverageModel | undefined;
+
   return {
     datasetRef,
     timeframe,
@@ -331,13 +334,22 @@ function materialize(
       requireSymbol(symbol);
       return takerColumns.get(symbol);
     },
+    // Мемоизация на материализованной ленте. `coverage()` пересобирал всю модель заново на каждый
+    // вызов, а лента после постройки неизменна — значит второй ответ обязан совпадать с первым, и
+    // пересчёт был чистой работой впустую. Раннер зовёт её дважды за прогон (валидация
+    // declaredMarketKinds и сборка evidence), и оба раза на полном наборе символов × kind'ов.
+    // Возвращается ТОТ ЖЕ объект: вызывающие его только читают (`entries.some`, `isKindFullyUncovered`,
+    // канонизация в артефакт), и ни один не мутирует.
     coverage: (): CoverageModel => {
-      const entries: KindCoverage[] = [];
-      for (const symbol of symbols) {
-        const cols = requireSymbol(symbol);
-        for (const kind of COVERAGE_KIND_ORDER) entries.push(kindCoverage(symbol, kind, cols));
+      if (coverageMemo === undefined) {
+        const entries: KindCoverage[] = [];
+        for (const symbol of symbols) {
+          const cols = requireSymbol(symbol);
+          for (const kind of COVERAGE_KIND_ORDER) entries.push(kindCoverage(symbol, kind, cols));
+        }
+        coverageMemo = { entries };
       }
-      return { entries };
+      return coverageMemo;
     },
     toTape: (): MarketTape => {
       const events: MarketTapeEvent[] = [];
