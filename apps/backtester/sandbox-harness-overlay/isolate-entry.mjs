@@ -113,8 +113,8 @@ globalThis.__isolateHarness = {
   },
 
   /**
-   * 17b-батч ОДНИМ заходом: {hook, bars:[{snapshot,newBar,newOi,newLiq}]} → runHookBatch (ТОТ ЖЕ
-   * pure-хелпер, что у docker-харнесса) → {ok:true, stoppedAt, decisions} | {ok:false, barOffset,
+   * 17b-батч ОДНИМ заходом: {hook, bars:[{snapshot,newBar,newOi,newLiq}]} → runHookBatchSync
+   * (sync-двойник docker-хелпера; отличие — канонические idle не рвут батч) → {ok:true, stoppedAt, decisions} | {ok:false, barOffset,
    * code, detail}. СИНХРОННО (runHookBatchSync): await внутри изолята гонял бы promise-машинерию
    * isolated-vm через host event loop (~мс/бар, замерено); thenable-результат хука отвергается
    * syncOnly-гардом.

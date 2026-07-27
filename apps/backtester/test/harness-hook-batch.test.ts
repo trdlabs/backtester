@@ -95,7 +95,8 @@ describe('runHookBatch (17b — pure harness batch iteration)', () => {
 
 // ─── runHookBatchSync — синхронное ядро для isolate-бэкенда (async/await внутри изолята гоняет
 // promise-машинерию isolated-vm через host event loop → ~20мс/бар; sync-цикл этого не делает).
-// Семантика ОБЯЗАНА совпадать с runHookBatch байт-в-байт на sync-хуках.
+// Семантика совпадает с runHookBatch на sync-хуках, КРОМЕ намеренного отличия: канонические
+// {kind:'idle'} не прерывают батч (пин ниже в отдельном describe).
 import { runHookBatchSync } from '../sandbox-harness-overlay/hook-batch.mjs';
 
 describe('runHookBatchSync (isolate loop-in-isolate core)', () => {

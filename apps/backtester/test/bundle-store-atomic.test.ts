@@ -32,3 +32,13 @@ describe('FileBundleStore.put — атомарность', () => {
     expect(readdirSync(dir).filter((f) => f.includes('.tmp'))).toEqual([]);
   });
 });
+
+  it('конкурентные put одного бандла + параллельные get: читатель никогда не видит партиал', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bundle-store-race-')); dirs.push(dir);
+    const store = new FileBundleStore(dir);
+    const hash = await store.put(bundle); // существующий файл, затем шторм повторных put + get
+    const puts = Array.from({ length: 8 }, () => store.put(bundle));
+    const gets = Array.from({ length: 32 }, () => store.get(hash));
+    const results = await Promise.all([...puts, ...gets]);
+    for (const r of results.slice(8)) expect(r).toBeTruthy(); // ни одного undefined (= партиала)
+  });

@@ -87,7 +87,7 @@ export class IsolateModuleExecutor implements ModuleExecutor {
   // хост маршалил бы ВСЕ maxBars payload'ов ради 1-2 потреблённых).
   private batchWindow = 8;
   private static readonly BATCH_WINDOW_MIN = 8;
-  private static readonly BATCH_WINDOW_MAX = 1024;
+  private static readonly BATCH_WINDOW_MAX = 256;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private isolate: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -246,20 +246,29 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     args: readonly unknown[],
     hook: string,
     barIndex?: number,
-    opts?: { promise?: boolean },
+    opts?: { promise?: boolean; timeoutMs?: number },
   ): Promise<{ ok: true; json: string } | { ok: false; error: SessionErrorLike }> {
     try {
+      const budgetMs = opts?.timeoutMs ?? this.policy.limits.wallTimeMsPerCall;
       const evalP: Promise<unknown> = this.context.evalClosure(expression, args as unknown[], {
         result: { copy: true, promise: opts?.promise === true },
-        timeout: this.policy.limits.wallTimeMsPerCall,
+        timeout: budgetMs,
       });
       // Host-side race: нативный timeout покрывает sync-исполнение; повисший промис в изоляте
-      // (патологический thenable) добиваем гонкой с запасом поверх wall-кванта.
-      const raceMs = this.policy.limits.wallTimeMsPerCall + 500;
-      const raw: unknown = await Promise.race([
-        evalP,
-        new Promise((_res, rej) => setTimeout(() => rej(new Error('isolate call timed out (host race)')), raceMs).unref?.()),
-      ]);
+      // (патологический thenable) добиваем гонкой с запасом поверх бюджета.
+      let raceTimer: ReturnType<typeof setTimeout> | undefined;
+      let raw: unknown;
+      try {
+        raw = await Promise.race([
+          evalP,
+          new Promise((_res, rej) => {
+            raceTimer = setTimeout(() => rej(new Error('isolate call timed out (host race)')), budgetMs + 500);
+            raceTimer.unref?.();
+          }),
+        ]);
+      } finally {
+        clearTimeout(raceTimer);
+      }
       // Ревью C2: харнесс живёт в ОДНОМ контексте с бандлом — top-level код мог подменить
       // __isolateHarness. Не-строка/не-JSON = вмешательство → session-fatal malformed (fail-closed),
       // как docker-хост поступает с мусором в NDJSON-стриме.
@@ -346,7 +355,7 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     if (maxBytes > 0 && Buffer.byteLength(r.json, 'utf8') > maxBytes) {
       return {
         ok: false,
-        error: { code: 'decision_oversized', detail: `decision JSON exceeds ${maxBytes} bytes`, hook, barIndex },
+        error: { code: 'sandbox_output_overflow', detail: `decision JSON exceeds ${maxBytes} bytes`, hook, barIndex },
       };
     }
     let parsed: { ok: true; decisions: readonly unknown[] } | { ok: false; code: string; detail: string };
@@ -445,13 +454,28 @@ export class IsolateModuleExecutor implements ModuleExecutor {
       bookkeepingAfter.push({ barIndex: st.barIndex, lastBarTs: st.lastBarTs });
     }
 
+    // БЛОКЕР-3 ревью: per-call квант — бюджет НА ХУК; конверт из N баров получает N×квант
+    // (кап 60с — потолок разового стойла враждебного бандла до защёлки).
+    const batchBudgetMs = Math.min(60_000, this.policy.limits.wallTimeMsPerCall * bars.length);
     const r = await this.evalHarness(
       'return globalThis.__isolateHarness.hookBatch($0)',
       [JSON.stringify({ hook: 'onBarClose', bars })],
       'onBarClose',
       bookkeepingAfter[0]!.barIndex,
+      { timeoutMs: batchBudgetMs },
     );
     if (!r.ok) return failFast(r.error, 0); // timeout/crash — защёлка уже стоит, отмотки нет
+    // БЛОКЕР-2 ревью: SBX-5-кап действует и на батч-ответ (регрессия к lockstep-петле недопустима).
+    const maxBytes = this.policy.limits.maxDecisionBytes;
+    if (maxBytes > 0 && Buffer.byteLength(r.json, 'utf8') > maxBytes) {
+      const error: SessionErrorLike = {
+        code: 'sandbox_output_overflow',
+        detail: `batch decision JSON exceeds ${maxBytes} bytes`,
+        hook: 'onBarClose',
+      };
+      this.failed = error;
+      return failFast(error, 0);
+    }
     let parsed:
       | { ok: true; stoppedAt: number; decisions: readonly unknown[] }
       | { ok: false; barOffset?: number; code: string; detail: string };

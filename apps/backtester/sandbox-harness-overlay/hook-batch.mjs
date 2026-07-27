@@ -25,8 +25,10 @@ export async function runHookBatch(bars, hook, deps) {
 
 /**
  * СИНХРОННОЕ ядро batch-итерации — для isolate-бэкенда (analysis/18 loop-in-isolate).
- * Семантика байт-в-байт с runHookBatch на sync-хуках (push-before-invoke, стоп на непустом
- * решении, err с barOffset); НЕТ await: внутри V8-изолята каждый await гоняет promise-машинерию
+ * Отличия от runHookBatch: (1) нет await; (2) канонические {kind:'idle'}-решения НЕ прерывают
+ * батч (см. предикат canonicalIdle ниже) — результирующие decisionRecords байт-идентичны
+ * lockstep'у, т.к. runner пишет baseDecision через `?? {kind:'idle'}`. Остальное — зеркало
+ * (push-before-invoke, стоп на содержательном решении, err с barOffset); НЕТ await: внутри V8-изолята каждый await гоняет promise-машинерию
  * isolated-vm через host event loop (~мс/бар), sync-цикл исполняется нативно. Async-хуки —
  * забота вызывающего (isolate-entry оборачивает pickHook sync-гардом, бросающим на thenable).
  */
@@ -47,10 +49,13 @@ export function runHookBatchSync(bars, hook, deps) {
         return { kind: 'err', barOffset: j, cause: e }; // bars 0..j-1 completed
       }
     }
-    // {kind:'idle'} ≡ пустой выход (runner: firstDecision([]) === {kind:'idle'}) — НЕ рвать батч:
-    // реальные бандлы всегда отдают явный idle-объект, и стоп на нём вырождает батч в per-bar
-    // (исторический «17b медленнее» — ровно это). Прерываемся только на содержательном решении.
-    const meaningful = out.length > 0 && !out.every((d) => d !== null && typeof d === 'object' && d.kind === 'idle');
+    // КАНОНИЧЕСКИЙ {kind:'idle'} (ровно один ключ) ≡ пустой выход (runner: firstDecision([]) ===
+    // {kind:'idle'}) — НЕ рвать батч: реальные бандлы всегда отдают явный idle-объект, и стоп на нём
+    // вырождает батч в per-bar (исторический «17b медленнее» — ровно это). Любая НЕканоническая
+    // форма (лишние ключи и т.п.) — содержательна и уходит хосту: ревалидация — его забота
+    // (fail-closed не ослабляется).
+    const canonicalIdle = (d) => d !== null && typeof d === 'object' && d.kind === 'idle' && Object.keys(d).length === 1;
+    const meaningful = out.length > 0 && !out.every(canonicalIdle);
     if (meaningful) return { kind: 'ok', stoppedAt: j, decisions: out };
   }
   return { kind: 'ok', stoppedAt: bars.length - 1, decisions: [] };

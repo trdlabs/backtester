@@ -630,7 +630,9 @@ async function runSymbol(
       // Hint исполнителя (AIMD-окно isolate-бэкенда): строить ctx только под реально отправляемое
       // окно — без hint'а (docker) поведение байт-идентично прежнему (maxBars).
       const hinted = strategyExec.preferredBatchBars?.();
-      const cap = hinted === undefined ? batchCfg.maxBars : Math.max(2, Math.min(batchCfg.maxBars, hinted));
+      const cap = Number.isInteger(hinted) && (hinted as number) >= 2
+        ? Math.min(batchCfg.maxBars, hinted as number)
+        : batchCfg.maxBars;
       const upTo = Math.min(n, t + cap);
       const ctxs: StrategyContext[] = [];
       for (let j = t; j < upTo; j += 1) {
