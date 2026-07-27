@@ -11,6 +11,39 @@
 
 import { createIndicatorEngine } from './_engine/engine.js';
 
+/**
+ * Движок индикаторов, закреплённый за буфером символа, а не за баром.
+ *
+ * Раньше `rehydrateContext` строил его заново на каждом хуке. Движок потоковый и держит
+ * `fedUpTo`, но у свежего инстанса это -1, поэтому запрос на баре t переигрывал все свечи
+ * [0..t] с нуля: суммарно O(n²). На T2-окне это превращало ~25 секунд в ~63 минуты, и било
+ * только по стратегиям, которые вообще спрашивают `ctx.indicators` — из-за чего дефект и
+ * прожил незамеченным (`long_oi` их не звал). Замер до фикса: 8000 баров — 463 мкс/бар против
+ * 2.9 мкс/бар на горячем движке, рост ×4.5 на удвоение.
+ *
+ * Почему это НЕ меняет ни одного значения. Движок закрывается над `candles` по ссылке, а
+ * `slot.buffer` — тот самый массив, в который харнесс пушит `newBar`. Горячий инстанс на баре t
+ * докармливается свечами [fedUpTo+1..t] по возрастанию индекса; холодный — свечами [0..t] в том
+ * же порядке. Последовательность `update()` над одним и тем же потоковым индикатором совпадает
+ * покомпонентно, значит совпадают и числа. Ветка «запрос прошлого бара» (barIndex < fedUpTo)
+ * как и раньше пересобирает свежий инстанс и реплеит с нуля.
+ *
+ * WeakMap, а не поле слота: `rehydrateContext` вызывается из четырёх мест (handleHook,
+ * runHookBatch, runHookBarMajor, isolate-entry), и ни одно из них не должно менять сигнатуру
+ * ради кэша. Ключ — идентичность буфера, поэтому чужой символ никогда не получит чужой движок,
+ * а с концом сессии всё уходит само.
+ */
+const engineByBuffer = new WeakMap();
+
+function indicatorEngineFor(buffer) {
+  let engine = engineByBuffer.get(buffer);
+  if (engine === undefined) {
+    engine = createIndicatorEngine(buffer);
+    engineByBuffer.set(buffer, engine);
+  }
+  return engine;
+}
+
 /** mulberry32 — детерминированный 32-битный PRNG (вендорная копия 018 rng.ts). */
 export function createSeededRng(seed) {
   let a = seed >>> 0;
@@ -78,7 +111,7 @@ function buildMarketAccess(oiBuffer, liqBuffer, t) {
  */
 export function rehydrateContext(snapshot, buffer, rng, oiBuffer = [], liqBuffer = []) {
   const t = buffer.length - 1;
-  const accessor = createIndicatorEngine(buffer).accessorAt(t);
+  const accessor = indicatorEngineFor(buffer).accessorAt(t);
   const data = {
     closedCandles(lookback) {
       const start = Math.max(0, t - lookback);
