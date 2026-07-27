@@ -42,6 +42,8 @@ export interface OverlaySandboxSettings {
   readonly volume?: string;
   /** Backtester-side mountpoint of `volume` (e.g. /sandbox-shared). Set iff `volume` is set. */
   readonly volumeMountpoint?: string;
+  /** POC (analysis/18 A): бэкенд bundle-исполнения — 'docker' | 'isolate'. Absent ⇒ docker (байт-идентично прежнему). */
+  readonly backend?: 'docker' | 'isolate';
 }
 
 export interface AppConfig {
@@ -527,6 +529,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = processEnv()): AppConfig {
       user: env.BACKTESTER_SANDBOX_USER ?? '65534:65534',
     },
     overlaySandbox: {
+      backend: (env.BACKTESTER_SANDBOX_BACKEND ?? 'docker') as 'docker' | 'isolate',
       harnessDir: env.BACKTESTER_SANDBOX_OVERLAY_HARNESS_DIR ?? resolve(HERE, '../sandbox-harness-overlay'),
       image: overlayImage,
       policy: overlayPolicy,

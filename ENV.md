@@ -69,6 +69,7 @@
 | `BACKTESTER_S3_FORCE_PATH_STYLE` | bool | no | `true` |  |  | backtester-service | Path-style адресация S3 (MinIO); false — для AWS virtual-hosted. |
 | `BACKTESTER_S3_REGION` | string | no | — |  |  | backtester-service | Опциональный S3-регион. |
 | `BACKTESTER_S3_SECRET_KEY` | string | no | — | yes |  | backtester-service | S3 secret key; обязателен при BACKTESTER_STORE_BACKEND=s3 (fail-fast). |
+| `BACKTESTER_SANDBOX_BACKEND` | string | no | `docker` |  |  | backtester-service | POC (analysis/18 A): бэкенд sandbox-исполнения bundle-модулей — 'docker' (контейнер на сессию) \| 'isolate' (isolated-vm in-process, dark launch). Невалидное значение — fail-fast; isolate несовместим с BACKTESTER_UNIVERSE_SESSION. |
 | `BACKTESTER_SANDBOX_CPUS` | float | no | `1` |  |  | backtester-service | Slice-3 sandbox: лимит CPU контейнера. |
 | `BACKTESTER_SANDBOX_HARNESS_DIR` | string | no | — |  |  | backtester-service | Slice-3 sandbox: каталог доверенного in-container harness (:ro); дефолт вычисляется: apps/backtester/sandbox-harness. |
 | `BACKTESTER_SANDBOX_IMAGE` | string | no | `node:24-alpine` |  |  | backtester-service | Slice-3 sandbox: образ контейнера. |

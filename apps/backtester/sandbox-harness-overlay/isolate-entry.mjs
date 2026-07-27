@@ -1,0 +1,116 @@
+// POC (analysis/18 вариант A) — in-isolate харнесс для isolated-vm бэкенда sandbox.
+//
+// Зеркало entry.mjs handleHook МИНУС stdio/deny-shims: в V8-изоляте нет ambient authority
+// (process/require/сеть отсутствуют по построению), NDJSON-канал заменён прямым вызовом
+// evalClosure → __isolateHarness.hook(json). Контракт сообщений тот же, что у docker-харнесса
+// ({hook, snapshot, newBar, newOi, newLiq} → {ok, decisions} | {ok:false, code, detail}),
+// поэтому host-side bookkeeping (newBar на переходе бара) переносится без изменений.
+//
+// КАНОН ПАРНОСТИ: rehydrateContext + createSeededRng + _engine — ТОТ ЖЕ код, что в docker-харнессе
+// (rehydrate.mjs импортирует './_engine/engine.js'); esbuild собирает всё это в один IIFE
+// (scripts/build-isolate-harness.mjs) → индикаторы/rng/deep-freeze байт-в-байт с docker-путём.
+//
+// Бандл грузится host-side через isolate.compileModule (V8 ESM) и кладётся в
+// globalThis.__bundleModule (namespace) — resolveInstance() здесь разрешает factory/object
+// default-export по тому же канону, что docker entry.mjs.
+
+import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
+import { makeInstanceStore, resolveInstance } from './universe-instances.mjs';
+
+const store = makeInstanceStore();
+
+/** Верно зеркалит entry.mjs normalize: null/undefined → [], скаляр → [x]. */
+function normalize(out) {
+  if (out === null || out === undefined) return [];
+  return Array.isArray(out) ? out : [out];
+}
+
+/** Зеркало entry.mjs pickHookFor (те же имена lifecycle-хуков). */
+function pickHookFor(instance, hook) {
+  if (instance === undefined || instance === null) return undefined;
+  switch (hook) {
+    case 'init':
+      return typeof instance.init === 'function' ? instance.init : undefined;
+    case 'onBarClose':
+      return typeof instance.onBarClose === 'function' ? instance.onBarClose : undefined;
+    case 'onPositionBar':
+      return typeof instance.onPositionBar === 'function' ? instance.onPositionBar : undefined;
+    case 'onPendingIntentBar':
+      return typeof instance.onPendingIntentBar === 'function' ? instance.onPendingIntentBar : undefined;
+    case 'dispose':
+      return typeof instance.dispose === 'function' ? instance.dispose : undefined;
+    case 'apply':
+      return typeof instance.apply === 'function' ? instance.apply : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function fail(code, detail) {
+  return JSON.stringify({ ok: false, code, detail: String(detail ?? '').slice(0, 4096) });
+}
+
+globalThis.__isolateHarness = {
+  /**
+   * Инициализировать per-symbol slot: resolveInstance(__bundleModule) + session-seeded rng.
+   * Возвращает JSON {ok:true} | {ok:false, code:'bundle_load_failed', detail}.
+   */
+  initSymbol(symbol, seed) {
+    try {
+      const loaded = globalThis.__bundleModule;
+      if (loaded === undefined || loaded === null) {
+        return fail('bundle_load_failed', 'bundle module is not loaded into the isolate');
+      }
+      const resolved = resolveInstance(loaded, { universe: false });
+      if (resolved.ok === false) return fail(resolved.code, resolved.reason);
+      if (resolved.instance === undefined || resolved.instance === null) {
+        return fail('bundle_load_failed', 'entry produced no module instance');
+      }
+      store.ensure(symbol, () => ({
+        instance: resolved.instance,
+        rng: createSeededRng(typeof seed === 'number' ? seed : 0),
+      }));
+      return JSON.stringify({ ok: true });
+    } catch (e) {
+      return fail('bundle_load_failed', e && e.message ? e.message : e);
+    }
+  },
+
+  /**
+   * Исполнить lifecycle-хук: {hook, snapshot, newBar, newOi, newLiq} (JSON) →
+   * {ok:true, decisions} | {ok:false, code, detail} (JSON). Семантика буферов — точное зеркало
+   * entry.mjs handleHook: push ДО rehydrate, void-хуки (init/dispose) → [].
+   */
+  hook(msgJson) {
+    let msg;
+    try {
+      msg = JSON.parse(msgJson);
+    } catch {
+      return fail('sandbox_output_malformed', 'request is not valid JSON');
+    }
+    const { hook, snapshot, newBar, newOi, newLiq } = msg;
+    const symbol = snapshot === undefined || snapshot === null ? undefined : snapshot.symbol;
+    const slot = typeof symbol === 'string' ? store.get(symbol) : undefined;
+    if (slot === undefined) {
+      return fail('sandbox_output_malformed', `hook before init for symbol ${String(symbol)}`);
+    }
+    try {
+      if (newBar !== null && newBar !== undefined) slot.buffer.push(newBar);
+      if (newOi !== undefined) slot.oiBuffer.push(newOi);
+      if (newLiq !== undefined) slot.liqBuffer.push(newLiq);
+      const ctx = rehydrateContext(snapshot, slot.buffer, slot.rng, slot.oiBuffer, slot.liqBuffer);
+      const fn = pickHookFor(slot.instance, hook);
+      if (fn === undefined) return JSON.stringify({ ok: true, decisions: [] });
+      const out = fn.call(slot.instance, ctx);
+      // Изолят исполняет хуки СИНХРОННО (evalClosure + нативный timeout); промис не может быть
+      // дождан внутри одного sync-вызова → fail-closed с внятной диагностикой (POC-ограничение).
+      if (out !== null && typeof out === 'object' && typeof out.then === 'function') {
+        return fail('sandbox_crashed', 'async hooks are not supported by the isolate backend (POC)');
+      }
+      if (hook === 'init' || hook === 'dispose') return JSON.stringify({ ok: true, decisions: [] });
+      return JSON.stringify({ ok: true, decisions: normalize(out) });
+    } catch (e) {
+      return fail('sandbox_crashed', e && e.message ? e.message : e);
+    }
+  },
+};

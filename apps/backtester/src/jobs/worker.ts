@@ -196,6 +196,7 @@ function overlayRouterFor(deps: WorkerDeps, symbolsCount?: number): ExecutorRout
     sandboxPolicies: createSandboxPolicyRegistry([policy]),
     sandboxPolicyRef: { id: policy.id, version: policy.version },
     sandboxDeps: overlaySandboxDeps(deps.overlaySandbox),
+    sandboxBackend: deps.overlaySandbox.backend,
     ...(universe?.enabled === true && symbolsCount !== undefined
       ? { universe: { enabled: true, n: symbolsCount, memBaseMb: universe.memBaseMb, memPerSymbolMb: universe.memPerSymbolMb } }
       : {}),

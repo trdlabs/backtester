@@ -13,4 +13,6 @@ export default function setup() {
   const here = dirname(fileURLToPath(import.meta.url)); // apps/backtester/scripts
   const buildScript = join(here, 'build-sandbox-harness-overlay.mjs');
   execFileSync(process.execPath, [buildScript], { stdio: 'inherit' });
+  // POC (analysis/18 A) — isolate-харнесс поверх свежего `_engine` (нужен isolate-executor-тестам).
+  execFileSync(process.execPath, [join(here, 'build-isolate-harness.mjs')], { stdio: 'inherit' });
 }
