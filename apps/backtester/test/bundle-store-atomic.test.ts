@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { FileBundleStore } from '../src/sandbox/bundle-store.js';
+import { bundleHash } from '../src/sandbox/bundle.js';
 import type { ModuleBundle } from '@trading/research-contracts';
 
 const dirs: string[] = [];
@@ -33,12 +34,16 @@ describe('FileBundleStore.put — атомарность', () => {
   });
 });
 
-  it('конкурентные put одного бандла + параллельные get: читатель никогда не видит партиал', async () => {
+  it('конкурентные put ОТСУТСТВУЮЩЕГО бандла + параллельные get: либо undefined, либо целый бандл — никогда партиал', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bundle-store-race-')); dirs.push(dir);
     const store = new FileBundleStore(dir);
-    const hash = await store.put(bundle); // существующий файл, затем шторм повторных put + get
+    const hash = bundleHash(bundle); // файла ещё НЕТ — put'ы реально гоняются на tmp+rename
     const puts = Array.from({ length: 8 }, () => store.put(bundle));
-    const gets = Array.from({ length: 32 }, () => store.get(hash));
-    const results = await Promise.all([...puts, ...gets]);
-    for (const r of results.slice(8)) expect(r).toBeTruthy(); // ни одного undefined (= партиала)
+    const gets = Array.from({ length: 64 }, () => store.get(hash));
+    const [putHashes, ...got] = [await Promise.all(puts), ...(await Promise.all(gets))];
+    for (const h of putHashes) expect(h).toBe(hash);
+    // читатель посреди записи видит либо отсутствие файла (undefined), либо ЦЕЛЫЙ бандл —
+    // обрезанный JSON дал бы undefined от get, но затем файл обязан стать целым:
+    expect(await store.get(hash)).toBeTruthy();
+    for (const g of got) if (g !== undefined) expect((g as { entry?: string }).entry).toBe('index.js');
   });
