@@ -8,44 +8,42 @@
 import type { Bar } from '@trading/research-contracts/research';
 import type { StochasticValue } from '@trading/research-contracts/research';
 import type { BarFormula } from './atr.js';
+import { RingWindow } from './ring.js';
 
-function mean(xs: readonly number[]): number {
-  let sum = 0;
-  for (let i = 0; i < xs.length; i += 1) sum += xs[i];
-  return sum / xs.length;
+function mean(xs: RingWindow): number {
+  return xs.sum() / xs.length;
 }
 
 export function createStochastic(k: number, d: number, smooth: number): BarFormula<StochasticValue> {
-  const highs: number[] = [];
-  const lows: number[] = [];
-  const rawWindow: number[] = []; // последние `smooth` сырых %K
-  const dWindow: number[] = []; // последние `d` сглаженных %K
+  // Кольца вместо push/shift: четыре окна сдвигались целиком на каждом баре. Порядок обхода
+  // (от старого к свежему) сохранён — усреднение %K и %D суммирует те же слагаемые в том же
+  // порядке, значит числа не двигаются.
+  const highs = new RingWindow(k);
+  const lows = new RingWindow(k);
+  const rawWindow = new RingWindow(smooth); // последние `smooth` сырых %K
+  const dWindow = new RingWindow(d); // последние `d` сглаженных %K
   let out: StochasticValue | undefined;
   return {
     update(bar: Readonly<Bar>): void {
       highs.push(bar.high);
       lows.push(bar.low);
-      if (highs.length > k) {
-        highs.shift();
-        lows.shift();
-      }
       if (highs.length < k) return;
 
-      let highK = highs[0];
-      let lowK = lows[0];
+      let highK = highs.at(0);
+      let lowK = lows.at(0);
       for (let i = 1; i < k; i += 1) {
-        if (highs[i] > highK) highK = highs[i];
-        if (lows[i] < lowK) lowK = lows[i];
+        const h = highs.at(i);
+        const l = lows.at(i);
+        if (h > highK) highK = h;
+        if (l < lowK) lowK = l;
       }
       const rawK = highK === lowK ? 50 : 100 * ((bar.close - lowK) / (highK - lowK));
 
       rawWindow.push(rawK);
-      if (rawWindow.length > smooth) rawWindow.shift();
       if (rawWindow.length < smooth) return;
       const smoothedK = mean(rawWindow);
 
       dWindow.push(smoothedK);
-      if (dWindow.length > d) dWindow.shift();
       if (dWindow.length < d) return;
 
       out = { k: smoothedK, d: mean(dWindow) };

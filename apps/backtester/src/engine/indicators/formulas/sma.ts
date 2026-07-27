@@ -4,23 +4,26 @@
 // Сумма считается по окну в порядке возрастания индекса — байт-в-байт как legacy
 // `smaAsOf` (back-compat `value('sma',N) === indicatorAsOf('sma_<N>')`).
 
+import { RingWindow } from './ring.js';
+
 export interface ScalarFormula {
   update(x: number): void;
   readonly value: number | undefined;
 }
 
 export function createSma(period: number): ScalarFormula {
-  const window: number[] = [];
+  // Кольцо вместо push/shift: `shift` сдвигал всё окно на каждом баре. Порядок суммирования —
+  // от старого к свежему — сохранён специально: он часть back-compat с legacy `smaAsOf`, и
+  // перестановка слагаемых сдвинула бы значение в последнем разряде (бегущая сумма — это уже
+  // волна C с переморозкой golden'ов, не здесь).
+  const window = new RingWindow(period);
   return {
     update(x: number): void {
       window.push(x);
-      if (window.length > period) window.shift();
     },
     get value(): number | undefined {
       if (window.length < period) return undefined;
-      let sum = 0;
-      for (let i = 0; i < window.length; i += 1) sum += window[i];
-      return sum / period;
+      return window.sum() / period;
     },
   };
 }
