@@ -16,8 +16,11 @@
 
 import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
 import { makeInstanceStore, resolveInstance } from './universe-instances.mjs';
+import { runHookBatchSync } from './hook-batch.mjs';
 
 const store = makeInstanceStore();
+// Диагностические счётчики протокола (batch-однозаходность наблюдаема тестами через stats()).
+const stats = { hookCalls: 0, batchCalls: 0, batchBarsReceived: 0 };
 
 /** Верно зеркалит entry.mjs normalize: null/undefined → [], скаляр → [x]. */
 function normalize(out) {
@@ -44,6 +47,18 @@ function pickHookFor(instance, hook) {
     default:
       return undefined;
   }
+}
+
+/** Обернуть хук sync-гардом: thenable-результат → throw (fail-closed вместо зависания await). */
+function syncOnly(fn) {
+  if (fn === undefined) return undefined;
+  return function wrapped(ctx) {
+    const out = fn.call(this, ctx);
+    if (out !== null && typeof out === 'object' && typeof out.then === 'function') {
+      throw new Error('async hooks are not supported by the isolate backend (POC)');
+    }
+    return out;
+  };
 }
 
 function fail(code, detail) {
@@ -90,12 +105,62 @@ globalThis.__isolateHarness = {
     }
   },
 
+  /** Диагностика протокола: счётчики вызовов + длина свечного буфера (единственного slot'а POC). */
+  stats() {
+    let bufferLen = 0;
+    for (const slot of store.all()) bufferLen = Math.max(bufferLen, slot.buffer.length);
+    return JSON.stringify({ hookCalls: stats.hookCalls, batchCalls: stats.batchCalls, batchBarsReceived: stats.batchBarsReceived, bufferLen });
+  },
+
+  /**
+   * 17b-батч ОДНИМ заходом: {hook, bars:[{snapshot,newBar,newOi,newLiq}]} → runHookBatch (ТОТ ЖЕ
+   * pure-хелпер, что у docker-харнесса) → {ok:true, stoppedAt, decisions} | {ok:false, barOffset,
+   * code, detail}. СИНХРОННО (runHookBatchSync): await внутри изолята гонял бы promise-машинерию
+   * isolated-vm через host event loop (~мс/бар, замерено); thenable-результат хука отвергается
+   * syncOnly-гардом.
+   */
+  hookBatch(msgJson) {
+    stats.batchCalls += 1;
+    let msg;
+    try {
+      msg = JSON.parse(msgJson);
+    } catch {
+      return fail('sandbox_output_malformed', 'batch request is not valid JSON');
+    }
+    if (Array.isArray(msg.bars)) stats.batchBarsReceived += msg.bars.length;
+    const first = Array.isArray(msg.bars) ? msg.bars[0] : undefined;
+    const symbol = first && first.snapshot ? first.snapshot.symbol : undefined;
+    const slot = typeof symbol === 'string' ? store.get(symbol) : undefined;
+    if (slot === undefined) {
+      return fail('sandbox_output_malformed', `hookBatch before init for symbol ${String(symbol)}`);
+    }
+    const r = runHookBatchSync(msg.bars, msg.hook, {
+      buffer: slot.buffer,
+      oiBuffer: slot.oiBuffer,
+      liqBuffer: slot.liqBuffer,
+      rng: slot.rng,
+      instance: slot.instance,
+      rehydrateContext,
+      pickHook: (h) => syncOnly(pickHookFor(slot.instance, h)),
+      normalize,
+    });
+    if (r.kind === 'ok') return JSON.stringify({ ok: true, stoppedAt: r.stoppedAt, decisions: r.decisions });
+    const cause = r.cause;
+    return JSON.stringify({
+      ok: false,
+      barOffset: r.barOffset,
+      code: 'sandbox_crashed',
+      detail: String(cause && cause.message ? cause.message : cause).slice(0, 4096),
+    });
+  },
+
   /**
    * Исполнить lifecycle-хук: {hook, snapshot, newBar, newOi, newLiq} (JSON) →
    * {ok:true, decisions} | {ok:false, code, detail} (JSON). Семантика буферов — точное зеркало
    * entry.mjs handleHook: push ДО rehydrate, void-хуки (init/dispose) → [].
    */
   hook(msgJson) {
+    stats.hookCalls += 1;
     let msg;
     try {
       msg = JSON.parse(msgJson);

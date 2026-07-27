@@ -52,6 +52,8 @@ export interface ModuleExecutor {
    * fail-closed путях: нарушение уронит хост в `builder.build` за пределами ленты). Бары
    * `0..stoppedAt-1` исполнены с пустыми решениями; `decisions` — ответ бара `stoppedAt`.
    */
+  /** Hint: предпочтительный размер батча (AIMD-окно исполнителя); отсутствие = maxBars раннера. */
+  preferredBatchBars?(): number;
   executeStrategyHookBatch?(
     module: StrategyModule,
     ctxs: readonly StrategyContext[],

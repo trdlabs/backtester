@@ -92,3 +92,50 @@ describe('runHookBatch (17b — pure harness batch iteration)', () => {
     expect(deps.buffer.length).toBe(3);
   });
 });
+
+// ─── runHookBatchSync — синхронное ядро для isolate-бэкенда (async/await внутри изолята гоняет
+// promise-машинерию isolated-vm через host event loop → ~20мс/бар; sync-цикл этого не делает).
+// Семантика ОБЯЗАНА совпадать с runHookBatch байт-в-байт на sync-хуках.
+import { runHookBatchSync } from '../sandbox-harness-overlay/hook-batch.mjs';
+
+describe('runHookBatchSync (isolate loop-in-isolate core)', () => {
+  it('(a-sync) стоп на баре с решением; потреблены ровно исполненные бары', () => {
+    const bars = makeBars(5);
+    const deps = makeDeps({ answers: [[], [], ['SIGNAL'], ['unreached'], ['unreached']] });
+    const result = runHookBatchSync(bars, 'onBarClose', deps);
+    expect(result).toEqual({ kind: 'ok', stoppedAt: 2, decisions: ['SIGNAL'] });
+    expect(deps.buffer.length).toBe(3);
+  });
+
+  it('(c-sync) бросок хука → err с barOffset; newBar падающего бара потреблён', () => {
+    const bars = makeBars(5);
+    const deps = makeDeps({ answers: [[]], throwAt: 1 });
+    const result = runHookBatchSync(bars, 'onBarClose', deps);
+    expect(result.kind).toBe('err');
+    expect((result as { barOffset: number }).barOffset).toBe(1);
+    expect(deps.buffer.length).toBe(2);
+  });
+
+  it('(parity-sync) на sync-хуках результат идентичен async-варианту', async () => {
+    const answers = [[], ['X'], []];
+    const a = runHookBatchSync(makeBars(3), 'onBarClose', makeDeps({ answers }));
+    const b = await runHookBatch(makeBars(3), 'onBarClose', makeDeps({ answers }));
+    expect(a).toEqual(b);
+  });
+});
+
+describe('runHookBatchSync — idle-решения не рвут батч (firstDecision([]) ≡ {kind:"idle"})', () => {
+  it('бандл, всегда отдающий {kind:"idle"}, пробегает батч до конца', () => {
+    const bars = makeBars(5);
+    const deps = makeDeps({ answers: [[{ kind: 'idle' }], [{ kind: 'idle' }], [{ kind: 'idle' }], [{ kind: 'idle' }], [{ kind: 'idle' }]] });
+    const result = runHookBatchSync(bars, 'onBarClose', deps);
+    expect(result).toEqual({ kind: 'ok', stoppedAt: 4, decisions: [] });
+    expect(deps.buffer.length).toBe(5);
+  });
+  it('не-idle решение по-прежнему стопает (annotate)', () => {
+    const bars = makeBars(4);
+    const deps = makeDeps({ answers: [[{ kind: 'idle' }], [{ kind: 'annotate', tags: ['x'] }]] });
+    const result = runHookBatchSync(bars, 'onBarClose', deps);
+    expect(result).toEqual({ kind: 'ok', stoppedAt: 1, decisions: [{ kind: 'annotate', tags: ['x'] }] });
+  });
+});

@@ -1,7 +1,7 @@
 // Content-addressed module registry (the backtester's OWN registry — no platform sharing, ADR §12.5).
 // Slice 3 ships a local-filesystem store and an in-memory store (tests); same interface, S3 later.
 
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { ContentHash, ModuleBundle } from '@trading/research-contracts';
 import { canonicalJson } from '../determinism/canonical-json';
@@ -24,8 +24,21 @@ export class FileBundleStore implements BundleStore {
 
   async put(bundle: ModuleBundle): Promise<ContentHash> {
     const hash = bundleHash(bundle);
+    const path = this.pathFor(hash);
+    // Content-addressed: существующий файл байт-эквивалентен по построению — не переписывать
+    // (конкурентный put того же бандла с неатомарным writeFile давал конкурентному get()
+    // обрезанный JSON → ложный «unknown bundle» у воркера).
+    try {
+      await access(path);
+      return hash;
+    } catch {
+      /* нет файла — пишем */
+    }
     await mkdir(this.baseDir, { recursive: true });
-    await writeFile(this.pathFor(hash), canonicalJson(bundle), 'utf8');
+    // tmp+rename: rename атомарен в пределах каталога — читатель видит либо ничего, либо целый файл.
+    const tmp = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+    await writeFile(tmp, canonicalJson(bundle), 'utf8');
+    await rename(tmp, path);
     return hash;
   }
 
