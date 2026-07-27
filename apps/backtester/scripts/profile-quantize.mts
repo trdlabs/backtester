@@ -19,6 +19,12 @@
 
 import { Decimal } from 'decimal.js';
 
+import { assertQuietBench } from './lib/bench-gate.js';
+
+// Часть (2) станка — сверка значений — детерминирована и от нагрузки не зависит, но часть (1) это
+// тайминг, и печатаются они вместе. Поэтому гейт стоит на входе целиком.
+assertQuietBench('profile-quantize');
+
 Decimal.set({ rounding: Decimal.ROUND_HALF_EVEN });
 
 const SCALE = 8;
