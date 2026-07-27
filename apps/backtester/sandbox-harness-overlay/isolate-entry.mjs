@@ -61,6 +61,20 @@ globalThis.__isolateHarness = {
       if (loaded === undefined || loaded === null) {
         return fail('bundle_load_failed', 'bundle module is not loaded into the isolate');
       }
+      // Ревью I1: non-function default export = ОБЩИЙ объект. На per-symbol docker-контейнерах
+      // каждый символ получает СВОЮ копию; в одном изоляте общий объект тёк бы this-state'ом
+      // между символами (тот же хазард, из-за которого universe-режим fail-closed). Поэтому
+      // второй символ при не-фабричном default — fail-fast.
+      if (typeof (loaded && loaded.default) !== 'function' && store.get(symbol) === undefined) {
+        let occupied = false;
+        for (const _ of store.all()) { occupied = true; break; }
+        if (occupied) {
+          return fail(
+            'bundle_load_failed',
+            'non-factory default export cannot serve a second symbol in one isolate (shared-instance hazard)',
+          );
+        }
+      }
       const resolved = resolveInstance(loaded, { universe: false });
       if (resolved.ok === false) return fail(resolved.code, resolved.reason);
       if (resolved.instance === undefined || resolved.instance === null) {

@@ -191,7 +191,7 @@ export const ENV_VARS: readonly EnvVarSpec[] = [
   envVar('BACKTESTER_S3_SECRET_KEY', 'string', null, 'S3 secret key; обязателен при BACKTESTER_STORE_BACKEND=s3 (fail-fast).', { secret: true }),
   envVar('BACKTESTER_SANDBOX_CPUS', 'float', '1', 'Slice-3 sandbox: лимит CPU контейнера.'),
   envVar('BACKTESTER_SANDBOX_HARNESS_DIR', 'string', null, 'Slice-3 sandbox: каталог доверенного in-container harness (:ro); дефолт вычисляется: apps/backtester/sandbox-harness.'),
-  envVar('BACKTESTER_SANDBOX_BACKEND', 'string', 'docker', "POC (analysis/18 A): бэкенд sandbox-исполнения bundle-модулей — 'docker' (контейнер на сессию) | 'isolate' (isolated-vm in-process, dark launch). Невалидное значение — fail-fast; isolate несовместим с BACKTESTER_UNIVERSE_SESSION.", { consumers: ['apps/backtester/src/engine/sandbox/routing.ts'] }),
+  envVar('BACKTESTER_SANDBOX_BACKEND', 'string', 'docker', "POC (analysis/18 A): бэкенд sandbox-исполнения bundle-модулей на strategy/overlay-путях (ExecutorRouter) — 'docker' (контейнер на сессию) | 'isolate' (isolated-vm in-process, dark launch). Slice-3 momentum-bundle путь (executorFor) остаётся docker независимо от флага. Невалидное значение — fail-fast; isolate несовместим с BACKTESTER_UNIVERSE_SESSION.", { consumers: ['apps/backtester/src/engine/sandbox/routing.ts'] }),
   envVar('BACKTESTER_SANDBOX_IMAGE', 'string', 'node:24-alpine', 'Slice-3 sandbox: образ контейнера.'),
   envVar('BACKTESTER_SANDBOX_MEMORY_MB', 'int', '256', 'Slice-3 sandbox: лимит памяти (MiB).'),
   envVar('BACKTESTER_SANDBOX_OVERLAY_CPUS', 'float', null, 'Overlay sandbox (Slice-6b-A): лимит CPU; дефолт — DEFAULT_SANDBOX.limits.cpus.'),

@@ -19,6 +19,7 @@
 // НЕ поддержан (per-symbol slots внутри одного изолята закрывают этот кейс позже), session-бюджет
 // отсутствует намеренно — per-call wallTimeMsPerCall остаётся единственным (и достаточным) гардом.
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -145,13 +146,21 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     const jail = this.context.global;
     await jail.set('global', jail.derefInto());
     // Нет host-объектов: process/require/сеть в изоляте отсутствуют по умолчанию.
-    const harnessSrc = readFileSync(this.harnessScriptPath, 'utf8');
+    let harnessSrc: string;
+    try {
+      harnessSrc = readFileSync(this.harnessScriptPath, 'utf8');
+    } catch {
+      throw new Error(
+        `isolate harness script is missing at ${this.harnessScriptPath} — run ` +
+          '`pnpm run build:isolate-harness` (after build:sandbox-harness-overlay) or include it in the deploy',
+      );
+    }
     await (await this.isolate.compileScript(harnessSrc)).run(this.context);
 
     // ESM-граф бандла: только файлы из descriptor.files (whitelist), только относительные
     // импорты внутри bundleDir — self-contained канон (зеркало docker-пути, FR-003/FR-010:
     // хост читает байты, но НЕ исполняет их — исполнение только в изоляте).
-    const allowed = new Set(this.bundle.descriptor.files.map((f) => f.path));
+    const shaByPath = new Map(this.bundle.descriptor.files.map((f) => [f.path, f.sha256]));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const byRel = new Map<string, any>();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -160,8 +169,14 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     const compileOnly = async (rel: string): Promise<any> => {
       const cached = byRel.get(rel);
       if (cached !== undefined) return cached;
-      if (!allowed.has(rel)) throw new Error(`bundle import outside descriptor.files: ${rel}`);
+      const wantSha = shaByPath.get(rel);
+      if (wantSha === undefined) throw new Error(`bundle import outside descriptor.files: ${rel}`);
       const src = readFileSync(join(this.bundle.bundleDir, rel), 'utf8');
+      // Integrity (ревью): байты на диске обязаны совпадать с заявленным sha256 ДО компиляции.
+      const gotSha = createHash('sha256').update(src).digest('hex');
+      if (gotSha !== wantSha) {
+        throw new Error(`bundle file sha256 mismatch for ${rel}: descriptor ${wantSha}, on-disk ${gotSha}`);
+      }
       const mod = await this.isolate.compileModule(src);
       byRel.set(rel, mod);
       relOfModule.set(mod, rel);
@@ -179,7 +194,9 @@ export class IsolateModuleExecutor implements ModuleExecutor {
       if (resolved.startsWith('..')) throw new Error(`bundle import escapes bundleDir: ${specifier}`);
       return compileOnly(resolved);
     });
-    await entryMod.evaluate();
+    // Ревью C1: top-level код бандла недоверен — evaluate обязан жить под тем же per-call
+    // wall-квантом, что и хуки (иначе `for(;;)` на верхнем уровне вешает event loop воркера).
+    await entryMod.evaluate({ timeout: this.policy.limits.wallTimeMsPerCall });
     await jail.set('__bundleModule', entryMod.namespace.derefInto());
     return { ok: true };
   }
@@ -225,11 +242,24 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     barIndex?: number,
   ): Promise<{ ok: true; json: string } | { ok: false; error: SessionErrorLike }> {
     try {
-      const json = (await this.context.evalClosure(expression, args as unknown[], {
+      const raw: unknown = await this.context.evalClosure(expression, args as unknown[], {
         result: { copy: true },
         timeout: this.policy.limits.wallTimeMsPerCall,
-      })) as string;
-      return { ok: true, json };
+      });
+      // Ревью C2: харнесс живёт в ОДНОМ контексте с бандлом — top-level код мог подменить
+      // __isolateHarness. Не-строка/не-JSON = вмешательство → session-fatal malformed (fail-closed),
+      // как docker-хост поступает с мусором в NDJSON-стриме.
+      if (typeof raw !== 'string') {
+        const error: SessionErrorLike = {
+          code: 'sandbox_output_malformed',
+          detail: `harness response is not a string (${typeof raw}) — harness tampered?`,
+          hook,
+          barIndex,
+        };
+        this.failed = error;
+        return { ok: false, error };
+      }
+      return { ok: true, json: raw };
     } catch (err) {
       const error: SessionErrorLike = isIsolateTimeout(err)
         ? { code: 'sandbox_timeout', detail: `hook "${hook}" exceeded wall-time (isolate)`, hook, barIndex }
@@ -253,7 +283,14 @@ export class IsolateModuleExecutor implements ModuleExecutor {
       'init',
     );
     if (!r.ok) return { ok: false, error: r.error };
-    const parsed = JSON.parse(r.json) as { ok: boolean; code?: string; detail?: string };
+    let parsed: { ok: boolean; code?: string; detail?: string };
+    try {
+      parsed = JSON.parse(r.json) as { ok: boolean; code?: string; detail?: string };
+    } catch {
+      const error: SessionErrorLike = { code: 'sandbox_output_malformed', detail: 'harness init response is not valid JSON', hook: 'init' };
+      this.failed = error;
+      return { ok: false, error };
+    }
     if (!parsed.ok) {
       const error: SessionErrorLike = {
         code: parsed.code ?? 'bundle_load_failed',
@@ -298,9 +335,14 @@ export class IsolateModuleExecutor implements ModuleExecutor {
         error: { code: 'decision_oversized', detail: `decision JSON exceeds ${maxBytes} bytes`, hook, barIndex },
       };
     }
-    const parsed = JSON.parse(r.json) as
-      | { ok: true; decisions: readonly unknown[] }
-      | { ok: false; code: string; detail: string };
+    let parsed: { ok: true; decisions: readonly unknown[] } | { ok: false; code: string; detail: string };
+    try {
+      parsed = JSON.parse(r.json) as typeof parsed;
+    } catch {
+      const error: SessionErrorLike = { code: 'sandbox_output_malformed', detail: 'harness hook response is not valid JSON', hook, barIndex };
+      this.failed = error;
+      return { ok: false, error };
+    }
     if (parsed.ok) return { ok: true, decisions: parsed.decisions };
     return { ok: false, error: { code: parsed.code, detail: parsed.detail, hook, barIndex } };
   }
@@ -352,6 +394,8 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     for (let i = 0; i < ctxs.length; i += 1) {
       const decisions = await this.executeStrategyHook(module, 'onBarClose', ctxs[i]!);
       if (decisions.length > 0) return { stoppedAt: i, decisions };
+      // Защёлка сработала — не прокручивать остаток stretch'а (один err-артефакт, зеркало docker-батча).
+      if (this.failed !== undefined) return { stoppedAt: i, decisions: [] };
     }
     return { stoppedAt: ctxs.length - 1, decisions: [] };
   }
