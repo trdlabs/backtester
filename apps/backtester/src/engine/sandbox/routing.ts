@@ -29,6 +29,7 @@ import {
   createSandboxPolicyRegistry,
 } from '../sandbox-policy.js';
 import { SandboxModuleExecutor, type SandboxExecutorDeps } from './sandbox-executor.js';
+import { IsolateModuleExecutor } from './isolate-executor.js';
 import { deriveUniversePolicy } from './universe-policy.js';
 import type { SandboxErrorArtifact } from './errors.js';
 
@@ -166,6 +167,9 @@ export interface ExecutorRouterDeps {
   // and threads `universe` into the constructed SandboxModuleExecutor's deps so its sessions collapse
   // to one shared container. Absent ⇒ base policy + no universe cfg, byte-identical to pre-Task-7.
   readonly universe?: SandboxExecutorDeps['universe'];
+  // POC (analysis/18 A): бэкенд sandbox-исполнения bundle-provenance модулей. 'docker' (дефолт) —
+  // прежний контейнер-на-сессию; 'isolate' — IsolateModuleExecutor (isolated-vm in-process).
+  readonly sandboxBackend?: 'docker' | 'isolate';
 }
 
 /** 019 sandbox-aware router (расширяет 018 seam агрегацией ошибок для verify/диагностики). */
@@ -184,7 +188,7 @@ export function createExecutorRouter(deps: ExecutorRouterDeps = {}): ExecutorRou
   const trusted = deps.trustedExecutor ?? new InProcessTrustedModuleExecutor();
   const policies = deps.sandboxPolicies ?? createSandboxPolicyRegistry([DEFAULT_SANDBOX]);
   const policyRef = deps.sandboxPolicyRef ?? DEFAULT_SANDBOX_REF;
-  const sandboxExecutors = new Map<string, SandboxModuleExecutor>();
+  const sandboxExecutors = new Map<string, SandboxModuleExecutor | IsolateModuleExecutor>();
   // Накопитель ошибок, ПЕРЕЖИВАЮЩИЙ closeAll() (runner вызывает closeAll в finally → иначе
   // post-run errors() терял бы диагностику; см. verify_019_no_host_import).
   const collected: SandboxErrorArtifact[] = [];
@@ -197,6 +201,17 @@ export function createExecutorRouter(deps: ExecutorRouterDeps = {}): ExecutorRou
     const policy = u?.enabled === true
       ? deriveUniversePolicy(basePolicy, u.n, { memBaseMb: u.memBaseMb, memPerSymbolMb: u.memPerSymbolMb })
       : basePolicy;
+    // POC (analysis/18 A): isolate-бэкенд — тот же 018-шов, вызовы в isolated-vm вместо docker.
+    // universe + isolate не поддержан POC (per-symbol slots внутри одного изолята закроют это
+    // позже) — fail-fast, чтобы комбинация флагов не давала тихую деградацию.
+    if (deps.sandboxBackend === 'isolate') {
+      if (u?.enabled === true) {
+        throw new Error('sandboxBackend=isolate does not support universe sessions (POC analysis/18 A)');
+      }
+      const iexec = new IsolateModuleExecutor(bundle, policy);
+      sandboxExecutors.set(bundle.descriptor.bundleHash, iexec);
+      return iexec;
+    }
     const exec = new SandboxModuleExecutor(bundle, policy, { ...deps.sandboxDeps, universe: u });
     sandboxExecutors.set(bundle.descriptor.bundleHash, exec);
     return exec;

@@ -5,6 +5,8 @@ dist-types/
 # `build:sandbox-harness-overlay` (run in pretest + vitest globalSetup). Source of truth is the .ts;
 # the drift-guard test asserts the committed manifest hash matches the source.
 /apps/backtester/sandbox-harness-overlay/_engine/
+# POC (analysis/18 A) — in-isolate harness IIFE, built by scripts/build-isolate-harness.mjs
+/apps/backtester/sandbox-harness-overlay/_isolate/
 
 .artifacts/
 .data/

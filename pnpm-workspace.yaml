@@ -6,6 +6,7 @@ packages:
 # `pnpm install` exits clean (in CI too).
 allowBuilds:
   esbuild: true
+  isolated-vm: true
 
 minimumReleaseAgeExclude:
   - '@trdlabs/sdk@0.13.0'
