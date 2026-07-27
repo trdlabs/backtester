@@ -40,7 +40,7 @@ describe('aggregateEquityCurve (temporal sum, carry-forward)', () => {
 
 describe('mergeAccumulators (deterministic ordering)', () => {
   const emptyAcc = (): RunAccumulators => ({
-    decisionRecords: [], orders: [], fills: [], riskDecisions: [],
+    decisionRecords: [], orders: [], orderIndex: new Map(), fills: [], riskDecisions: [],
     trades: [], equityCurve: [], fundingLedger: [], validationIssues: [],
   });
 

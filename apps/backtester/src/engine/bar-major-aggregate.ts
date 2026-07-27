@@ -1,5 +1,5 @@
 import type { EquityPoint } from './artifacts.js';
-import type { RunAccumulators } from './runner.js';
+import type { MergedAccumulators, RunAccumulators } from './runner.js';
 import { INITIAL_EQUITY } from './metrics.js';
 
 /**
@@ -56,7 +56,7 @@ function concatBySymbol<T>(lists: readonly (readonly T[])[]): T[] {
  *   riskDecisions → RiskDecision.barIndex  (per-symbol bar index — no ts on the type)
  *   validationIssues → { code, severity, path?, message } — no numeric key → concat per symbol
  */
-export function mergeAccumulators(perSymbol: readonly RunAccumulators[]): RunAccumulators {
+export function mergeAccumulators(perSymbol: readonly RunAccumulators[]): MergedAccumulators {
   return {
     equityCurve: aggregateEquityCurve(perSymbol.map((a) => a.equityCurve)),
     trades: mergeByKey(perSymbol.map((a) => a.trades), (t) => t.exitTs),
