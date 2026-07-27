@@ -1,0 +1,49 @@
+// FileBundleStore.put — атомарность content-addressed записи (root cause «unknown bundle» при
+// конкурентных сабмитах одного бандла: неатомарный writeFile давал конкурентному get() обрезанный
+// JSON). Пин: повторный put существующего хеша НЕ переписывает файл (short-circuit), запись идёт
+// через tmp+rename (партиал невозможен по построению rename-атомарности).
+import { mkdtempSync, statSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
+import { FileBundleStore } from '../src/sandbox/bundle-store.js';
+import { bundleHash } from '../src/sandbox/bundle.js';
+import type { ModuleBundle } from '@trading/research-contracts';
+
+const dirs: string[] = [];
+afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+
+const bundle = {
+  entry: 'index.js',
+  files: { 'index.js': 'export default function f(){return {};}' },
+  manifest: { id: 'atomic_probe', version: '1.0.0', kind: 'strategy', hooks: ['onBarClose'] },
+} as unknown as ModuleBundle;
+
+describe('FileBundleStore.put — атомарность', () => {
+  it('повторный put того же бандла не переписывает файл (mtime неизменен) и не оставляет tmp-мусора', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bundle-store-atomic-')); dirs.push(dir);
+    const store = new FileBundleStore(dir);
+    const hash = await store.put(bundle);
+    const path = join(dir, `${hash.replace('sha256:', '')}.json`);
+    const before = statSync(path).mtimeMs;
+    await new Promise((r) => setTimeout(r, 20));
+    await store.put(bundle); // конкурентный/повторный put — short-circuit, файл не трогается
+    expect(statSync(path).mtimeMs).toBe(before);
+    expect(await store.get(hash)).toBeTruthy();
+    expect(readdirSync(dir).filter((f) => f.includes('.tmp'))).toEqual([]);
+  });
+});
+
+  it('конкурентные put ОТСУТСТВУЮЩЕГО бандла + параллельные get: либо undefined, либо целый бандл — никогда партиал', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bundle-store-race-')); dirs.push(dir);
+    const store = new FileBundleStore(dir);
+    const hash = bundleHash(bundle); // файла ещё НЕТ — put'ы реально гоняются на tmp+rename
+    const puts = Array.from({ length: 8 }, () => store.put(bundle));
+    const gets = Array.from({ length: 64 }, () => store.get(hash));
+    const [putHashes, ...got] = [await Promise.all(puts), ...(await Promise.all(gets))];
+    for (const h of putHashes) expect(h).toBe(hash);
+    // читатель посреди записи видит либо отсутствие файла (undefined), либо ЦЕЛЫЙ бандл —
+    // обрезанный JSON дал бы undefined от get, но затем файл обязан стать целым:
+    expect(await store.get(hash)).toBeTruthy();
+    for (const g of got) if (g !== undefined) expect((g as { entry?: string }).entry).toBe('index.js');
+  });

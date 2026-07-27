@@ -82,6 +82,12 @@ export class IsolateModuleExecutor implements ModuleExecutor {
   // Пербарная бухгалтерия newBar/newOi/newLiq per symbol — зеркало SandboxSession (universe=false).
   private readonly perSymbol = new Map<string, { barIndex: number; lastBarTs?: number }>();
   private readonly initedSymbols = new Set<string>();
+  // AIMD-окно батча: стартуем узко, ×2 на полном потреблении, сброс на раннем стопе — защита от
+  // eager-build амплификации (annotate-плотная стратегия стопает батч через 1-7 баров, и без окна
+  // хост маршалил бы ВСЕ maxBars payload'ов ради 1-2 потреблённых).
+  private batchWindow = 8;
+  private static readonly BATCH_WINDOW_MIN = 8;
+  private static readonly BATCH_WINDOW_MAX = 256;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private isolate: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -240,12 +246,29 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     args: readonly unknown[],
     hook: string,
     barIndex?: number,
+    opts?: { promise?: boolean; timeoutMs?: number },
   ): Promise<{ ok: true; json: string } | { ok: false; error: SessionErrorLike }> {
     try {
-      const raw: unknown = await this.context.evalClosure(expression, args as unknown[], {
-        result: { copy: true },
-        timeout: this.policy.limits.wallTimeMsPerCall,
+      const budgetMs = opts?.timeoutMs ?? this.policy.limits.wallTimeMsPerCall;
+      const evalP: Promise<unknown> = this.context.evalClosure(expression, args as unknown[], {
+        result: { copy: true, promise: opts?.promise === true },
+        timeout: budgetMs,
       });
+      // Host-side race: нативный timeout покрывает sync-исполнение; повисший промис в изоляте
+      // (патологический thenable) добиваем гонкой с запасом поверх бюджета.
+      let raceTimer: ReturnType<typeof setTimeout> | undefined;
+      let raw: unknown;
+      try {
+        raw = await Promise.race([
+          evalP,
+          new Promise((_res, rej) => {
+            raceTimer = setTimeout(() => rej(new Error('isolate call timed out (host race)')), budgetMs + 500);
+            raceTimer.unref?.();
+          }),
+        ]);
+      } finally {
+        clearTimeout(raceTimer);
+      }
       // Ревью C2: харнесс живёт в ОДНОМ контексте с бандлом — top-level код мог подменить
       // __isolateHarness. Не-строка/не-JSON = вмешательство → session-fatal malformed (fail-closed),
       // как docker-хост поступает с мусором в NDJSON-стриме.
@@ -332,7 +355,7 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     if (maxBytes > 0 && Buffer.byteLength(r.json, 'utf8') > maxBytes) {
       return {
         ok: false,
-        error: { code: 'decision_oversized', detail: `decision JSON exceeds ${maxBytes} bytes`, hook, barIndex },
+        error: { code: 'sandbox_output_overflow', detail: `decision JSON exceeds ${maxBytes} bytes`, hook, barIndex },
       };
     }
     let parsed: { ok: true; decisions: readonly unknown[] } | { ok: false; code: string; detail: string };
@@ -397,21 +420,128 @@ export class IsolateModuleExecutor implements ModuleExecutor {
   }
 
   /**
-   * 17b-контракт: батч по ровному участку. Изоляту батчинг не нужен (вызов — микросекунды),
-   * поэтому честный lockstep-цикл с ранней остановкой на первом непустом решении — семантика
-   * та же, что у docker-пути, транспортной экономии просто не требуется.
+   * 17b-контракт ОДНИМ заходом в изолят (loop-in-isolate): eager-build всех payload'ов
+   * (bookkeeping-снапшот после каждого) → один evalClosure __isolateHarness.hookBatch →
+   * rewind бухгалтерии к stoppedAt (канон SandboxSession.callHookBatch: границы отмотки
+   * совпадают с resend-границей runHookBatch по построению). Err → session-fatal защёлка
+   * БЕЗ отмотки (сессия мертва) + clamped forward-progress (зеркало docker-исполнителя).
    */
   async executeStrategyHookBatch(
-    module: StrategyModule,
+    _module: StrategyModule,
     ctxs: readonly StrategyContext[],
   ): Promise<{ stoppedAt: number; decisions: readonly StrategyDecision[] }> {
-    for (let i = 0; i < ctxs.length; i += 1) {
-      const decisions = await this.executeStrategyHook(module, 'onBarClose', ctxs[i]!);
-      if (decisions.length > 0) return { stoppedAt: i, decisions };
-      // Защёлка сработала — не прокручивать остаток stretch'а (один err-артефакт, зеркало docker-батча).
-      if (this.failed !== undefined) return { stoppedAt: i, decisions: [] };
+    if (ctxs.length === 0) return { stoppedAt: -1, decisions: [] };
+    const first = ctxs[0]!;
+    const failFast = (error: SessionErrorLike, stop: number): { stoppedAt: number; decisions: [] } => {
+      this.record(error, first);
+      return { stoppedAt: Math.max(0, Math.min(stop, ctxs.length - 1)), decisions: [] };
+    };
+    if (this.failed !== undefined) return failFast(this.failed, 0);
+    const opened = await this.ensureOpen();
+    if (!opened.ok) return failFast(opened.error, 0);
+    const notInited = await this.ensureSymbol(first);
+    if (notInited !== undefined && !notInited.ok) return failFast(notInited.error, 0);
+
+    // AIMD: маршалим только префикс-окно; stoppedAt = window-1 с пустыми решениями легален по
+    // контракту (раннер продолжит со следующего бара) — хвост ctxs не строится и не сериализуется.
+    const sendCount = Math.min(this.batchWindow, ctxs.length);
+    const sent = ctxs.slice(0, sendCount);
+    const bars: ReturnType<IsolateModuleExecutor['buildHookPayload']>[] = [];
+    const bookkeepingAfter: { barIndex: number; lastBarTs?: number }[] = [];
+    for (const ctx of sent) {
+      bars.push(this.buildHookPayload(ctx)); // advances perSymbol bookkeeping (shared with callHook)
+      const st = this.perSymbol.get(first.symbol)!;
+      bookkeepingAfter.push({ barIndex: st.barIndex, lastBarTs: st.lastBarTs });
     }
-    return { stoppedAt: ctxs.length - 1, decisions: [] };
+
+    // БЛОКЕР-3 ревью: per-call квант — бюджет НА ХУК; конверт из N баров получает N×квант
+    // (кап 60с — потолок разового стойла враждебного бандла до защёлки).
+    const batchBudgetMs = Math.min(60_000, this.policy.limits.wallTimeMsPerCall * bars.length);
+    const r = await this.evalHarness(
+      'return globalThis.__isolateHarness.hookBatch($0)',
+      [JSON.stringify({ hook: 'onBarClose', bars })],
+      'onBarClose',
+      bookkeepingAfter[0]!.barIndex,
+      { timeoutMs: batchBudgetMs },
+    );
+    if (!r.ok) return failFast(r.error, 0); // timeout/crash — защёлка уже стоит, отмотки нет
+    // БЛОКЕР-2 ревью: SBX-5-кап действует и на батч-ответ (регрессия к lockstep-петле недопустима).
+    const maxBytes = this.policy.limits.maxDecisionBytes;
+    if (maxBytes > 0 && Buffer.byteLength(r.json, 'utf8') > maxBytes) {
+      const error: SessionErrorLike = {
+        code: 'sandbox_output_overflow',
+        detail: `batch decision JSON exceeds ${maxBytes} bytes`,
+        hook: 'onBarClose',
+      };
+      this.failed = error;
+      return failFast(error, 0);
+    }
+    let parsed:
+      | { ok: true; stoppedAt: number; decisions: readonly unknown[] }
+      | { ok: false; barOffset?: number; code: string; detail: string };
+    try {
+      parsed = JSON.parse(r.json) as typeof parsed;
+    } catch {
+      const error: SessionErrorLike = { code: 'sandbox_output_malformed', detail: 'harness batch response is not valid JSON', hook: 'onBarClose' };
+      this.failed = error;
+      return failFast(error, 0);
+    }
+    if (!parsed.ok) {
+      const j = typeof parsed.barOffset === 'number' ? parsed.barOffset : 0;
+      const error: SessionErrorLike = {
+        code: parsed.code,
+        detail: parsed.detail,
+        hook: 'onBarClose',
+        barIndex: bookkeepingAfter[Math.max(0, Math.min(j, sent.length - 1))]!.barIndex,
+      };
+      this.failed = error; // err = session-fatal (зеркало docker fail())
+      return failFast(error, j);
+    }
+    // stoppedAt обязан адресовать реальный снапшот (защита от out-of-range из подменённого харнесса).
+    if (!Number.isInteger(parsed.stoppedAt) || parsed.stoppedAt < 0 || parsed.stoppedAt >= bars.length) {
+      const error: SessionErrorLike = {
+        code: 'sandbox_output_malformed',
+        detail: `okBatch stoppedAt out of range: ${String(parsed.stoppedAt)} (batch size ${bars.length})`,
+        hook: 'onBarClose',
+      };
+      this.failed = error;
+      return failFast(error, 0);
+    }
+    if (!Array.isArray(parsed.decisions)) {
+      const error: SessionErrorLike = { code: 'sandbox_output_malformed', detail: 'harness batch decisions is not an array', hook: 'onBarClose' };
+      this.failed = error;
+      return failFast(error, parsed.stoppedAt);
+    }
+    // Rewind: бары после stoppedAt харнесс не видел — вернуть бухгалтерию к состоянию сразу после
+    // stoppedAt, чтобы следующий buildHookPayload переиздал newBar ровно для неотправленных баров.
+    const st = this.perSymbol.get(first.symbol)!;
+    st.barIndex = bookkeepingAfter[parsed.stoppedAt]!.barIndex;
+    st.lastBarTs = bookkeepingAfter[parsed.stoppedAt]!.lastBarTs;
+
+    // AIMD-обновление окна: полный проход без решений → ×2; ранний стоп/решение → сброс.
+    const fullyConsumedEmpty = parsed.stoppedAt === sent.length - 1 && parsed.decisions.length === 0;
+    this.batchWindow = fullyConsumedEmpty
+      ? Math.min(this.batchWindow * 2, IsolateModuleExecutor.BATCH_WINDOW_MAX)
+      : IsolateModuleExecutor.BATCH_WINDOW_MIN;
+
+    const rv = this.revalidator.revalidateStrategy(parsed.decisions);
+    if (!rv.ok) {
+      this.record({ code: 'decision_schema_invalid', detail: rv.message, hook: 'onBarClose' }, sent[parsed.stoppedAt]!);
+      return { stoppedAt: parsed.stoppedAt, decisions: [] };
+    }
+    return { stoppedAt: parsed.stoppedAt, decisions: rv.decisions };
+  }
+
+  /** Hint раннеру: сколько ctx строить под следующий батч (= текущее AIMD-окно). */
+  preferredBatchBars(): number {
+    return this.batchWindow;
+  }
+
+  /** Диагностика протокола (тесты/бенч): счётчики hook/batch-заходов + длина буфера. */
+  async harnessStats(): Promise<{ hookCalls: number; batchCalls: number; batchBarsReceived: number; bufferLen: number }> {
+    const r = await this.evalHarness('return globalThis.__isolateHarness.stats()', [], 'stats');
+    if (!r.ok) throw new Error(`harnessStats failed: ${r.error.detail}`);
+    return JSON.parse(r.json) as { hookCalls: number; batchCalls: number; batchBarsReceived: number; bufferLen: number };
   }
 
   /** Slice-B-контракт: bar-major по items — lockstep (зеркало non-universe docker-ветки). */

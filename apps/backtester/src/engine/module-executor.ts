@@ -43,7 +43,9 @@ export interface ModuleExecutor {
   disposeStrategy?(module: StrategyModule, ctx: StrategyContext): Promise<void>;
   /** Teardown исполнителя (НОВОЕ, опционально; 019). trusted: no-op; sandbox: `docker rm -f`. */
   close?(): void;
-  /**
+    /** Hint: предпочтительный размер батча (AIMD-окно исполнителя); отсутствие = maxBars раннера. */
+  preferredBatchBars?(): number;
+/**
    * 17b (опционально; только sandbox): пакет flat-баров onBarClose одним IPC-сообщением с ранней
    * остановкой на первом сигнале. Отсутствие метода ⇒ движок остаётся в lockstep.
    *

@@ -627,7 +627,13 @@ async function runSymbol(
       t + 1 < n
     ) {
       // Flat stretch: snapshots for t..t+k are a pure function of the tape (portfolio constant).
-      const upTo = Math.min(n, t + batchCfg.maxBars);
+      // Hint исполнителя (AIMD-окно isolate-бэкенда): строить ctx только под реально отправляемое
+      // окно — без hint'а (docker) поведение байт-идентично прежнему (maxBars).
+      const hinted = strategyExec.preferredBatchBars?.();
+      const cap = Number.isInteger(hinted) && (hinted as number) >= 2
+        ? Math.min(batchCfg.maxBars, hinted as number)
+        : batchCfg.maxBars;
+      const upTo = Math.min(n, t + cap);
       const ctxs: StrategyContext[] = [];
       for (let j = t; j < upTo; j += 1) {
         ctxs.push(builder.build(j, stateAt(portfolio, candles[j].close)));

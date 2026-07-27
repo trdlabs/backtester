@@ -400,3 +400,237 @@ describe('IsolateModuleExecutor (POC — analysis/18 вариант A)', () => {
     }
   });
 });
+
+// ─── 17b-батчинг в изоляте (loop-in-isolate, analysis/18 постскриптум-2) ───────────────────────
+describe('IsolateModuleExecutor — executeStrategyHookBatch (один evalClosure на пачку)', () => {
+  const IDLE_PROBE = `export default function createStrategyModule() {
+     return { onBarClose(ctx) { return null; } };
+   }`;
+  const ANNOTATE_AT = (k: number): string => `export default function createStrategyModule() {
+     let i = -1;
+     return { onBarClose(ctx) { i += 1; return i === ${k} ? { kind: 'annotate', tags: ['hit_' + i] } : null; } };
+   }`;
+
+  function ctxsFor(symbol: string, n: number, fromTs = 60_000): StrategyContext[] {
+    return Array.from({ length: n }, (_, i) => makeCtx(symbol, fromTs + i * 60_000));
+  }
+
+  it('пачка idle-баров уходит ОДНИМ hookBatch-вызовом (не N hook-вызовов)', async () => {
+    const exec = new IsolateModuleExecutor(writeBundle(IDLE_PROBE), DEFAULT_SANDBOX);
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      const r = await exec.executeStrategyHookBatch(dummyModule, ctxsFor('BTCUSDT', 5));
+      expect(r).toEqual({ stoppedAt: 4, decisions: [] });
+      const stats = await exec.harnessStats();
+      expect(stats.batchCalls).toBe(1); // ключевое: ОДИН заход в изолят
+      expect(stats.hookCalls).toBe(0); // и ноль пербарных
+      expect(exec.errors).toEqual([]);
+    } finally {
+      exec.close();
+    }
+  });
+
+  it('ранний стоп на непустом решении + отмотка бухгалтерии: следующий lockstep-бар видит корректный буфер', async () => {
+    const exec = new IsolateModuleExecutor(writeBundle(ANNOTATE_AT(2)), DEFAULT_SANDBOX);
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      const r = await exec.executeStrategyHookBatch(dummyModule, ctxsFor('BTCUSDT', 5));
+      expect(r.stoppedAt).toBe(2);
+      expect(r.decisions).toEqual([{ kind: 'annotate', tags: ['hit_2'] }]);
+      // Потреблены ровно бары 0..2; следующий lockstep-вызов бара 3 должен подать newBar для ts бара 3
+      // (отмотка host-бухгалтерии) и увидеть буфер из 4 баров → closedCandles = 3.
+      const d = await exec.executeStrategyHook(dummyModule, 'onBarClose', makeCtx('BTCUSDT', 60_000 + 3 * 60_000));
+      expect(exec.errors).toEqual([]);
+      expect(d).toEqual([]); // ANNOTATE_AT(2): счётчик i=3 → null
+      const stats = await exec.harnessStats();
+      expect(stats.bufferLen).toBe(4); // [b0,b1,b2] из батча + b3 lockstep
+    } finally {
+      exec.close();
+    }
+  });
+
+  it('бросок хука на баре j → clamped stop, ошибка записана, сессия защёлкнута', async () => {
+    const THROW_AT_1 = `export default function createStrategyModule() {
+       let i = -1;
+       return { onBarClose() { i += 1; if (i === 1) throw new Error('boom at 1'); return null; } };
+     }`;
+    const exec = new IsolateModuleExecutor(writeBundle(THROW_AT_1), DEFAULT_SANDBOX);
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      const r = await exec.executeStrategyHookBatch(dummyModule, ctxsFor('BTCUSDT', 5));
+      expect(r.decisions).toEqual([]);
+      expect(r.stoppedAt).toBeGreaterThanOrEqual(0); // clamped, движок делает шаг вперёд
+      expect(exec.errors.length).toBeGreaterThan(0);
+      const again = await exec.executeStrategyHook(dummyModule, 'onBarClose', makeCtx('BTCUSDT', 999_000));
+      expect(again).toEqual([]); // защёлка
+    } finally {
+      exec.close();
+    }
+  });
+
+  it('async-хук в батче → fail-closed БЕЗ зависания', { timeout: 10_000 }, async () => {
+    const ASYNC = `export default function createStrategyModule() {
+       return { async onBarClose() { return null; } };
+     }`;
+    const exec = new IsolateModuleExecutor(writeBundle(ASYNC), DEFAULT_SANDBOX);
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      const r = await exec.executeStrategyHookBatch(dummyModule, ctxsFor('BTCUSDT', 3));
+      expect(r.decisions).toEqual([]);
+      expect(exec.errors.some((e) => /async/.test(e.detail))).toBe(true);
+    } finally {
+      exec.close();
+    }
+  });
+
+  it('парность: батч и lockstep дают идентичные решения и состояние буфера', async () => {
+    const runVia = async (mode: 'batch' | 'lockstep') => {
+      const exec = new IsolateModuleExecutor(writeBundle(ANNOTATE_AT(3)), DEFAULT_SANDBOX);
+      try {
+        await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+        const all: unknown[] = [];
+        if (mode === 'batch') {
+          let t = 0;
+          while (t < 6) {
+            const { stoppedAt, decisions } = await exec.executeStrategyHookBatch(
+              dummyModule,
+              ctxsFor('BTCUSDT', 6 - t, 60_000 + t * 60_000),
+            );
+            all.push(...decisions);
+            t += stoppedAt + 1;
+          }
+        } else {
+          for (let t = 0; t < 6; t += 1) {
+            all.push(...(await exec.executeStrategyHook(dummyModule, 'onBarClose', makeCtx('BTCUSDT', 60_000 + t * 60_000))));
+          }
+        }
+        const stats = await exec.harnessStats();
+        return { all, bufferLen: stats.bufferLen };
+      } finally {
+        exec.close();
+      }
+    };
+    const a = await runVia('batch');
+    const b = await runVia('lockstep');
+    expect(a.all).toEqual(b.all);
+    expect(a.bufferLen).toBe(b.bufferLen);
+    expect(a.bufferLen).toBe(6);
+  });
+});
+
+// ─── AIMD-окно батча (защита от eager-build амплификации на annotate-плотных стратегиях) ──────
+describe('IsolateModuleExecutor — адаптивное окно батча', () => {
+  const IDLE = `export default function createStrategyModule() { return { onBarClose() { return null; } }; }`;
+  const ANNOTATE_ALWAYS = `export default function createStrategyModule() {
+     return { onBarClose(ctx) { return { kind: 'annotate', tags: ['t'] }; } };
+   }`;
+  const ctxsFor = (n: number, fromTs = 60_000): StrategyContext[] =>
+    Array.from({ length: n }, (_, i) => makeCtx('BTCUSDT', fromTs + i * 60_000));
+
+  it('окно растёт на полном потреблении: 32 idle-бара = 3 batch-захода (8→16→8-остаток)', async () => {
+    const exec = new IsolateModuleExecutor(writeBundle(IDLE), DEFAULT_SANDBOX);
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      let t = 0;
+      while (t < 32) {
+        const { stoppedAt } = await exec.executeStrategyHookBatch(dummyModule, ctxsFor(32 - t, 60_000 + t * 60_000));
+        t += stoppedAt + 1;
+      }
+      const stats = await exec.harnessStats();
+      expect(stats.batchCalls).toBe(3);
+      expect(stats.bufferLen).toBe(32);
+    } finally {
+      exec.close();
+    }
+  });
+
+  it('ранний стоп НЕ маршалит весь хвост: 200 ctxs при стопе на баре 0 → в изолят ушло ≤ 8 баров', async () => {
+    const exec = new IsolateModuleExecutor(writeBundle(ANNOTATE_ALWAYS), DEFAULT_SANDBOX);
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      const { stoppedAt, decisions } = await exec.executeStrategyHookBatch(dummyModule, ctxsFor(200));
+      expect(stoppedAt).toBe(0);
+      expect(decisions).toEqual([{ kind: 'annotate', tags: ['t'] }]);
+      const stats = await exec.harnessStats();
+      expect(stats.batchBarsReceived).toBeLessThanOrEqual(8);
+    } finally {
+      exec.close();
+    }
+  });
+});
+
+describe('IsolateModuleExecutor — preferredBatchBars (hint окна для раннера)', () => {
+  it('отдаёт текущее AIMD-окно; раннер строит ровно столько ctx', async () => {
+    const IDLE_OBJ = `export default function createStrategyModule() { return { onBarClose() { return { kind: 'idle' }; } }; }`;
+    const exec = new IsolateModuleExecutor(writeBundle(IDLE_OBJ), DEFAULT_SANDBOX);
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      expect(exec.preferredBatchBars()).toBe(8); // старт
+      const ctxs = Array.from({ length: 8 }, (_, i) => makeCtx('BTCUSDT', 60_000 * (i + 1)));
+      const r = await exec.executeStrategyHookBatch(dummyModule, ctxs);
+      expect(r).toEqual({ stoppedAt: 7, decisions: [] }); // idle-объекты не рвут батч
+      expect(exec.preferredBatchBars()).toBe(16); // окно выросло
+    } finally {
+      exec.close();
+    }
+  });
+});
+
+describe('IsolateModuleExecutor — блокеры ревью батча', () => {
+  const ctxsFor2 = (n: number): StrategyContext[] =>
+    Array.from({ length: n }, (_, i) => makeCtx('BTCUSDT', 60_000 * (i + 1)));
+
+  it('невалидный idle-подобный ({kind:"idle", reason}) НЕ глотается — доходит до ревалидатора', async () => {
+    const bundle = writeBundle(
+      `export default function createStrategyModule() {
+         return { onBarClose() { return { kind: 'idle', reason: 'no signal' }; } };
+       }`,
+    );
+    const exec = new IsolateModuleExecutor(bundle, DEFAULT_SANDBOX);
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      const r = await exec.executeStrategyHookBatch(dummyModule, ctxsFor2(4));
+      expect(r.decisions).toEqual([]); // fail-closed
+      expect(exec.errors.some((e) => e.code === 'decision_schema_invalid')).toBe(true); // а не тихий скип
+    } finally {
+      exec.close();
+    }
+  });
+
+  it('кап maxDecisionBytes действует и на батч-пути (sandbox_output_overflow)', async () => {
+    const bundle = writeBundle(
+      `export default function createStrategyModule() {
+         return { onBarClose() { return { kind: 'annotate', tags: ['x'.repeat(200000)] }; } };
+       }`,
+    );
+    const exec = new IsolateModuleExecutor(bundle, DEFAULT_SANDBOX); // maxDecisionBytes 65536
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      const r = await exec.executeStrategyHookBatch(dummyModule, ctxsFor2(4));
+      expect(r.decisions).toEqual([]);
+      expect(exec.errors.some((e) => e.code === 'sandbox_output_overflow')).toBe(true);
+    } finally {
+      exec.close();
+    }
+  });
+
+  it('wall-бюджет масштабируется по окну: тяжёлый-но-легитимный хук (~8мс/бар × 16 баров) проходит', async () => {
+    const BUSY = `export default function createStrategyModule() {
+       return { onBarClose() { const t0 = Date.now(); while (Date.now() - t0 < 8) {} return null; } };
+     }`;
+    const tight: SandboxPolicy = { ...DEFAULT_SANDBOX, limits: { ...DEFAULT_SANDBOX.limits, wallTimeMsPerCall: 50 } };
+    const exec = new IsolateModuleExecutor(writeBundle(BUSY), tight);
+    try {
+      await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', 60_000));
+      // прогреть окно до 16: два полных батча по window
+      let t = 0;
+      while (t < 24) {
+        const { stoppedAt } = await exec.executeStrategyHookBatch(dummyModule, ctxsFor2(24).slice(t));
+        expect(exec.errors).toEqual([]); // НЕ sandbox_timeout: бюджет = perCall × bars
+        t += stoppedAt + 1;
+      }
+    } finally {
+      exec.close();
+    }
+  });
+});

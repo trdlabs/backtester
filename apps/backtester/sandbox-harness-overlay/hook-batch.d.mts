@@ -37,3 +37,10 @@ export function runHookBatch(
   hook: string,
   deps: HookBatchDeps,
 ): Promise<HookBatchOutcome>;
+
+/** Sync-двойник runHookBatch для isolate-бэкенда (семантика идентична на sync-хуках). */
+export declare function runHookBatchSync(
+  bars: readonly HookBatchIterationEntry[],
+  hook: string,
+  deps: HookBatchDeps,
+): HookBatchResult;
