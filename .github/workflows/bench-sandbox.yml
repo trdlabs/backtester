@@ -1,0 +1,44 @@
+name: Bench Sandbox
+
+# Native-Linux counterpart to the local WSL2 measurement: runs the Docker-gated sandbox perf
+# bench (apps/backtester/test/bench-sandbox-perf.test.ts) on an ubuntu-latest runner to isolate
+# the structural cold-start / per-bar IPC cost from the WSL2 docker-start tax.
+#
+# Trigger: push any `bench/**` branch (does NOT run the normal CI suite — ci.yml is main-only).
+
+on:
+  push:
+    branches: ['bench/**']
+  workflow_dispatch: {}
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm sdk:build
+      - run: pnpm run build:sandbox-harness-overlay
+      - name: Pre-pull pinned sandbox image (exclude pull time from cold-start)
+        run: docker pull node@sha256:242549cd46785b480c832479a730f4f2a20865d61ea2e404fdb2a5c3d3b73ecf
+      - name: Run sandbox perf bench
+        run: |
+          set -o pipefail
+          RUN_BENCH=1 pnpm exec vitest run apps/backtester/test/bench-sandbox-perf.test.ts 2>&1 | tee bench-out.txt
+      - name: Publish results to step summary
+        if: always()
+        run: |
+          {
+            echo '## Sandbox perf — native Linux (ubuntu-latest)'
+            echo "runner: $(uname -srm)"
+            docker --version
+            echo
+            echo '```'
+            sed -n '/SANDBOX PERF/,/===========/p' bench-out.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
