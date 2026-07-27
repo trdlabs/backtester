@@ -30,11 +30,64 @@ export function aggregateEquityCurve(perSymbolCurves: readonly (readonly EquityP
   return out;
 }
 
-/** Stable temporal merge: primary numeric key asc, then symbol (list) index, then per-list index. */
+/**
+ * Тот же порядок, что и раньше — (ключ asc, индекс символа, индекс внутри символа), — но без
+ * обёртки на каждый элемент и без сортировки уже отсортированного.
+ *
+ * Прежняя версия оборачивала КАЖДЫЙ элемент в `{item, symbolIndex, origIndex}`, складывала всё в
+ * один массив и сортировала его целиком: две лишние аллокации на элемент плюс O(N log N) поверх
+ * списков, которые уже отсортированы по своему ключу (ордера копятся по барам, сделки по выходам,
+ * записи решений по ts).
+ *
+ * N-way слияние даёт БАЙТ-В-БАЙТ ту же последовательность: на каждом шаге берётся строго
+ * наименьший ключ, а при равенстве — список с наименьшим индексом (строгое `<` не смещает
+ * победителя), внутри списка порядок сохраняется сам собой. Это ровно тройка сравнений старого
+ * компаратора.
+ *
+ * Предпосылка «каждый список отсортирован по своему ключу» не постулируется, а ПРОВЕРЯЕТСЯ: если
+ * хоть один список её нарушает, слияние дало бы другой результат, поэтому код молча возвращается к
+ * прежней полной сортировке. Байт-идентичность здесь не зависит от того, прав ли я насчёт
+ * инвариантов вызывающих.
+ */
 function mergeByKey<T>(lists: readonly (readonly T[])[], keyOf: (item: T) => number): T[] {
-  const tagged = lists.flatMap((list, symbolIndex) => list.map((item, origIndex) => ({ item, symbolIndex, origIndex })));
-  tagged.sort((a, b) => keyOf(a.item) - keyOf(b.item) || a.symbolIndex - b.symbolIndex || a.origIndex - b.origIndex);
-  return tagged.map((t) => t.item);
+  let total = 0;
+  let presorted = true;
+  for (const list of lists) {
+    total += list.length;
+    if (!presorted) continue;
+    for (let i = 1; i < list.length; i += 1) {
+      if (keyOf(list[i]) < keyOf(list[i - 1])) {
+        presorted = false;
+        break;
+      }
+    }
+  }
+
+  if (!presorted) {
+    const tagged = lists.flatMap((list, symbolIndex) => list.map((item, origIndex) => ({ item, symbolIndex, origIndex })));
+    tagged.sort((a, b) => keyOf(a.item) - keyOf(b.item) || a.symbolIndex - b.symbolIndex || a.origIndex - b.origIndex);
+    return tagged.map((t) => t.item);
+  }
+
+  const ptr = new Array<number>(lists.length).fill(0);
+  const out: T[] = new Array<T>(total);
+  for (let o = 0; o < total; o += 1) {
+    let pick = -1;
+    let pickKey = 0;
+    for (let s = 0; s < lists.length; s += 1) {
+      const list = lists[s];
+      const i = ptr[s];
+      if (i >= list.length) continue;
+      const key = keyOf(list[i]);
+      if (pick === -1 || key < pickKey) {
+        pick = s;
+        pickKey = key;
+      }
+    }
+    out[o] = lists[pick][ptr[pick]];
+    ptr[pick] += 1;
+  }
+  return out;
 }
 
 /** Concat per-symbol in request.symbols (index) order, preserving each list's own order. */
