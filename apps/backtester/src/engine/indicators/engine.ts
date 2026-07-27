@@ -26,6 +26,13 @@ export interface IndicatorEngine {
   accessorAt(barIndex: number): IndicatorApi;
 }
 
+/**
+ * Сколько значений на ключ держать в `valueCache`. Аксессор движется вперёд по барам, поэтому
+ * реально переиспользуются последние: в пределах одного бара стратегия может спросить индикатор
+ * несколько раз, между барами — почти никогда.
+ */
+const VALUE_CACHE_PER_KEY = 8;
+
 interface StreamingState {
   readonly instance: StreamingIndicator;
   fedUpTo: number; // последний скормленный индекс бара (-1 = пусто)
@@ -45,7 +52,7 @@ export function createIndicatorEngine(
   function resolve(
     request: IndicatorRequest,
     barIndex: number,
-  ): { key: string; params: Record<string, number>; source: SourceField } {
+  ): { key: string; params: Record<string, number>; source: SourceField; def: NonNullable<ReturnType<typeof findDefinition>> } {
     const def = findDefinition(catalog, request.name);
     if (def === undefined) {
       const result = validateIndicatorRequest(catalog, request);
@@ -71,17 +78,16 @@ export function createIndicatorEngine(
         barIndex,
       });
     }
-    return { key, params, source };
+    return { key, params, source, def };
   }
 
   /** Значение индикатора as-of бара `t` (или undefined в warmup). */
   function queryAt(barIndex: number, request: IndicatorRequest): IndicatorValue | undefined {
-    const { key, params, source } = resolve(request, barIndex);
+    const { key, params, source, def } = resolve(request, barIndex);
 
     const cached = valueCache.get(key);
     if (cached !== undefined && cached.has(barIndex)) return cached.get(barIndex);
 
-    const def = findDefinition(catalog, request.name)!;
     let value: IndicatorValue | undefined;
 
     let state = states.get(key);
@@ -104,6 +110,15 @@ export function createIndicatorEngine(
 
     const bucket = valueCache.get(key) ?? new Map<number, IndicatorValue | undefined>();
     bucket.set(barIndex, value);
+    // Кэш ограничен: раньше он рос на запись за бар за индикатор и жил всю сессию, то есть на
+    // длинном окне удерживал десятки тысяч записей, которые никто уже не спросит — accessorAt
+    // движется вперёд. Вытеснение НЕ меняет ни одного значения: промах по вытесненному прошлому
+    // бару уходит в ветку реплея (`barIndex < fedUpTo`), которая считает то же самое тем же
+    // кодом. Экономится память и работа GC, а не арифметика.
+    if (bucket.size > VALUE_CACHE_PER_KEY) {
+      const oldest = bucket.keys().next();
+      if (oldest.done !== true) bucket.delete(oldest.value);
+    }
     valueCache.set(key, bucket);
     return value;
   }
