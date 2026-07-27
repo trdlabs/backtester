@@ -10,8 +10,11 @@
 // всё, что покажет профиль, — это работа раннера вокруг хука. Режим изолята меряется отдельно тем же
 // станком (`PROFILE_BACKEND=isolate`) и служит верхней границей, сопоставимой с 48.6 с.
 
+import { loadConfig } from '../../src/config.js';
 import { createTrustedRouter } from '../../src/engine/module-executor.js';
-import { createModuleRegistry } from '../../src/engine/sandbox/routing.js';
+import { createExecutorRouter, createModuleRegistry } from '../../src/engine/sandbox/routing.js';
+import { createSandboxPolicyRegistry } from '../../src/engine/sandbox-policy.js';
+import { loadBundle } from '../../src/engine/sandbox/bundle.js';
 import { marketTapeFromCanonicalRows } from '../../src/engine/market-tape.js';
 import { DEFAULT_RISK } from '../../src/engine/profiles.js';
 import type { RunDeps } from '../../src/engine/runner.js';
@@ -20,6 +23,7 @@ import type {
   BacktestRunRequest,
   CanonicalRowV2,
   ExecutionProfile,
+  MarketTapeDataset,
   StrategyModule,
 } from '@trading/research-contracts/research';
 
@@ -152,13 +156,18 @@ export interface WorkloadSpec {
   readonly seed: number;
   readonly barMajor: boolean;
   readonly probe?: ProbeShape;
+  /**
+   * Какой модуль исполняет прогон. `probe` — trusted-замыкание (меряет скелет раннера);
+   * `bundle` — реальный бандл в V8-изоляте (меряет то, что реально стоит прод-путь).
+   */
+  readonly module?: { readonly id: string; readonly version: string };
 }
 
 export function makeRequest(spec: WorkloadSpec): BacktestRunRequest {
   return {
     runId: 'runner-perf-probe',
     mode: 'research',
-    moduleRef: { id: MANIFEST.id, version: MANIFEST.version },
+    moduleRef: spec.module ?? { id: MANIFEST.id, version: MANIFEST.version },
     datasetRef: 'runner-perf-probe',
     symbols: [...spec.symbols],
     timeframe: '1m',
@@ -195,5 +204,58 @@ export function makeTrustedDeps(spec: WorkloadSpec): RunDeps {
     marketTape: built.tape,
     router: createTrustedRouter(),
     barMajor: spec.barMajor,
+  } as RunDeps;
+}
+
+/** Лента строится отдельно от deps, чтобы isolate- и trusted-режим мерили ОДНИ И ТЕ ЖЕ данные. */
+export function buildTape(spec: WorkloadSpec): MarketTapeDataset {
+  const allRows: CanonicalRowV2[] = [];
+  for (const [i, symbol] of spec.symbols.entries()) {
+    allRows.push(...syntheticRows(symbol, spec.bars, spec.seed + i * 7919));
+  }
+  const built = marketTapeFromCanonicalRows('runner-perf-probe', '1m', allRows);
+  if (!built.ok) throw new Error('perf fixture tape build failed: ' + built.detail);
+  return built.tape;
+}
+
+/**
+ * `RunDeps` для прогона РЕАЛЬНОГО бандла в V8-изоляте — прод-путь после backtester#166.
+ *
+ * Отличия от trusted-режима, каждое умышленное:
+ * - стратегия приходит как `strategyBundles` (provenance `bundle`), иначе роутер не уведёт её в
+ *   сэндбокс вообще (`routing.ts`: sandbox-исполнитель только для bundle-provenance);
+ * - `wallTimeMsPerCall` поднят: дефолтные 2 с рассчитаны на один бар, а под профилировщиком на
+ *   десятках тысяч баров батч упрётся в них и прогон упадёт по таймауту, а не по существу;
+ * - `barBatching.maxBars` = 64 — то же значение, что дефолт прод-воркера; без него путь
+ *   выродится в lockstep (450 мкс/бар) и замер будет мерить уже почищенный #166 транспорт.
+ *
+ * Универс-сессии в isolate-режиме не поддерживаются (routing.ts падает fail-fast) — поэтому их тут нет.
+ */
+export function makeIsolateDeps(spec: WorkloadSpec, bundleDir: string, wallTimeMsPerCall: number): RunDeps {
+  const policy = loadConfig().overlaySandbox.policy;
+  const scaled = { ...policy, limits: { ...policy.limits, wallTimeMsPerCall } };
+
+  // Тот же exec-профиль, что и в trusted-режиме: иначе режимы исполняли бы разные модели заполнения
+  // и разницу во времени нельзя было бы отнести к границе изоляции.
+  const registry = createModuleRegistry({
+    strategyBundles: [loadBundle(bundleDir)],
+    riskProfiles: [DEFAULT_RISK],
+    executionProfiles: [SAME_BAR_NO_COST],
+    sandboxPolicies: [scaled],
+  });
+
+  const router = createExecutorRouter({
+    sandboxBackend: 'isolate',
+    sandboxPolicies: createSandboxPolicyRegistry([scaled]),
+    sandboxPolicyRef: { id: scaled.id, version: scaled.version },
+  });
+
+  return {
+    registry,
+    marketTape: buildTape(spec),
+    router,
+    barMajor: spec.barMajor,
+    barBatching: { maxBars: 64 },
+    sandboxPolicyRef: { id: scaled.id, version: scaled.version },
   } as RunDeps;
 }
