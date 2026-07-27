@@ -343,7 +343,21 @@ export class IsolateModuleExecutor implements ModuleExecutor {
       this.failed = error;
       return { ok: false, error };
     }
-    if (parsed.ok) return { ok: true, decisions: parsed.decisions };
+    if (parsed.ok) {
+      // Ревью follow-up: array-like объект с length-индексами проскочил бы общий ревалидатор
+      // (он итерирует по индексам) — принимаем ТОЛЬКО настоящий массив.
+      if (!Array.isArray(parsed.decisions)) {
+        const error: SessionErrorLike = {
+          code: 'sandbox_output_malformed',
+          detail: 'harness decisions is not an array — harness tampered?',
+          hook,
+          barIndex,
+        };
+        this.failed = error;
+        return { ok: false, error };
+      }
+      return { ok: true, decisions: parsed.decisions };
+    }
     return { ok: false, error: { code: parsed.code, detail: parsed.detail, hook, barIndex } };
   }
 

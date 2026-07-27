@@ -286,6 +286,26 @@ describe('IsolateModuleExecutor (POC — analysis/18 вариант A)', () => {
     }
   });
 
+  it('подменённый харнесс возвращает array-like decisions (не массив) → malformed, не течёт в движок', async () => {
+    const bundle = writeBundle(
+      `globalThis.__isolateHarness = {
+         initSymbol: () => JSON.stringify({ ok: true }),
+         hook: () => JSON.stringify({ ok: true, decisions: { length: 1, 0: { kind: 'idle' } } }),
+       };
+       export default function createStrategyModule() { return { onBarClose() { return { kind: 'idle' }; } }; }`,
+    );
+    const exec = new IsolateModuleExecutor(bundle, DEFAULT_SANDBOX);
+    try {
+      const ctx = makeCtx('BTCUSDT', 60_000);
+      await exec.initStrategy(dummyModule, ctx);
+      const decisions = await exec.executeStrategyHook(dummyModule, 'onBarClose', ctx);
+      expect(decisions).toEqual([]);
+      expect(exec.errors.some((e) => e.code === 'sandbox_output_malformed')).toBe(true);
+    } finally {
+      exec.close();
+    }
+  });
+
   it("import 'fs' в бандле → bundle_load_failed (только относительные импорты)", async () => {
     const bundle = writeBundle(
       `import { readFileSync } from 'fs';
