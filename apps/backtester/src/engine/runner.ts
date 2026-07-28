@@ -833,17 +833,36 @@ async function runBarMajor(
     }
 
     // Phase 2 — bar-major loop over the sorted union timeline; per-symbol cursor.
+    //
+    // D3 (дефект №9): вместе с объединённой лентой строится индекс «метка времени → индексы
+    // символов, у которых на ней есть свеча». Раньше каждая метка времени сканировала ВСЕ N
+    // символов ради тех нескольких, что на ней присутствуют: O(N) на метку, O(N·T) на прогон, а на
+    // разреженной вселенной — вырождение в квадрат. Индекс стоит ровно один проход по свечам —
+    // тот самый, которым и так строилось множество меток.
+    //
+    // Порядок сохранён дословно: индексы кладутся в возрастающем порядке `s` (внешний цикл идёт по
+    // символам), поэтому внутри метки времени символы обходятся тем же порядком, что и при полном
+    // скане. Проверка `env.candles[t]?.ts !== ts` в теле НЕ снимается: индекс сужает круг
+    // кандидатов, но не берёт на себя роль курсора — на ленте с дублем метки времени поведение
+    // обязано остаться прежним.
     const cursor = envs.map(() => 0);
-    const tsSet = new Set<number>();
-    for (const env of envs) for (const c of env.candles) tsSet.add(c.ts);
-    const unionTs = [...tsSet].sort((a, b) => a - b);
+    const symbolsAtTs = new Map<number, number[]>();
+    for (let s = 0; s < envs.length; s += 1) {
+      for (const c of envs[s]!.candles) {
+        const at = symbolsAtTs.get(c.ts);
+        if (at === undefined) symbolsAtTs.set(c.ts, [s]);
+        else if (at[at.length - 1] !== s) at.push(s);
+      }
+    }
+    const unionTs = [...symbolsAtTs.keys()].sort((a, b) => a - b);
     for (const ts of unionTs) {
+      const present = symbolsAtTs.get(ts)!;
       if (barMajorBatch) {
         // 3-phase: preBarStages+build for all present symbols → ONE batched onBarClose → processBar all.
         // Byte-identical to the interleave below: per-symbol portfolios/accs are independent, so the
         // cross-symbol reorder within a bar cannot change any symbol's result.
         const active: Array<{ env: BarEnv; t: number; ctx: StrategyContext }> = [];
-        for (let s = 0; s < envs.length; s += 1) {
+        for (const s of present) {
           const env = envs[s];
           const t = cursor[s];
           if (env.candles[t]?.ts !== ts) continue;
@@ -857,7 +876,7 @@ async function runBarMajor(
         );
         for (let i = 0; i < active.length; i += 1) await processBar(active[i]!.env, active[i]!.t, bases[i]!);
       } else {
-        for (let s = 0; s < envs.length; s += 1) {   // Slice A interleave — unchanged
+        for (const s of present) {                   // Slice A interleave — тот же порядок символов
           const env = envs[s];
           const t = cursor[s];
           if (env.candles[t]?.ts !== ts) continue;   // symbol absent at this ts
