@@ -145,6 +145,16 @@ export interface AppConfig {
   /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Default off (dark launch). */
   readonly barBatching: boolean;
   /** 17d: bar-major execution mode — one bar across all symbols before advancing. Default off (dark launch). */
+  /**
+   * Морозить ли `StrategyContext` на каждом баре. Дефолт `true` (прежнее поведение).
+   *
+   * Заморозка стоит 82% постройки контекста (6.47 против 1.18 мкс/бар, замер profile-context) и
+   * существует ради диагностики: она ловит мутацию контекста модулем громко и сразу. Это нужно
+   * там, где стратегию пишут, — в dev и CI. В прод-прогоне контекст видит только доверенный
+   * раннер и код в изоляте, получающий маршалированный снимок, а не сам объект; `run` и `params`
+   * (единственное, что общее между барами) морозятся один раз на символ независимо от флага.
+   */
+  readonly contextFreeze: boolean;
   readonly barMajor: boolean;
   /** Slice B: collapse bar-major per-bar IPC into 3-phase batched transport. Pure sub-mode of barMajor — inert unless barMajor is also on. Default off (dark launch). */
   readonly barMajorBatch: boolean;
@@ -461,6 +471,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = processEnv()): AppConfig {
     jobObs: env.BACKTESTER_JOB_OBS === 'true',
     coalesceEnabled: env.BACKTESTER_COALESCE_ENABLED === 'true',
     barBatching: env.BACKTESTER_BAR_BATCHING === 'true',
+    // Флаг назван «...DISABLED» и выключен по умолчанию — конвенция dark-launch этого репозитория
+    // (машинно проверяется в env-schema.test.ts: у каждого флага default_state = off). Поэтому
+    // «ничего не выставили» означает прежнее поведение, а оптимизация включается осознанно.
+    contextFreeze: env.BACKTESTER_CONTEXT_FREEZE_DISABLED !== 'true',
     barMajor: env.BACKTESTER_BAR_MAJOR === 'true',
     barMajorBatch: env.BACKTESTER_BAR_MAJOR_BATCH === 'true',
     // `|| 64` OUTSIDE the max: garbage → NaN → 64, while '0'/'1' clamp to the floor 2 (a falsy-zero

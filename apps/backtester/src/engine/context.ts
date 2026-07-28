@@ -54,6 +54,23 @@ export interface ContextBuilderBase {
   readonly marketTape?: MarketTapeDataset;
 }
 
+/** Опции построителя. */
+export interface ContextBuilderOptions {
+  /**
+   * Морозить ли контекст на каждом баре.
+   *
+   * `true` (по умолчанию) — прежнее поведение: рекурсивная заморозка каждого построенного
+   * контекста. Она ловит мутацию контекста модулем громко и сразу, и именно поэтому остаётся
+   * дефолтом в dev и CI.
+   *
+   * `false` — заморозка пропускается. Гарантия read-only при этом не исчезает, а меняет
+   * природу: в проде контекст видит только доверенный раннер и код в изоляте, который получает
+   * не сам объект, а маршалированный снимок. Диагностика мутаций нужна там, где стратегию
+   * пишут, а не там, где её гоняют миллион баров подряд.
+   */
+  readonly freeze?: boolean;
+}
+
 /** Изменяемое от бара к бару состояние портфеля/позиции/intent'а. */
 export interface PerBarState {
   readonly position: Readonly<PositionSnapshot> | null;
@@ -74,7 +91,26 @@ export class PointInTimeContextBuilder {
    *  на бар). undefined, когда лента не несёт market-kind. */
   private readonly marketGridTs?: readonly number[];
 
-  constructor(private readonly base: ContextBuilderBase) {
+  /** См. `ContextBuilderOptions.freeze`. Читается один раз: менять режим по ходу прогона нельзя. */
+  private readonly freezePerBar: boolean;
+
+  constructor(
+    private readonly base: ContextBuilderBase,
+    options: ContextBuilderOptions = {},
+  ) {
+    this.freezePerBar = options.freeze ?? true;
+    // Заморозка ОДИН РАЗ на символ — и она безусловна, в отличие от пербарной.
+    //
+    // Всё остальное, до чего дотягивается контекст, защищено само собой: свечи заморожены у
+    // источника (`loadCandleDataset`, `marketTapeFromCanonicalRows`), а `position`/`portfolio`/
+    // `data`/`indicators`/`clock`/`market` строятся заново на каждый бар из примитивов — испортив
+    // их, стратегия испортит только свой собственный бар.
+    //
+    // `run` и `params` — единственное исключение: они ОБЩИЕ для всех баров символа. Без этой
+    // строки выключенная пербарная заморозка открыла бы стратегии возможность переписать params
+    // и тем изменить все последующие бары. Здесь это и закрывается — раз на символ, а не 60 тысяч раз.
+    deepFreeze(base.run);
+    deepFreeze(base.params);
     this.indicatorEngine = createIndicatorEngine(base.candles);
     const tape = base.marketTape;
     // 030: funding/taker добавлены в OR-цепочку. ctx.market выставляется, если лента несёт ЛЮБОЙ kind;
@@ -118,6 +154,6 @@ export class PointInTimeContextBuilder {
           }
         : {}),
     };
-    return deepFreeze(ctx);
+    return this.freezePerBar ? deepFreeze(ctx) : ctx;
   }
 }

@@ -56,6 +56,7 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     coalesceEnabled: false,
     barBatching: false,
     barMajor: false,
+  contextFreeze: true,
     barMajorBatch: false,
     trialLedger: false,
     trialEmpiricalMinN: 5,

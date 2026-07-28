@@ -71,6 +71,13 @@ export interface RunDeps {
   readonly barMajor?: boolean;
   /** Slice B: collapse the bar-major inner loop into a 3-phase batched form (one executeStrategyHookBarMajor call per union-ts instead of per-symbol onBarClose calls). Absent/false ⇒ Slice A interleave (default, byte-identical). Only meaningful when barMajor is on. */
   readonly barMajorBatch?: boolean;
+  /**
+   * Морозить ли контекст на каждом баре (`BACKTESTER_CONTEXT_FREEZE`). Absent ⇒ `true` —
+   * прежнее поведение. `false` снимает 82% стоимости постройки контекста и НЕ меняет ни одного
+   * значения: read-only держится тем, что свечи заморожены у источника, `run`/`params` морозятся
+   * один раз на символ, а всё пербарное строится заново и приватно для своего бара.
+   */
+  readonly contextFreeze?: boolean;
 }
 
 /** Поддерживаемые точки перехвата overlay (MVP). */
@@ -703,6 +710,7 @@ async function simulateTarget(
   barBatching: { readonly maxBars: number } | undefined,
   barMajor: boolean,
   barMajorBatch: boolean,
+  contextFreeze: boolean,
 ): Promise<BacktestRunResult> {
   const acc: RunAccumulators = {
     decisionRecords: [],
@@ -725,19 +733,22 @@ async function simulateTarget(
 
   let barsProcessed = 0;
   if (barMajor && request.symbols.length > 1) {
-    barsProcessed = await runBarMajor(target, request, dataset, engine, acc, params, overlays, marketTape, barMajorBatch);
+    barsProcessed = await runBarMajor(target, request, dataset, engine, acc, params, overlays, marketTape, barMajorBatch, contextFreeze);
   } else {
     for (const symbol of request.symbols) {
       const candles = dataset.candles(symbol);
-      const builder = new PointInTimeContextBuilder({
-        run: { runId: target.runId, mode: request.mode, seed: request.seed },
-        params,
-        symbol,
-        candles,
-        rng: createSeededRng(request.seed),
-        // 023: лента передаётся в builder; ctx.market выставляется по составу ленты (composition-following).
-        ...(marketTape !== undefined ? { marketTape } : {}),
-      });
+      const builder = new PointInTimeContextBuilder(
+        {
+          run: { runId: target.runId, mode: request.mode, seed: request.seed },
+          params,
+          symbol,
+          candles,
+          rng: createSeededRng(request.seed),
+          // 023: лента передаётся в builder; ctx.market выставляется по составу ленты (composition-following).
+          ...(marketTape !== undefined ? { marketTape } : {}),
+        },
+        { freeze: contextFreeze },
+      );
       // Per-symbol изоляция module-state: если стратегия несёт `moduleFactory` (trusted), инстанцируем
       // её свежей на КАЖДЫЙ символ — FSM-state в замыкании `createStrategyModule` не протекает между
       // символами (паритет с sandbox, где каждый символ исполняется в своей сессии). Без фабрики —
@@ -780,6 +791,7 @@ async function runBarMajor(
   overlays: OverlaySplit,
   marketTape: MarketTapeDataset | undefined,
   barMajorBatch: boolean,
+  contextFreeze: boolean,
 ): Promise<number> {
   const envs: BarEnv[] = [];
   const perAcc: RunAccumulators[] = [];
@@ -789,11 +801,14 @@ async function runBarMajor(
     for (const symbol of request.symbols) {
       const candles = dataset.candles(symbol);
       if (candles.length === 0) continue; // parity with runSymbol's `n===0` early return — no init for a data-less symbol
-      const builder = new PointInTimeContextBuilder({
-        run: { runId: target.runId, mode: request.mode, seed: request.seed },
-        params, symbol, candles, rng: createSeededRng(request.seed),
-        ...(marketTape !== undefined ? { marketTape } : {}),
-      });
+      const builder = new PointInTimeContextBuilder(
+        {
+          run: { runId: target.runId, mode: request.mode, seed: request.seed },
+          params, symbol, candles, rng: createSeededRng(request.seed),
+          ...(marketTape !== undefined ? { marketTape } : {}),
+        },
+        { freeze: contextFreeze },
+      );
       const symbolStrategy = target.strategy.moduleFactory !== undefined
         ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
         : target.strategy;
@@ -1099,6 +1114,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
       deps.barBatching,
       deps.barMajor === true,
       deps.barMajorBatch === true,
+      deps.contextFreeze !== false,
     );
 
     let variant: BacktestRunResult | null = null;
@@ -1115,6 +1131,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
         deps.barBatching,
         deps.barMajor === true,
         deps.barMajorBatch === true,
+        deps.contextFreeze !== false,
       );
       comparison = computeComparison(baseline, variant);
     }
