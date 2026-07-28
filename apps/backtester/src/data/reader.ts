@@ -12,7 +12,7 @@ import type {
   RangeQuery,
   ReaderRow,
 } from '@trading/research-contracts';
-import { contentRef } from '../determinism/hash';
+import { tapeFingerprint } from '../determinism/dataset-fingerprint';
 
 const BATCH = 256;
 
@@ -138,7 +138,11 @@ export async function materialize(
   };
 }
 
-/** Content fingerprint of the materialized data — detects canonical-data drift between fetch & replay. */
+/**
+ * Content fingerprint of the materialized data — detects canonical-data drift between fetch & replay.
+ * Same defect #7 as the overlay/strategy tape: a drift key has no business quantizing every number
+ * through decimal.js, so this goes through `tapeFingerprint`, not `contentRef`.
+ */
 export function datasetFingerprint(dataset: MaterializedDataset): string {
-  return contentRef(dataset.rows());
+  return tapeFingerprint(dataset.rows());
 }

@@ -18,6 +18,7 @@ import type {
 } from '@trdlabs/backtester-sdk/contracts';
 import { API_CONTRACT_VERSION } from '@trdlabs/backtester-sdk/contracts';
 import { contentRef } from '../determinism/hash';
+import { tapeFingerprint } from '../determinism/dataset-fingerprint';
 import { persistRunArtifacts, type ArtifactStore } from '../artifacts/store';
 import { persistOverlayArtifacts } from '../artifacts/overlay-store';
 import {
@@ -642,8 +643,10 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
           period: r.period,
         }),
     );
-    // Wire-summary fingerprint only — NOT part of the hashed RunOutcome (platform golden).
-    const dsFingerprint = contentRef(r.symbols.map((s) => marketTape.candles(s)));
+    // Wire-summary fingerprint only — NOT part of the hashed RunOutcome (platform golden), hence
+    // `tapeFingerprint` and not `contentRef`: no reason to push every candle number through
+    // decimal.js for a drift key (analysis/19 defect #7).
+    const dsFingerprint = tapeFingerprint(r.symbols.map((s) => marketTape.candles(s)));
     const engineRequest: BacktestRunRequest = {
       runId,
       mode: r.mode,
