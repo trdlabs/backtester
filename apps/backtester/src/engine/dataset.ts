@@ -102,10 +102,23 @@ function indicatorAsOf(candles: readonly Readonly<Bar>[], t: number, name: strin
  * Возвращаемые срезы заморожены (read-only инвариант).
  */
 export function pointInTimeDataApi(candles: readonly Readonly<Bar>[], t: number): PointInTimeDataApi {
+  // D2 (дефект №5): срез строится ОДИН РАЗ на (бар, lookback), а не на каждый вызов. API живёт
+  // ровно один бар, поэтому `t` в замыкании фиксирован и кэш не может отдать чужой бар. Раньше
+  // повторный вопрос с тем же lookback — а его задают и стратегия, и оверлей на одном баре —
+  // копировал и морозил окно заново.
+  //
+  // Заморозка здесь становится несущей: до кэша каждый вызов отдавал приватную копию, и мутация
+  // была ненаблюдаема; теперь копия ОБЩАЯ для всех вызовов бара, и без `freeze` первый читатель
+  // мог бы испортить окно второму.
+  let lastLookback = -1;
+  let lastSlice: readonly Readonly<Bar>[] | undefined;
   return {
     closedCandles(lookback: number): readonly Readonly<Bar>[] {
+      if (lookback === lastLookback && lastSlice !== undefined) return lastSlice;
       const start = Math.max(0, t - lookback);
-      return Object.freeze(candles.slice(start, t));
+      lastSlice = Object.freeze(candles.slice(start, t));
+      lastLookback = lookback;
+      return lastSlice;
     },
     indicatorAsOf(name: string): number | undefined {
       return indicatorAsOf(candles, t, name);
