@@ -23,6 +23,7 @@
 | `BACKTESTER_COALESCE_ENABLED` | bool | no | — |  | flag: off/enforce, default off | backtester-service | In-flight коалесцирование запросов (leader/follower); эффективен только вместе с BACKTESTER_DEDUP_ENABLED. |
 | `BACKTESTER_COMPUTE_LOCK_TTL_MS` | duration_ms | no | — |  |  | backtester-service | TTL compute-lock (мс); дефолт вычисляется = workerLeaseTtlMs. |
 | `BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS` | int | no | `3` |  |  | backtester-service | Poison-cap попыток compute_wait. |
+| `BACKTESTER_CONTEXT_FREEZE_DISABLED` | bool | no | — |  | flag: off/enforce, default off | backtester-service | B2: отключить ПЕРБАРНУЮ заморозку StrategyContext (dark launch, off = прежнее поведение). Заморозка стоит ~30% времени бара и существует ради диагностики — ловит мутацию контекста модулем громко и сразу, что нужно там, где стратегию пишут, а не там, где её гоняют миллион баров. Включение НЕ меняет результат: run/params морозятся один раз на символ, свечи заморожены у источника, пербарные снимки приватны своему бару. |
 | `BACKTESTER_DATA_API_MAX_ATTEMPTS` | int | no | `3` |  |  | backtester-service | P2-12: всего попыток на data-API запрос, включая первую (1 = без ретраев). Fail-fast: конечное число >= 1. |
 | `BACKTESTER_DATA_API_MAX_PAGES` | int | no | `10000` |  |  | backtester-service | P2-12: fail-closed cap страниц одного queryRange. Fail-fast: конечное число >= 1. |
 | `BACKTESTER_DATA_API_MAX_ROWS` | int | no | `5000000` |  |  | backtester-service | P2-12: fail-closed cap строк одного queryRange (защита materialize). Fail-fast: конечное число >= 1. |

@@ -33,6 +33,8 @@ const BARS = Math.max(1, Number(process.env.PROFILE_BARS ?? 60_000));
 const REPEATS = Math.max(1, Number(process.env.PROFILE_REPEATS ?? 3));
 const SYMBOLS = (process.env.PROFILE_SYMBOLS ?? 'BTCUSDT').split(',').map((s) => s.trim()).filter((s) => s !== '');
 const BAR_MAJOR = process.env.PROFILE_BAR_MAJOR === 'true';
+// Шаг B2: пербарная заморозка контекста. `false` — прод-режим прогона.
+const CONTEXT_FREEZE = process.env.PROFILE_CONTEXT_FREEZE !== 'false';
 
 const LOOKBACK = Math.max(0, Number(process.env.PROFILE_LOOKBACK ?? 0));
 const BACKEND = process.env.PROFILE_BACKEND === 'isolate' ? 'isolate' : 'trusted';
@@ -89,7 +91,7 @@ console.log(
     (BACKEND === 'isolate'
       ? `module=${spec.module!.id}@${spec.module!.version} batch=64 wallMsPerCall=${WALL_MS_PER_CALL}`
       : `probe=entry/${probe.entryEvery}+hold/${probe.holdBars}+lookback/${probe.lookback}`) +
-    ` cores=${cpus().length}`,
+    ` contextFreeze=${CONTEXT_FREEZE} cores=${cpus().length}`,
 );
 
 // Лента строится ОДИН раз и переиспользуется: её постройка (deep-freeze 60k баров) не относится к
@@ -115,7 +117,7 @@ interface Sample {
 
 async function runOnce(): Promise<Sample> {
   const started = process.hrtime.bigint();
-  const out = await runBacktest(request, deps);
+  const out = await runBacktest(request, { ...deps, contextFreeze: CONTEXT_FREEZE });
   const wallMs = Number(process.hrtime.bigint() - started) / 1e6;
   if (out.status !== 'completed') {
     throw new Error('прогон отклонён: ' + JSON.stringify(out.validation));

@@ -143,6 +143,10 @@ export const ENV_VARS: readonly EnvVarSpec[] = [
   flagVar('BACKTESTER_COALESCE_ENABLED', 'In-flight коалесцирование запросов (leader/follower); эффективен только вместе с BACKTESTER_DEDUP_ENABLED.'),
   envVar('BACKTESTER_COMPUTE_LOCK_TTL_MS', 'duration_ms', null, 'TTL compute-lock (мс); дефолт вычисляется = workerLeaseTtlMs.'),
   envVar('BACKTESTER_COMPUTE_WAIT_MAX_ATTEMPTS', 'int', '3', 'Poison-cap попыток compute_wait.'),
+  flagVar(
+    'BACKTESTER_CONTEXT_FREEZE_DISABLED',
+    'B2: отключить ПЕРБАРНУЮ заморозку StrategyContext (dark launch, off = прежнее поведение). Заморозка стоит ~30% времени бара и существует ради диагностики — ловит мутацию контекста модулем громко и сразу, что нужно там, где стратегию пишут, а не там, где её гоняют миллион баров. Включение НЕ меняет результат: run/params морозятся один раз на символ, свечи заморожены у источника, пербарные снимки приватны своему бару.',
+  ),
   envVar('BACKTESTER_DATA_API_MAX_ATTEMPTS', 'int', '3', 'P2-12: всего попыток на data-API запрос, включая первую (1 = без ретраев). Fail-fast: конечное число >= 1.'),
   envVar('BACKTESTER_DATA_API_MAX_PAGES', 'int', '10000', 'P2-12: fail-closed cap страниц одного queryRange. Fail-fast: конечное число >= 1.'),
   envVar('BACKTESTER_DATA_API_MAX_ROWS', 'int', '5000000', 'P2-12: fail-closed cap строк одного queryRange (защита materialize). Fail-fast: конечное число >= 1.'),
