@@ -11,6 +11,7 @@ import {
   compareArtifacts,
   formatDifferentialReport,
   isIdentityNumber,
+  staleExceptions,
 } from '../scripts/lib/differential-report.js';
 
 const BASE = {
@@ -104,6 +105,65 @@ describe('differential — деление чисел на величины и т
     for (const p of ['a.fillPrice', 'a.pnl', 'a.equity', 'a.feePaid', 'a.notional', 'a.size']) {
       expect(isIdentityNumber(p)).toBe(false);
     }
+  });
+});
+
+describe('differential — объявленные исключения', () => {
+  it('объявленное расхождение не блокирует переморозку, но остаётся видимым', () => {
+    const after = { ...clone(BASE), status: 'rejected' };
+    const strict = compareArtifacts(BASE, after);
+    expect(strict.refreezeAllowed).toBe(false);
+
+    const declared = compareArtifacts(BASE, after, '', ['status']);
+    expect(declared.refreezeAllowed).toBe(true);
+    expect(declared.structuralBreaks).toHaveLength(0);
+    expect(declared.declaredExceptions).toEqual([
+      { path: 'status', before: 'completed', after: 'rejected' },
+    ]);
+  });
+
+  it('исключение прикрывает ТОЛЬКО названный путь, а не всё подряд', () => {
+    const after = clone(BASE);
+    after.status = 'rejected';
+    after.orders[0]!.side = 'short';
+    const r = compareArtifacts(BASE, after, '', ['status']);
+    expect(r.refreezeAllowed).toBe(false);
+    expect(r.structuralBreaks).toHaveLength(1);
+    expect(r.structuralBreaks[0]!.path).toBe('orders[0].side');
+  });
+
+  it('протухание считается ПО ВСЕМУ ПРОГОНУ, а не по сценарию', () => {
+    // Путь может существовать в одном сценарии и отсутствовать в другом — например `variant.*`
+    // есть только там, где есть вариант. Если судить по сценарию, такой путь ложно «протухнет»
+    // во всех остальных, и гейт остановит переморозку без причины.
+    const moved = { ...clone(BASE), status: 'rejected' };
+    const withPath = compareArtifacts(BASE, moved, '', ['status', 'variantOnly']);
+    const withoutPath = compareArtifacts({ a: 1 }, { a: 1 }, '', ['status', 'variantOnly']);
+    const reports = new Map([['a.json', withPath], ['b.json', withoutPath]]);
+
+    // `status` встретился в одном сценарии — значит не протух.
+    // `variantOnly` не встретился нигде — значит протух.
+    expect(staleExceptions(reports, ['status', 'variantOnly'])).toEqual(['variantOnly']);
+  });
+
+  it('исключение, не встретившееся НИГДЕ, останавливает переморозку', () => {
+    const reports = new Map([['a.json', compareArtifacts(BASE, clone(BASE), '', ['status'])]]);
+    expect(staleExceptions(reports, ['status'])).toEqual(['status']);
+    const md = formatDifferentialReport(reports, { expectChanged: ['status'] });
+    expect(md).toContain('Протухшие исключения');
+    expect(md).toContain('ОСТАНОВКА');
+  });
+
+  it('объявленные исключения печатаются отдельным разделом', () => {
+    const after = { ...clone(BASE), status: 'rejected' };
+    const md = formatDifferentialReport(new Map([['a.json', compareArtifacts(BASE, after, '', ['status'])]]), {
+      expectChanged: ['status'],
+    });
+    expect(md).toContain('Объявленные исключения');
+    expect(md).toContain('`status`');
+    expect(md).toContain('"rejected"');
+    expect(md).toContain('ПЕРЕМОРОЗКА РАЗРЕШЕНА');
+    expect(md).not.toContain('Протухшие исключения');
   });
 });
 
