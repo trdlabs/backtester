@@ -8,6 +8,18 @@ allowBuilds:
   esbuild: true
   isolated-vm: true
 
+# Окно созревания выключено (решение владельца 2026-07-28).
+#
+# Почему не точечное исключение: pnpm 11.6.0 читает `minimumReleaseAgeExclude` (его видно в
+# `pnpm config get`), но путь ПРОВЕРКИ ЛОК-ФАЙЛА — тот, что запускает `pnpm install
+# --frozen-lockfile`, — исключения игнорирует. Проверено на всех формах записи: имя с версией,
+# имя без версии, `--config.minimumReleaseAgeExclude`, `minimumReleaseAgeStrict=false`. Список
+# ниже оставлен как декларация намерения; работает только сам `minimumReleaseAge`.
+#
+# Цена решения: любая новая версия ЛЮБОГО пакета ставится без выдержки, а не только наша.
+# Вернуть 1440 (и убрать эту строку), когда пин `@trdlabs/engine` перестанет быть свежим.
+minimumReleaseAge: 0
+
 minimumReleaseAgeExclude:
   - '@trdlabs/sdk@0.13.0'
   - '@trdlabs/engine@0.1.1'
