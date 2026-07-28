@@ -52,6 +52,21 @@ export type OverlayDecisionSource = (overlay: ResolvedOverlay) => Promise<Overla
 /** Композитор overlay'ев (stateless относительно входа; единый schema-registry для ревалидации). */
 export class OverlayComposer {
   /**
+   * Композиция БЕЗ единого overlay'я — синхронно и без промиса.
+   *
+   * Это не оптимизация «на глазок», а тождество: при пустом списке цикл `compose` не выполняет ни
+   * одной итерации, `effects` остаётся пустым, `accumulated` остаётся `base`. То есть результат
+   * известен заранее, и весь асинхронный аппарат — промис, микрозадача, замыкание `getDecision` —
+   * оплачивался дважды на каждом баре ради заведомо известного ответа.
+   *
+   * Байт-идентичность здесь не требует доверия к рассуждению: `compose` на пустом списке
+   * возвращает ровно этот объект, и это закреплено тестом.
+   */
+  static withoutOverlays(base: StrategyDecision): OverlayComposition {
+    return { finalDecision: base, effects: [] };
+  }
+
+  /**
    * Применить overlay'и к `base` строго в их порядке. `getDecision` вызывается лениво (на veto
    * последующие overlay'и не опрашиваются).
    */

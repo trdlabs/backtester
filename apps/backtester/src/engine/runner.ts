@@ -419,10 +419,16 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
   // 17b: base приходит от вызывающего (runSymbol сегодня; batch-путь — Task 4) и может быть `null`
   // (пропуск executor-хука); совпадает с fallback'ом самого firstDecision (`{kind:'idle'}`).
   const ctx = builder.build(t, stateAt(portfolio, bar.close));
-  const comp = await composer.compose(base ?? { kind: 'idle' }, overlays.entry, async (o) => {
-    const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctx);
-    return ds.length > 0 ? ds[0] : null;
-  });
+  // Прогон без entry-оверлеев — обычный случай, и в нём композировать нечего: см.
+  // `OverlayComposer.withoutOverlays`. Пропускается промис, микрозадача и замыкание getDecision.
+  const entryBase: StrategyDecision = base ?? { kind: 'idle' };
+  const comp =
+    overlays.entry.length === 0
+      ? OverlayComposer.withoutOverlays(entryBase)
+      : await composer.compose(entryBase, overlays.entry, async (o) => {
+          const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctx);
+          return ds.length > 0 ? ds[0] : null;
+        });
   if (comp.error !== undefined) {
     acc.validationIssues.push({ severity: 'error', code: comp.error.code, message: comp.error.message, path: `/overlayComposition/${symbol}/${t}/onBarClose` });
   }
@@ -476,10 +482,13 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
       module.onPositionBar !== undefined
         ? firstDecision(await strategyExec.executeStrategyHook(module, 'onPositionBar', ctxPos))
         : { kind: 'idle' };
-    const compPos = await composer.compose(posBase, overlays.post, async (o) => {
-      const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctxPos);
-      return ds.length > 0 ? ds[0] : null;
-    });
+    const compPos =
+      overlays.post.length === 0
+        ? OverlayComposer.withoutOverlays(posBase)
+        : await composer.compose(posBase, overlays.post, async (o) => {
+            const ds = await router.forOverlay(o).executeOverlayApply(o.module, ctxPos);
+            return ds.length > 0 ? ds[0] : null;
+          });
     if (compPos.error !== undefined) {
       acc.validationIssues.push({ severity: 'error', code: compPos.error.code, message: compPos.error.message, path: `/overlayComposition/${symbol}/${t}/onPositionBar` });
     }
