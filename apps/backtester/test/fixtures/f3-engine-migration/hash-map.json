@@ -5,8 +5,8 @@
     "from": "backtester-owned engine layer",
     "to": "@trdlabs/engine",
     "provenOnEngineCommit": "7a3216b09c3673144ded699b7f833c3381b04272",
-    "consumedAs": "@trdlabs/engine@0.2.0",
-    "engineSemanticsVersion": "0.1.0",
+    "consumedAs": "@trdlabs/engine@0.3.0",
+    "engineSemanticsVersion": "0.2.0",
     "cause": "run identity (A): RunEvidence carries its own evidenceFormatVersion + engineVersion (the research contract version stays an ordinary hashed field), plus SSOT decision 5: the forced end-of-data MTM close is now marked Trade.synthetic. Shape-only — no numeric field moved."
   },
   "goldens": {
@@ -14,7 +14,7 @@
       "scenario": "overlay-baseline",
       "source": "apps/backtester/test/fixtures/overlay/goldens/baseline.hash",
       "legacy": "sha256:7d0f98f4702117646dd6999329d08a65fcde959aa516a9ace9996c3c336cb5e3",
-      "active": "sha256:f865ba9ae005599a77d8fed385df6098f9774d584698f41bc5cc4f9ce38d068a",
+      "active": "sha256:c5fe81e75b1bb4f87398285e3fbaa2ab2d01eb4f75e60bca9e36b922b60ea3d0",
       "diffPaths": [
         "/baseline/evidence/engineVersion",
         "/baseline/evidence/evidenceFormatVersion",
@@ -27,7 +27,7 @@
       "scenario": "overlay-variant",
       "source": "apps/backtester/test/fixtures/overlay/goldens/variant.hash",
       "legacy": "sha256:7abe67c3e8d510a4909eb6216d7650b7769c16702aac60eb92d1ac1eeb36c5c9",
-      "active": "sha256:8957a57f081533c42a4d58cc307f06f49f9929cbbc8d4f81282a321d3946c6b3",
+      "active": "sha256:bb5168ab2d160971768699f9de07a250877f4b6cbe4a4e44206f276e08ea6a7c",
       "diffPaths": [
         "/baseline/evidence/engineVersion",
         "/baseline/evidence/evidenceFormatVersion",
@@ -43,7 +43,7 @@
       "scenario": "bar-major",
       "source": "apps/backtester/test/helpers/bar-major-golden-hash.ts",
       "legacy": "sha256:e49fd70e6abe348c8090fa08abfa0342df0bab51f5e26205303ab1ace0df5798",
-      "active": "sha256:2b6f3075aa55cb50d82f3cc97c738faa8a7eb2f9b8ce2ccf881b5ba1f802b81b",
+      "active": "sha256:89960b1809853beb2dd55bbc38eecfa378865608d563f0c2c2c4fc1afcf4d609",
       "diffPaths": [
         "/evidence/engineVersion",
         "/evidence/evidenceFormatVersion",

@@ -575,7 +575,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
       covered,
       barMinutes,
       intervalHours: exec.fundingIntervalHours(),
-    }).toNumber();
+    });
     portfolio.settleFunding(cost);
     acc.fundingLedger.push({ barIndex: t, ts: bar.ts, rate, covered, cost });
   }

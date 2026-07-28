@@ -22,26 +22,26 @@ describe('funding — per-minute proration of the 8h-equivalent rate', () => {
     const cost = computeBarFunding({
       side: 'long', size: 2, mark: 100, rate8h: 0.0008, covered: true, barMinutes: 1, intervalHours: 8,
     });
-    expect(cost.toNumber()).toBeCloseTo((0.0008 / 480) * 200, 15);
-    expect(cost.toNumber()).toBeGreaterThan(0);
+    expect(cost).toBeCloseTo((0.0008 / 480) * 200, 15);
+    expect(cost).toBeGreaterThan(0);
   });
 
   it('computeBarFunding: long + NEGATIVE rate = credit (cash inflow < 0)', () => {
     const cost = computeBarFunding({
       side: 'long', size: 2, mark: 100, rate8h: -0.0002, covered: true, barMinutes: 1, intervalHours: 8,
     });
-    expect(cost.toNumber()).toBeLessThan(0);
+    expect(cost).toBeLessThan(0);
   });
 
   it('computeBarFunding: short flips the sign vs long', () => {
     const long = computeBarFunding({ side: 'long', size: 1, mark: 50, rate8h: 0.0008, covered: true, barMinutes: 1, intervalHours: 8 });
     const short = computeBarFunding({ side: 'short', size: 1, mark: 50, rate8h: 0.0008, covered: true, barMinutes: 1, intervalHours: 8 });
-    expect(short.toNumber()).toBeCloseTo(-long.toNumber(), 15);
+    expect(short).toBeCloseTo(-long, 15);
   });
 
   it('computeBarFunding: uncovered minute charges 0', () => {
     const cost = computeBarFunding({ side: 'long', size: 2, mark: 100, rate8h: 0.0008, covered: false, barMinutes: 1, intervalHours: 8 });
-    expect(cost.toNumber()).toBe(0);
+    expect(cost).toBe(0);
   });
 
   it('computeFundingPaidFraction integrates per-minute and skips uncovered minutes', () => {
