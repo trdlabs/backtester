@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { countCpusInList, evaluateBenchEnvironment, minOf } from '../scripts/lib/bench-gate.js';
+import { assertStableSamples, countCpusInList, evaluateBenchEnvironment, minOf } from '../scripts/lib/bench-gate.js';
 
 const QUIET = {
   loadavg1: 0.4,
@@ -53,6 +53,49 @@ describe('bench-gate', () => {
     expect(countCpusInList('2,3')).toBe(2);
     expect(countCpusInList('0-1,3')).toBe(3);
     expect(countCpusInList(' 0 ')).toBe(1);
+  });
+
+  describe('assertStableSamples — воспроизводимость минимума', () => {
+    // Гейт завершает процесс, поэтому проверяем через подмену exit: тест не должен уметь
+    // «пройти» просто потому, что процесс умер.
+    function verdictOf(samples: readonly number[], maxDrift?: number): 'ok' | 'rejected' {
+      const realExit = process.exit;
+      const realError = console.error;
+      let rejected = false;
+      process.exit = (() => {
+        rejected = true;
+        throw new Error('__exit__');
+      }) as typeof process.exit;
+      console.error = () => {};
+      try {
+        assertStableSamples('test', samples, maxDrift);
+      } catch (e) {
+        if (!(e instanceof Error) || e.message !== '__exit__') throw e;
+      } finally {
+        process.exit = realExit;
+        console.error = realError;
+      }
+      return rejected ? 'rejected' : 'ok';
+    }
+
+    it('пропускает воспроизводимый минимум, несмотря на широкий размах max/min', () => {
+      // Ровно случай аллоцирующего станка: максимумы разъехались втрое (GC), но минимум
+      // половин один и тот же — оценка воспроизводима, отказывать не за что.
+      expect(verdictOf([100, 300, 101, 290])).toBe('ok');
+    });
+
+    it('отказывает, когда минимум половин разъехался', () => {
+      expect(verdictOf([100, 101, 140, 145])).toBe('rejected');
+    });
+
+    it('молчит на выборке короче четырёх — половинки не несут информации', () => {
+      expect(verdictOf([100, 999, 100])).toBe('ok');
+    });
+
+    it('допуск настраивается', () => {
+      expect(verdictOf([100, 100, 120, 120], 1.5)).toBe('ok');
+      expect(verdictOf([100, 100, 120, 120], 1.05)).toBe('rejected');
+    });
   });
 
   it('minOf берёт минимум, а не первый или средний', () => {

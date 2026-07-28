@@ -20,7 +20,7 @@ import { cpus } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assertQuietBench, minOf } from './lib/bench-gate.js';
+import { assertQuietBench, assertStableSamples, minOf } from './lib/bench-gate.js';
 import { makeIsolateDeps, makeRequest, makeTrustedDeps, DEFAULT_PROBE, type WorkloadSpec } from './lib/profile-runner-fixture.js';
 import { runBacktest, type RunDeps } from '../src/engine/runner.js';
 import { contentRef } from '../src/determinism/hash.js';
@@ -150,6 +150,7 @@ try {
 
 const walls = samples.map((s) => s.wallMs).sort((a, b) => a - b);
 // Минимум, а не медиана и не среднее: см. `lib/bench-gate.ts` — GC-паузы ложатся случайно.
+assertStableSamples('profile-runner', walls);
 const best = minOf(walls);
 const bars = samples[0]!.barsProcessed;
 
