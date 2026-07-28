@@ -14,9 +14,18 @@
 // миграции, по которому видно происхождение каждого нового хеша без раскопок в git.
 //
 // Запуск: pnpm exec tsx apps/backtester/scripts/derive-f3-goldens.mts [--write]
+//
+// `--reanchor --reason "…"` — для ОДНОГО законного случая: значения сдвинулись намеренно и это
+// доказано вне этого скрипта (волна C — квантизация ушла на границу артефакта; differential на
+// замороженных лентах показал ноль структурных расхождений). Тогда утверждение «откат Ф3-полей
+// восстанавливает до-Ф3 голден» перестаёт быть верным навсегда: тот голден замораживался под
+// прежней арифметикой, и вернуть его нельзя, не подделав историю.
+//
+// Переанкеривание НЕ ослабляет структурную часть гейта: расхождение по-прежнему обязано состоять
+// только из Ф3-полей формы. Двигается лишь абсолютный якорь, а прежнее значение с причиной
+// остаётся в карте — чтобы новое число не читалось потом как «всегда таким было».
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,14 +40,32 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const MAP_PATH = resolve(REPO_ROOT, 'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json');
 const WRITE = process.argv.includes('--write');
+const REANCHOR = process.argv.includes('--reanchor');
+const reasonAt = process.argv.indexOf('--reason');
+const REASON = reasonAt === -1 ? undefined : process.argv[reasonAt + 1];
+if (REANCHOR && !WRITE) {
+  console.error('--reanchor требует --write: переанкеривание это запись, а не проверка');
+  process.exit(2);
+}
+if (REANCHOR && (REASON === undefined || REASON.trim() === '')) {
+  console.error('--reanchor требует --reason: якорь без причины это стёртая история');
+  process.exit(2);
+}
 
-/** How the engine is consumed today: a released npm version, read from the installed manifest. */
+/**
+ * How the engine is consumed today: the pinned npm version, read from OUR manifest.
+ *
+ * Не через `require.resolve('@trdlabs/engine/package.json')`: пакет не экспортирует этот подпуть
+ * (`exports` содержит только `.`), поэтому такой резолв падает с ERR_PACKAGE_PATH_NOT_EXPORTED.
+ * Пин в нашем манифесте — то же самое утверждение и не зависит от чужой карты экспортов.
+ */
 function engineRelease(): string {
-  const req = createRequire(import.meta.url);
-  const pkg = JSON.parse(readFileSync(req.resolve('@trdlabs/engine/package.json'), 'utf8')) as {
-    version: string;
+  const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'apps/backtester/package.json'), 'utf8')) as {
+    dependencies?: Record<string, string>;
   };
-  return `@trdlabs/engine@${pkg.version}`;
+  const version = pkg.dependencies?.['@trdlabs/engine'];
+  if (version === undefined) throw new Error('derive-f3-goldens: @trdlabs/engine не найден в зависимостях');
+  return `@trdlabs/engine@${version}`;
 }
 
 interface Entry {
@@ -47,6 +74,9 @@ interface Entry {
   readonly legacy: string;
   readonly active: string;
   readonly diffPaths: readonly string[];
+  /** Прежний якорь, если он переносился осознанно (`--reanchor`). */
+  readonly reanchoredFrom?: string;
+  readonly reanchorReason?: string;
 }
 
 /**
@@ -89,20 +119,36 @@ for (const scenario of GOLDEN_SCENARIOS) {
   console.log(`  rolled back       : ${proof.preF3Hash} ${equivalent ? '✓ equivalent' : '✗ DRIFTED'}`);
   console.log(`  new active        : ${proof.activeHash}`);
   console.log(`  diffPaths         : ${proof.diffPaths.join(', ') || '(none)'}`);
-  if (!equivalent || !onlyShape || proof.diffPaths.length === 0) {
+  // Структурная часть гейта не ослабляется переанкериванием НИКОГДА: расхождение обязано состоять
+  // только из Ф3-полей формы, иначе поехало поведение, а не арифметика.
+  if (!onlyShape || proof.diffPaths.length === 0) {
+    console.error(`  ✗ ${scenario.id}: расхождение вышло за пределы Ф3-полей формы — переанкеривание запрещено`);
+    failed += 1;
+    continue;
+  }
+  if (!equivalent && !REANCHOR) {
     console.error(
-      `  ✗ ${scenario.id}: extraction equivalence NOT proven — refusing to rebase this golden`,
+      `  ✗ ${scenario.id}: extraction equivalence NOT proven — refusing to rebase this golden` +
+        ` (намеренный сдвиг значений переанкеривается флагом --reanchor --reason "…")`,
     );
     failed += 1;
     continue;
   }
+  const moved = !equivalent;
+  if (moved) console.log(`  ↳ переанкерено: ${anchor} -> ${proof.preF3Hash} (${REASON ?? ''})`);
 
   goldens[scenario.id] = {
     scenario: scenario.id,
     source: scenario.goldenSource,
-    legacy: anchor,
+    legacy: moved ? proof.preF3Hash : anchor,
     active: proof.activeHash,
     diffPaths: [...proof.diffPaths].sort(),
+    // Прежний якорь не исчезает: иначе новое число со временем читалось бы как «всегда таким было».
+    ...(moved
+      ? { reanchoredFrom: anchor, reanchorReason: REASON }
+      : recorded?.reanchoredFrom !== undefined
+        ? { reanchoredFrom: recorded.reanchoredFrom, reanchorReason: recorded.reanchorReason }
+        : {}),
   };
 }
 

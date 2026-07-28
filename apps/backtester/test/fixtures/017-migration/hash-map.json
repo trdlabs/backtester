@@ -7,21 +7,25 @@
     "overlay-baseline": {
       "scenario": "overlay-baseline",
       "source": "apps/backtester/test/fixtures/overlay/goldens/baseline.hash",
-      "legacy": "sha256:0be9931ce4f3b11f78a4e78810505767e018c4e160dd5b059558259a7e05a2df",
-      "active": "sha256:7149703ebcd596f83f6011b2deaab837ac58bb34a30666253c5db4f9d5020fb1",
+      "legacy": "sha256:fe6034f8ae9a52f9618ff63f48821f9a128bb93de07906ec780692fc222875f4",
+      "active": "sha256:7d0f98f4702117646dd6999329d08a65fcde959aa516a9ace9996c3c336cb5e3",
       "diffPaths": [
         "/baseline/evidence/contractVersion"
-      ]
+      ],
+      "reanchoredFrom": "sha256:0be9931ce4f3b11f78a4e78810505767e018c4e160dd5b059558259a7e05a2df",
+      "reanchorReason": "волна C: quantize на границу артефакта (@trdlabs/engine 0.2.0); differential — ноль структурных расхождений, макс. отн. сдвиг 4.49e-10"
     },
     "overlay-variant": {
       "scenario": "overlay-variant",
       "source": "apps/backtester/test/fixtures/overlay/goldens/variant.hash",
-      "legacy": "sha256:e381659c6472cf920b0d30cf682a9748edf7421c88751d7f4db5b34426f74f2c",
-      "active": "sha256:4c7a2303944b44aedb0e1bb060c9f40cf08cb8304125c5dc53a5e2de4cee9ee1",
+      "legacy": "sha256:f02e56babff26fdb15e00666f9ec06b03abcf05d2a863ffbb911b54a17f1f453",
+      "active": "sha256:7abe67c3e8d510a4909eb6216d7650b7769c16702aac60eb92d1ac1eeb36c5c9",
       "diffPaths": [
         "/baseline/evidence/contractVersion",
         "/variant/evidence/contractVersion"
-      ]
+      ],
+      "reanchoredFrom": "sha256:e381659c6472cf920b0d30cf682a9748edf7421c88751d7f4db5b34426f74f2c",
+      "reanchorReason": "волна C: quantize на границу артефакта (@trdlabs/engine 0.2.0); differential — ноль структурных расхождений, макс. отн. сдвиг 4.49e-10"
     },
     "bar-major": {
       "scenario": "bar-major",
