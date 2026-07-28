@@ -44,6 +44,12 @@ export interface StructuralBreak {
   readonly after: unknown;
 }
 
+export interface DeclaredException {
+  readonly path: Path;
+  readonly before: unknown;
+  readonly after: unknown;
+}
+
 export interface DifferentialReport {
   /** Разрешена ли переморозка: структурных расхождений нет. */
   readonly refreezeAllowed: boolean;
@@ -51,6 +57,29 @@ export interface DifferentialReport {
   readonly numericMoves: readonly NumericMove[];
   /** Сколько числовых листьев сравнили всего — знаменатель для «сдвинулось N из M». */
   readonly numericLeavesCompared: number;
+  /**
+   * Расхождения, ОБЪЯВЛЕННЫЕ ожидаемыми в вызове (`--expect-changed`). Они не блокируют
+   * переморозку, но печатаются отдельным разделом: исключение, о котором нельзя прочитать в
+   * отчёте, — это не исключение, а дыра.
+   */
+  readonly declaredExceptions: readonly DeclaredException[];
+  /**
+   * Объявленные пути, не встретившиеся В ЭТОМ сценарии. Протухание определяется НЕ здесь:
+   * один и тот же путь может существовать в одном сценарии и отсутствовать в другом (например
+   * `variant.*` есть только там, где есть вариант). Судить можно лишь по всему прогону —
+   * см. `staleExceptions`.
+   */
+  readonly expectedNotSeen: readonly Path[];
+}
+
+/** Объявленные пути, не встретившиеся НИ В ОДНОМ сценарии, — список исключений протух. */
+export function staleExceptions(
+  reports: ReadonlyMap<string, DifferentialReport>,
+  expectChanged: readonly Path[],
+): readonly Path[] {
+  const seen = new Set<Path>();
+  for (const r of reports.values()) for (const e of r.declaredExceptions) seen.add(e.path);
+  return expectChanged.filter((p) => !seen.has(p));
 }
 
 /**
@@ -84,16 +113,39 @@ function typeOf(v: unknown): string {
  * Сравнить два артефакта. Обход строго параллельный: расхождение формы (ключи, длина массива,
  * тип листа) — уже структурное, потому что артефакт одной и той же ленты обязан иметь одну форму.
  */
-export function compareArtifacts(before: unknown, after: unknown, root = ''): DifferentialReport {
+export function compareArtifacts(
+  before: unknown,
+  after: unknown,
+  root = '',
+  /**
+   * Пути, чьё расхождение объявлено ожидаемым. Нужны для одного законного случая: маркер вроде
+   * `engineVersion`, который ОБЯЗАН измениться вместе с семантикой и потому не является
+   * доказательством поломки. Список задаётся в вызове, а не зашит в инструмент: гейт остаётся
+   * fail-closed по умолчанию, а каждое исключение видно и в команде, и в отчёте.
+   */
+  expectChanged: readonly Path[] = [],
+): DifferentialReport {
+  const expected = new Set(expectChanged);
+  const seenExpected = new Set<Path>();
+  const declaredExceptions: DeclaredException[] = [];
   const structuralBreaks: StructuralBreak[] = [];
   const numericMoves: NumericMove[] = [];
   let numericLeavesCompared = 0;
+
+  function breakAt(b: StructuralBreak): void {
+    if (expected.has(b.path)) {
+      seenExpected.add(b.path);
+      declaredExceptions.push({ path: b.path, before: b.before, after: b.after });
+      return;
+    }
+    structuralBreaks.push(b);
+  }
 
   function walk(a: unknown, b: unknown, path: Path): void {
     const ta = typeOf(a);
     const tb = typeOf(b);
     if (ta !== tb) {
-      structuralBreaks.push({ path, kind: 'type_changed', before: a, after: b });
+      breakAt({ path, kind: 'type_changed', before: a, after: b });
       return;
     }
 
@@ -101,7 +153,7 @@ export function compareArtifacts(before: unknown, after: unknown, root = ''): Di
       const arrA = a as unknown[];
       const arrB = b as unknown[];
       if (arrA.length !== arrB.length) {
-        structuralBreaks.push({ path, kind: 'array_length_changed', before: arrA.length, after: arrB.length });
+        breakAt({ path, kind: 'array_length_changed', before: arrA.length, after: arrB.length });
         return; // дальше сравнивать нечего: индексы уже разъехались
       }
       for (let i = 0; i < arrA.length; i += 1) walk(arrA[i], arrB[i], `${path}[${i}]`);
@@ -117,11 +169,11 @@ export function compareArtifacts(before: unknown, after: unknown, root = ''): Di
         const hasA = Object.hasOwn(objA, key);
         const hasB = Object.hasOwn(objB, key);
         if (!hasB) {
-          structuralBreaks.push({ path: childPath, kind: 'missing_in_after', before: objA[key], after: undefined });
+          breakAt({ path: childPath, kind: 'missing_in_after', before: objA[key], after: undefined });
           continue;
         }
         if (!hasA) {
-          structuralBreaks.push({ path: childPath, kind: 'missing_in_before', before: undefined, after: objB[key] });
+          breakAt({ path: childPath, kind: 'missing_in_before', before: undefined, after: objB[key] });
           continue;
         }
         walk(objA[key], objB[key], childPath);
@@ -137,7 +189,7 @@ export function compareArtifacts(before: unknown, after: unknown, root = ''): Di
       if (isIdentityNumber(path)) {
         // Метка, индекс или счётчик сдвинулся — это смена последовательности событий, а не
         // арифметики. Переморозка запрещена.
-        structuralBreaks.push({ path, kind: 'identity_number_changed', before: na, after: nb });
+        breakAt({ path, kind: 'identity_number_changed', before: na, after: nb });
         return;
       }
       const absDelta = Math.abs(nb - na);
@@ -147,7 +199,7 @@ export function compareArtifacts(before: unknown, after: unknown, root = ''): Di
     }
 
     // string / boolean / null — величинами не бывают.
-    if (a !== b) structuralBreaks.push({ path, kind: 'value_changed', before: a, after: b });
+    if (a !== b) breakAt({ path, kind: 'value_changed', before: a, after: b });
   }
 
   walk(before, after, root);
@@ -157,15 +209,18 @@ export function compareArtifacts(before: unknown, after: unknown, root = ''): Di
     structuralBreaks,
     numericMoves,
     numericLeavesCompared,
+    declaredExceptions,
+    expectedNotSeen: [...expected].filter((path) => !seenExpected.has(path)),
   };
 }
 
 /** Отчёт в Markdown — то, что прикладывается к PR переморозки. */
 export function formatDifferentialReport(
   reports: ReadonlyMap<string, DifferentialReport>,
-  opts: { readonly topMovers?: number } = {},
+  opts: { readonly topMovers?: number; readonly expectChanged?: readonly Path[] } = {},
 ): string {
   const top = opts.topMovers ?? 20;
+  const stale = staleExceptions(reports, opts.expectChanged ?? []);
   const lines: string[] = [];
 
   // Пустой набор сценариев — не «всё чисто», а «ничего не проверили». `every` на пустом множестве
@@ -174,7 +229,7 @@ export function formatDifferentialReport(
     return '## Вердикт: ОСТАНОВКА — ни одного сценария не сравнили\n\nПустой набор не является доказательством: проверять было нечего.\n';
   }
 
-  const allowed = [...reports.values()].every((r) => r.refreezeAllowed);
+  const allowed = [...reports.values()].every((r) => r.refreezeAllowed) && stale.length === 0;
   lines.push(allowed ? '## Вердикт: ПЕРЕМОРОЗКА РАЗРЕШЕНА' : '## Вердикт: ОСТАНОВКА — нужно решение владельца');
   lines.push('');
   lines.push(
@@ -185,6 +240,19 @@ export function formatDifferentialReport(
           ' а изменение поведения — см. таблицу ниже.',
   );
   lines.push('');
+
+  if (stale.length > 0) {
+    lines.push('### Протухшие исключения');
+    lines.push('');
+    lines.push(
+      'Эти пути объявлены ожидаемыми, но не изменились НИ В ОДНОМ сценарии. Список исключений,' +
+        ' который прощает несуществующее, со временем начнёт прикрывать настоящую поломку — поэтому' +
+        ' он сам считается расхождением.',
+    );
+    lines.push('');
+    for (const p of stale) lines.push(`- \`${p}\``);
+    lines.push('');
+  }
 
   lines.push('| Сценарий | Вердикт | Структурных расхождений | Сдвинулось чисел | Из скольких | Макс. отн. сдвиг |');
   lines.push('| --- | --- | ---: | ---: | ---: | ---: |');
@@ -207,6 +275,18 @@ export function formatDifferentialReport(
       lines.push(`| \`${b.path}\` | ${b.kind} | \`${JSON.stringify(b.before)}\` | \`${JSON.stringify(b.after)}\` |`);
     }
     if (r.structuralBreaks.length > 200) lines.push(`| … | ещё ${r.structuralBreaks.length - 200} | | |`);
+    lines.push('');
+  }
+
+  for (const [name, r] of reports) {
+    if (r.declaredExceptions.length === 0) continue;
+    lines.push(`### Объявленные исключения — \`${name}\``);
+    lines.push('');
+    lines.push('| Путь | Было | Стало |');
+    lines.push('| --- | --- | --- |');
+    for (const e of r.declaredExceptions) {
+      lines.push(`| \`${e.path}\` | \`${JSON.stringify(e.before)}\` | \`${JSON.stringify(e.after)}\` |`);
+    }
     lines.push('');
   }
 

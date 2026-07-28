@@ -7,7 +7,7 @@
 // Два режима:
 //
 //   capture --out <dir>   прогнать замороженные сценарии и сложить артефакты в каталог
-//   compare <before> <after> [--out отчёт.md]   сравнить два таких каталога
+//   compare <before> <after> [--out отчёт.md] [--expect-changed a.b,c.d]   сравнить два каталога
 //
 // Как этим пользоваться правильно (важно):
 //
@@ -30,7 +30,12 @@ import { fileURLToPath } from 'node:url';
 
 import type { BacktestRunRequest } from '@trading/research-contracts';
 
-import { compareArtifacts, formatDifferentialReport, type DifferentialReport } from './lib/differential-report.js';
+import {
+  compareArtifacts,
+  formatDifferentialReport,
+  staleExceptions,
+  type DifferentialReport,
+} from './lib/differential-report.js';
 import { buildOverlayDataset } from '../src/engine/data-adapter.js';
 import { runOverlayBacktest } from '../src/engine/run-overlay.js';
 import { buildTrustedRegistry } from '../src/engine/trusted-registry.js';
@@ -78,7 +83,7 @@ async function capture(outDir: string): Promise<void> {
   console.log(`[differential] ${frozenScenarios().length} сценариев → ${outDir}`);
 }
 
-function compare(beforeDir: string, afterDir: string, outPath?: string): void {
+function compare(beforeDir: string, afterDir: string, outPath?: string, expectChanged: readonly string[] = []): void {
   const reports = new Map<string, DifferentialReport>();
   const names = readdirSync(beforeDir).filter((f) => f.endsWith('.json')).sort();
   const afterNames = new Set(readdirSync(afterDir).filter((f) => f.endsWith('.json')));
@@ -112,10 +117,10 @@ function compare(beforeDir: string, afterDir: string, outPath?: string): void {
   for (const name of names) {
     const a = JSON.parse(readFileSync(join(beforeDir, name), 'utf8')) as unknown;
     const b = JSON.parse(readFileSync(join(afterDir, name), 'utf8')) as unknown;
-    reports.set(name, compareArtifacts(a, b));
+    reports.set(name, compareArtifacts(a, b, '', expectChanged));
   }
 
-  const report = formatDifferentialReport(reports);
+  const report = formatDifferentialReport(reports, { expectChanged });
   console.log(report);
   if (outPath !== undefined) {
     writeFileSync(outPath, `${report}\n`);
@@ -123,7 +128,9 @@ function compare(beforeDir: string, afterDir: string, outPath?: string): void {
   }
 
   // Код возврата — машинный гейт переморозки. 0 = сдвинулись только величины.
-  const allowed = [...reports.values()].every((r) => r.refreezeAllowed);
+  const allowed =
+    [...reports.values()].every((r) => r.refreezeAllowed) &&
+    staleExceptions(reports, expectChanged).length === 0;
   if (!allowed) process.exitCode = 1;
 }
 
@@ -141,7 +148,10 @@ if (mode === 'capture') {
     console.error('usage: differential.mts compare <beforeDir> <afterDir> [--out report.md]');
     process.exit(2);
   }
-  compare(resolve(before), resolve(after), flagValue('--out'));
+  // `--expect-changed a.b,c.d` — объявить расхождения ожидаемыми. Единственный законный случай:
+  // маркер вроде `engineVersion`, обязанный измениться вместе с семантикой.
+  const expect = (flagValue('--expect-changed') ?? '').split(',').map((x) => x.trim()).filter((x) => x !== '');
+  compare(resolve(before), resolve(after), flagValue('--out'), expect);
 } else {
   console.error('usage: differential.mts capture --out <dir> | compare <beforeDir> <afterDir> [--out report.md]');
   process.exit(2);
