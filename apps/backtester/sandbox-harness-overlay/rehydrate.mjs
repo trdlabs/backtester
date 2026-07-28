@@ -44,6 +44,24 @@ function indicatorEngineFor(buffer) {
   return engine;
 }
 
+/**
+ * Свечи буфера морозятся ОДИН РАЗ, а не при каждой выдаче окна (D2, дефект №5).
+ *
+ * Ключ — идентичность буфера, значение — сколько его первых свечей уже заморожено. Буфер только
+ * растёт (харнесс пушит `newBar`), поэтому счётчика достаточно: догоняем хвост и выходим. Свеча,
+ * попавшая в буфер, больше никем не переписывается — ни харнессом, ни движком индикаторов, —
+ * поэтому заморозка на месте безопаснее копии: она защищает и ленту, по которой считаются
+ * индикаторы, а не только выданный стратегии срез.
+ */
+const frozenUpToByBuffer = new WeakMap();
+
+function freezeBarsUpTo(buffer, end) {
+  let from = frozenUpToByBuffer.get(buffer) ?? 0;
+  if (from >= end) return;
+  for (; from < end; from += 1) Object.freeze(buffer[from]);
+  frozenUpToByBuffer.set(buffer, end);
+}
+
 /** mulberry32 — детерминированный 32-битный PRNG (вендорная копия 018 rng.ts). */
 export function createSeededRng(seed) {
   let a = seed >>> 0;
@@ -112,10 +130,23 @@ function buildMarketAccess(oiBuffer, liqBuffer, t) {
 export function rehydrateContext(snapshot, buffer, rng, oiBuffer = [], liqBuffer = []) {
   const t = buffer.length - 1;
   const accessor = indicatorEngineFor(buffer).accessorAt(t);
+  // D2 (дефект №5): окно отдаётся из буфера напрямую и строится один раз на (бар, lookback).
+  // Раньше каждый вызов аллоцировал КОПИЮ каждой свечи окна (`{ ...b }`) и морозил её — при
+  // lookback 1000 это тысяча объектов на бар, и всё ради read-only гарантии, которую даёт одна
+  // заморозка самой свечи в буфере (`freezeBarsUpTo`).
+  //
+  // Значения не двигаются: копия и оригинал несут те же поля, а мутация запрещена и там, и там.
+  // Меняется только идентичность объектов, а её стратегии неоткуда наблюдать — ссылки на свечи
+  // прошлых баров ей никто не отдавал: до этой правки каждый вызов делал свежие копии.
+  let lastLookback = -1;
+  let lastSlice;
   const data = {
     closedCandles(lookback) {
-      const start = Math.max(0, t - lookback);
-      return Object.freeze(buffer.slice(start, t).map((b) => Object.freeze({ ...b })));
+      if (lookback === lastLookback) return lastSlice;
+      freezeBarsUpTo(buffer, t);
+      lastSlice = Object.freeze(buffer.slice(Math.max(0, t - lookback), t));
+      lastLookback = lookback;
+      return lastSlice;
     },
     indicatorAsOf(name) {
       const m = /^sma_(\d+)$/.exec(name);
