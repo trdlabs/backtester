@@ -54,12 +54,14 @@ const [
   { FixtureDataPort },
   { buildSandboxStrategyBaselineDeps, buildTrustedStrategyBaselineDeps, materializeReadableBundle },
   { resultHash },
+  { runBacktestInThread },
 ] = await Promise.all([
   import('../src/engine/runner.js'),
   import('../src/engine/data-adapter.js'),
   import('../src/data/reader.js'),
   import('../test/helpers-overlay-sandbox.js'),
   import('../test/helpers/bar-major-fixture.js'),
+  import('../src/engine/thread/run-in-thread.js'),
 ]);
 
 
@@ -133,8 +135,12 @@ console.log(
 // `trusted` — доверенный двойник БЕЗ песочницы: та же стратегия in-process. Он не кандидат в прод
 // (недоверенный код обязан жить в песочнице), он опорная точка: разность trusted↔isolate и есть
 // цена песочницы, а без неё «мкс/бар изолята» неразложимо.
-type Backend = 'docker' | 'isolate' | 'trusted';
-const BACKENDS: readonly Backend[] = ['docker', 'isolate', 'trusted'];
+// `isolate-thread` — тот же изолятный бэкенд, но барный цикл целиком уехал в worker_thread. Его
+// присутствие в матрице отвечает на единственный вопрос, который перенос обязан пройти прежде
+// всего: НЕ ДВИГАЕТ ЛИ ОН РЕЗУЛЬТАТ. Тайминг у него читается с поправкой — поток строит ленту
+// заново (через границу едет рецепт, а не данные), и эта постройка ложится в цену входа.
+type Backend = 'docker' | 'isolate' | 'trusted' | 'isolate-thread';
+const BACKENDS: readonly Backend[] = ['docker', 'isolate', 'trusted', 'isolate-thread'];
 
 const sp = await materializeReadableBundle(bundle);
 /** wall-замеры: бэкенд → длина (в барах) → повторы. */
@@ -142,6 +148,26 @@ const walls = new Map<Backend, Map<number, number[]>>(BACKENDS.map((b) => [b, ne
 const hashes = new Map<number, Set<string>>();
 
 async function runOnce(backend: Backend, tiled: Tiled, marketTape: unknown): Promise<{ wallMs: number; hash: string }> {
+  if (backend === 'isolate-thread') {
+    const t0 = process.hrtime.bigint();
+    const out = await runBacktestInThread({
+      request: tiled.request,
+      bundleDir: sp.bundleDir,
+      sandboxBackend: 'isolate',
+      dataPort: { kind: 'fixture', dir: tiled.fixturesDir },
+      dataset: {
+        datasetRef: tiled.request.datasetRef,
+        symbols: tiled.request.symbols,
+        timeframe: tiled.request.timeframe,
+        period: tiled.request.period,
+      },
+    });
+    const wallMs = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (out.sandboxErrors.length > 0) {
+      throw new Error(`sandbox errors (thread): ${JSON.stringify(out.sandboxErrors).slice(0, 600)}`);
+    }
+    return { wallMs, hash: resultHash(out.result as never) };
+  }
   const { registry, router } =
     backend === 'trusted'
       ? buildTrustedStrategyBaselineDeps()
