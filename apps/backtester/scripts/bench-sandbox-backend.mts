@@ -52,7 +52,7 @@ const [
   { runBacktest },
   { buildOverlayDataset },
   { FixtureDataPort },
-  { buildSandboxStrategyBaselineDeps, materializeReadableBundle },
+  { buildSandboxStrategyBaselineDeps, buildTrustedStrategyBaselineDeps, materializeReadableBundle },
   { resultHash },
 ] = await Promise.all([
   import('../src/engine/runner.js'),
@@ -130,8 +130,11 @@ console.log(
 
 // --- Прогон ---------------------------------------------------------------------------------------
 
-type Backend = 'docker' | 'isolate';
-const BACKENDS: readonly Backend[] = ['docker', 'isolate'];
+// `trusted` — доверенный двойник БЕЗ песочницы: та же стратегия in-process. Он не кандидат в прод
+// (недоверенный код обязан жить в песочнице), он опорная точка: разность trusted↔isolate и есть
+// цена песочницы, а без неё «мкс/бар изолята» неразложимо.
+type Backend = 'docker' | 'isolate' | 'trusted';
+const BACKENDS: readonly Backend[] = ['docker', 'isolate', 'trusted'];
 
 const sp = await materializeReadableBundle(bundle);
 /** wall-замеры: бэкенд → длина (в барах) → повторы. */
@@ -139,7 +142,10 @@ const walls = new Map<Backend, Map<number, number[]>>(BACKENDS.map((b) => [b, ne
 const hashes = new Map<number, Set<string>>();
 
 async function runOnce(backend: Backend, tiled: Tiled, marketTape: unknown): Promise<{ wallMs: number; hash: string }> {
-  const { registry, router } = buildSandboxStrategyBaselineDeps({ spDir: sp.bundleDir, sandboxBackend: backend });
+  const { registry, router } =
+    backend === 'trusted'
+      ? buildTrustedStrategyBaselineDeps()
+      : buildSandboxStrategyBaselineDeps({ spDir: sp.bundleDir, sandboxBackend: backend });
   try {
     const t0 = process.hrtime.bigint();
     // Запрос читается из фикстуры целиком; локальный тип покрывает только поля, которые станок
@@ -248,8 +254,15 @@ if (impossible.length > 0) {
 } else if (parityOk) {
   const d = perBar.get('docker')!;
   const i = perBar.get('isolate')!;
-  console.log(`  ПАРИТЕТ: ✓ на каждой длине один result_hash на обоих бэкендах`);
-  console.log(`  СКОРОСТЬ: docker ${d.toFixed(1)} мкс/бар → isolate ${i.toFixed(1)} мкс/бар  = ×${(d / i).toFixed(1)}`);
+  const t = perBar.get('trusted')!;
+  console.log('  ПАРИТЕТ: ✓ на каждой длине один result_hash на всех бэкендах');
+  console.log(`  СКОРОСТЬ: docker ${d.toFixed(1)} → isolate ${i.toFixed(1)} мкс/бар  = ×${(d / i).toFixed(1)}`);
+  console.log('');
+  console.log('  РАЗЛОЖЕНИЕ пербарной цены изолята:');
+  console.log(`    базовая работа (контекст + движок + стратегия, доверенный путь)  ${t.toFixed(1)} мкс  ${((100 * t) / i).toFixed(0)}%`);
+  console.log(`    цена песочницы (граница + харнесс внутри)                        ${(i - t).toFixed(1)} мкс  ${((100 * (i - t)) / i).toFixed(0)}%`);
+  console.log(`      из неё конверт границы (замерено bt#191)                       ~144.5 мкс  ${((100 * 144.5) / i).toFixed(0)}%`);
+  console.log(`      из неё работа харнесса внутри изолята (остаток)                ${(i - t - 144.5).toFixed(1)} мкс  ${((100 * (i - t - 144.5)) / i).toFixed(0)}%`);
 } else {
   console.error('  Смена бэкенда меняет результат прогона. Это дефект исполнителя, а не «другой режим»;');
   console.error('  до выяснения причины изолятный бэкенд включать нельзя.');
