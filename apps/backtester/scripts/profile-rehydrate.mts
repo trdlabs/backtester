@@ -8,6 +8,13 @@
 // Вопрос станка: бандл, который не делает НИЧЕГО (`return {kind:'idle'}`), стоит в изоляте
 // ~350–400 мкс/бар против ~40 мкс/бар у trusted-скелета. Из чего эти сотни микросекунд?
 //
+// МЕТОД (правка после bt#195). Сценарии ЧЕРЕДУЮТСЯ, а не идут фазами. Первая редакция мерила
+// каждый сценарий целиком по очереди, и это оказалось источником систематического смещения:
+// долгая работа предыдущей фазы занимает оба закреплённых ядра, фоновый оптимизирующий компилятор
+// V8 не успевает, и следующая фаза весь прогон идёт неоптимизированной. Внутри прогона смещение
+// постоянно, поэтому гейт воспроизводимости минимума его не видит; между прогонами оно гуляет в
+// разы — так был получен и отозван вывод bt#194.
+//
 //   pnpm exec tsx apps/backtester/scripts/profile-rehydrate.mts
 //   REHYDRATE_BARS=1000,2000,4000,8000 pnpm exec tsx apps/backtester/scripts/profile-rehydrate.mts
 
@@ -115,18 +122,21 @@ console.log(`[profile-rehydrate] сценарии на ${SIZES.join('/')} бар
 // случайно и раздувают среднее, тогда как минимум — самая чистая оценка стоимости самой работы.
 const REPEATS = Math.max(1, Number(process.env.REHYDRATE_REPEATS ?? 5));
 
-const results = new Map<string, Map<number, number>>();
-for (const mode of MODES) {
-  measure(200, mode); // прогрев JIT
-  measure(200, mode);
-  const row = new Map<number, number>();
+// Чередование по ВСЕМ парам (сценарий, размер): помеха от соседа раскладывается на всех поровну.
+const results = new Map<string, Map<number, number>>(MODES.map((m) => [m, new Map<number, number>()]));
+for (const mode of MODES) for (let w = 0; w < 2; w += 1) measure(200, mode); // прогрев JIT
+const best = new Map<string, number>();
+for (let r = 0; r < REPEATS; r += 1) {
   for (const n of SIZES) {
-    let best = Number.POSITIVE_INFINITY;
-    for (let r = 0; r < REPEATS; r += 1) best = Math.min(best, measure(n, mode));
-    row.set(n, best);
+    for (const mode of MODES) {
+      const key = `${mode}@${n}`;
+      const ms = measure(n, mode);
+      const prev = best.get(key);
+      if (prev === undefined || ms < prev) best.set(key, ms);
+    }
   }
-  results.set(mode, row);
 }
+for (const mode of MODES) for (const n of SIZES) results.get(mode)!.set(n, best.get(`${mode}@${n}`)!);
 
 console.log('| Сценарий | ' + SIZES.map((n) => `${n} баров`).join(' | ') + ' |');
 console.log('| --- | ' + SIZES.map(() => '---:').join(' | ') + ' |');

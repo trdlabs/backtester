@@ -90,6 +90,14 @@ await (
       sink(s) { return typeof s === 'string' ? '{}' : '{}'; },
       parse(s) { const m = JSON.parse(s); return m.snapshot.barIndex >= 0 ? '{}' : '{}'; },
       full(s) { const m = JSON.parse(s); return m.snapshot.barIndex >= 0 ? ${JSON.stringify(RESULT_JSON)} : '{}'; },
+      // Заглушка с РЕГУЛИРУЕМОЙ работой внутри: нужна, чтобы проверить, зависит ли цена
+      // асинхронного захода от того, сколько вызванная функция считает.
+      work(s, n) {
+        const m = JSON.parse(s);
+        let acc = m.snapshot.barIndex;
+        for (let i = 1; i <= n; i += 1) { acc = (acc * 31 + i) % 1000003; }
+        return acc >= 0 ? ${JSON.stringify(RESULT_JSON)} : '{}';
+      },
     };
   `)
 ).run(context);
