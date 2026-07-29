@@ -157,3 +157,36 @@ export function buildSandboxStrategyBaselineDeps(dirs: SandboxStrategyDirs): San
 
   return { registry, router };
 }
+
+/**
+ * ДОВЕРЕННЫЙ двойник того же прогона: та же стратегия `short_after_pump`, но зарегистрированная
+ * как in-process модуль, а не как bundle. Песочницы на пути нет вообще.
+ *
+ * Зачем. Идентичность модуля у доверенной стратегии и у бандла совпадает
+ * (`short_after_pump@0.1.0`), поэтому один и тот же запрос исполняется обоими — и разность их
+ * стоимости и есть ЦЕНА ПЕСОЧНИЦЫ целиком: граница плюс работа харнесса внутри. Без этой третьей
+ * точки «мкс/бар изолята» остаётся неразложимым числом: непонятно, сколько там песочницы, а
+ * сколько постройки контекста, движка и самой стратегии, которые платятся в любом случае.
+ *
+ * Побочно это ещё одна точка паритета: доверенный и песочный пути обязаны дать один `result_hash`
+ * (тот же инвариант twin-equivalence, которым проверяются evidence-прогоны).
+ */
+export function buildTrustedStrategyBaselineDeps(): SandboxOverlayDeps {
+  const config = loadConfig();
+  const policy = config.overlaySandbox.policy;
+
+  const registry = createModuleRegistry({
+    strategies: [shortAfterPump],
+    riskProfiles: [DEFAULT_RISK],
+    executionProfiles: [DEFAULT_EXEC],
+    sandboxPolicies: [policy],
+  });
+
+  // Никаких sandboxDeps: provenance 'trusted' уходит в дефолтный InProcessTrustedModuleExecutor.
+  const router = createExecutorRouter({
+    sandboxPolicies: createSandboxPolicyRegistry([policy]),
+    sandboxPolicyRef: { id: policy.id, version: policy.version },
+  });
+
+  return { registry, router };
+}
