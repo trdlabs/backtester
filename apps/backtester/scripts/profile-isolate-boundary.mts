@@ -90,6 +90,14 @@ await (
       sink(s) { return typeof s === 'string' ? '{}' : '{}'; },
       parse(s) { const m = JSON.parse(s); return m.snapshot.barIndex >= 0 ? '{}' : '{}'; },
       full(s) { const m = JSON.parse(s); return m.snapshot.barIndex >= 0 ? ${JSON.stringify(RESULT_JSON)} : '{}'; },
+      // Заглушка с РЕГУЛИРУЕМОЙ работой внутри: нужна, чтобы проверить, зависит ли цена
+      // асинхронного захода от того, сколько вызванная функция считает.
+      work(s, n) {
+        const m = JSON.parse(s);
+        let acc = m.snapshot.barIndex;
+        for (let i = 1; i <= n; i += 1) { acc = (acc * 31 + i) % 1000003; }
+        return acc >= 0 ? ${JSON.stringify(RESULT_JSON)} : '{}';
+      },
     };
   `)
 ).run(context);
@@ -287,6 +295,47 @@ for (const n of PARAM_COUNTS) {
   const samples = await measure(prod, json); // measure() сама греет под новый размер
   assertStableSamples(`isolate-boundary size=${n}`, samples);
   console.log(`  ${String(Buffer.byteLength(json, 'utf8')).padStart(6)} байт  →  ${minOf(samples).toFixed(3)} мкс/вызов`);
+}
+
+// --- Зависит ли цена асинхронного захода от работы ВНУТРИ ------------------------------------------
+//
+// Вся лестница выше меряет заглушку, которая возвращается мгновенно. Настоящий хук считает работу, и
+// сквозной замер (bt#193) оставляет ~400 мкс/бар, которых лестница не объясняет: харнесс стоит
+// единицы микросекунд (bt#196), кодек — пять, асинхронный вызов — сотню с небольшим.
+//
+// Гипотеза, объясняющая остаток без новых сущностей: асинхронный заход дёшев, пока вызванная
+// функция успевает вернуться в пределах ожидания вызывающей стороны, и резко дорожает, когда та
+// действительно уходит спать и её приходится будить. Тогда цена зависит от ДЛИТЕЛЬНОСТИ работы
+// внутри, а заглушка с мгновенным возвратом систематически её занижает.
+//
+// Проверяется в лоб: одна и та же пара «синхронно / асинхронно» при разном объёме работы внутри.
+// Если разница async−sync растёт с работой — гипотеза верна и остаток принадлежит границе.
+
+const refWork = await bag.get('work', { reference: true });
+const WORK_STEPS = [0, 100, 1_000, 10_000];
+
+console.log('\n  Цена асинхронного захода против работы ВНУТРИ изолята:');
+console.log('  ───────────────────────────────────────────────────────────────');
+console.log('    итераций внутри   sync, мкс   async, мкс   async−sync, мкс');
+for (const w of WORK_STEPS) {
+  const syncRung: Rung = {
+    id: `w${w}s`,
+    label: 'sync',
+    run: (j) => void (sink += (refWork.applySync(undefined, [j, w], APPLY_OPTS) as string).length),
+  };
+  const asyncRung: Rung = {
+    id: `w${w}a`,
+    label: 'async',
+    run: async (j) => {
+      sink += ((await context.evalClosure('return globalThis.__b.work($0, $1)', [j, w], EVAL_OPTS)) as string).length;
+    },
+  };
+  const got = await measureAll([syncRung, asyncRung], REAL_JSON);
+  const sy = minOf(got.get(syncRung.id)!);
+  const as = minOf(got.get(asyncRung.id)!);
+  console.log(
+    `    ${String(w).padStart(13)}   ${sy.toFixed(1).padStart(9)}   ${as.toFixed(1).padStart(10)}   ${(as - sy).toFixed(1).padStart(15)}`,
+  );
 }
 
 console.log(
