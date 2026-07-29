@@ -71,6 +71,14 @@ export interface SandboxStrategyDirs {
    * container for N symbols. Absent ⇒ byte-identical to pre-Task-7 (one container per symbol).
    */
   readonly universe?: { readonly enabled: boolean; readonly n: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
+  /**
+   * POC (analysis/18 A) — бэкенд исполнения bundle-модулей: `docker` (дефолт, контейнер на сессию)
+   * или `isolate` (isolated-vm в процессе воркера). Нужен станку паритета бэкендов
+   * (`scripts/bench-sandbox-backend.mts`): один и тот же прогон обязан давать один `result_hash`
+   * на обоих, иначе смена бэкенда меняет результаты и принимать её нельзя. Отсутствие поля ⇒
+   * прежнее поведение байт-в-байт.
+   */
+  readonly sandboxBackend?: 'docker' | 'isolate';
 }
 
 /** Registry + sandbox-aware router built over a materialized bundle. */
@@ -116,6 +124,7 @@ export function buildSandboxOverlayDeps(dirs: SandboxOverlayDirs): SandboxOverla
 
 /**
  * Build the registry + sandbox executor router for a BASELINE-ONLY run with a SANDBOXED STRATEGY.
+ * `dirs.sandboxBackend` выбирает бэкенд исполнения (docker по умолчанию).
  *
  * TOPOLOGY (mirrors the platform reference verify_020_equivalence.mjs): the `short_after_pump`
  * STRATEGY is an untrusted `strategyBundle` (→ inert proxy, provenance `bundle`) and there are NO
@@ -143,6 +152,7 @@ export function buildSandboxStrategyBaselineDeps(dirs: SandboxStrategyDirs): San
     sandboxPolicyRef: { id: policy.id, version: policy.version },
     sandboxDeps: { harnessDir: config.overlaySandbox.harnessDir, containerSuffix: nextContainerSuffix() },
     ...(dirs.universe ? { universe: dirs.universe } : {}),
+    ...(dirs.sandboxBackend ? { sandboxBackend: dirs.sandboxBackend } : {}),
   });
 
   return { registry, router };
