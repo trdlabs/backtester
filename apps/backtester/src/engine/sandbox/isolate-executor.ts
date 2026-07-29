@@ -20,6 +20,7 @@
 // отсутствует намеренно — per-call wallTimeMsPerCall остаётся единственным (и достаточным) гардом.
 
 import { createHash } from 'node:crypto';
+import { isMainThread } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,12 +73,27 @@ function isIsolateTimeout(err: unknown): boolean {
 /** Зависимости исполнителя (инъекция пути к собранному харнессу — для тестов). */
 export interface IsolateExecutorDeps {
   readonly harnessScriptPath?: string;
+  /**
+   * Звать изолят СИНХРОННО (`evalClosureSync`) вместо асинхронного `evalClosure`.
+   *
+   * Отсутствие ⇒ `!isMainThread`, то есть режим включается сам, когда исполнитель работает не на
+   * главном потоке. Правило простое и не допускает случайной регрессии: блокировать разрешено
+   * только свой поток, общий — никогда. Явное значение нужно тестам, которые обязаны сравнить оба
+   * пути в одном процессе.
+   */
+  readonly syncCalls?: boolean;
 }
 
 /** Исполнитель хуков bundle в V8-изоляте; реализует 018 ModuleExecutor seam (зеркало SandboxModuleExecutor). */
 export class IsolateModuleExecutor implements ModuleExecutor {
   private readonly revalidator = new DecisionRevalidator();
   private readonly harnessScriptPath: string;
+  /**
+   * Синхронные заходы в изолят. Включены по умолчанию ВНЕ главного потока: там блокировка на время
+   * хука никого не задевает, а выигрыш измерен (bt#191/196). На главном потоке остаётся
+   * асинхронный путь — иначе зациклившийся бандл вешал бы event loop процесса до таймаута.
+   */
+  private readonly syncCalls: boolean;
   private readonly collectedErrors: SandboxErrorArtifact[] = [];
   // Пербарная бухгалтерия newBar/newOi/newLiq per symbol — зеркало SandboxSession (universe=false).
   private readonly perSymbol = new Map<string, { barIndex: number; lastBarTs?: number }>();
@@ -102,6 +118,7 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     deps?: IsolateExecutorDeps,
   ) {
     this.harnessScriptPath = deps?.harnessScriptPath ?? defaultIsolateHarnessScriptPath();
+    this.syncCalls = deps?.syncCalls ?? !isMainThread;
   }
 
   /** Накопленные ошибки исполнения (диагностика US6; зеркало SandboxModuleExecutor.errors). */
@@ -250,24 +267,42 @@ export class IsolateModuleExecutor implements ModuleExecutor {
   ): Promise<{ ok: true; json: string } | { ok: false; error: SessionErrorLike }> {
     try {
       const budgetMs = opts?.timeoutMs ?? this.policy.limits.wallTimeMsPerCall;
-      const evalP: Promise<unknown> = this.context.evalClosure(expression, args as unknown[], {
-        result: { copy: true, promise: opts?.promise === true },
-        timeout: budgetMs,
-      });
-      // Host-side race: нативный timeout покрывает sync-исполнение; повисший промис в изоляте
-      // (патологический thenable) добиваем гонкой с запасом поверх бюджета.
-      let raceTimer: ReturnType<typeof setTimeout> | undefined;
       let raw: unknown;
-      try {
-        raw = await Promise.race([
-          evalP,
-          new Promise((_res, rej) => {
-            raceTimer = setTimeout(() => rej(new Error('isolate call timed out (host race)')), budgetMs + 500);
-            raceTimer.unref?.();
-          }),
-        ]);
-      } finally {
-        clearTimeout(raceTimer);
+      if (this.syncCalls && opts?.promise !== true) {
+        // СИНХРОННЫЙ заход. Измерено (bt#191/196): асинхронный `evalClosure` стоит +116…+217 мкс на
+        // вызов против синхронного — не потому, что делает больше работы, а потому что ответ идёт
+        // через event loop. Для пербарного хука это верхняя часть шкалы, на каждом баре.
+        //
+        // Хостовая гонка здесь НЕ нужна, и это не ослабление гарда, а исчезновение его повода: она
+        // ставилась против повисшего ПРОМИСА в изоляте (патологический thenable), а синхронный
+        // вызов промиса не возвращает вовсе. Стоп-кран остаётся нативный — `timeout` прерывает
+        // исполнение из сторожевого потока isolated-vm, и он же покрывает `for(;;)` в бандле.
+        //
+        // Плата — вызов блокирует ТЕКУЩИЙ поток на время хука. Поэтому режим по умолчанию включён
+        // только вне главного потока (см. `syncCalls`).
+        raw = this.context.evalClosureSync(expression, args as unknown[], {
+          result: { copy: true },
+          timeout: budgetMs,
+        });
+      } else {
+        const evalP: Promise<unknown> = this.context.evalClosure(expression, args as unknown[], {
+          result: { copy: true, promise: opts?.promise === true },
+          timeout: budgetMs,
+        });
+        // Host-side race: нативный timeout покрывает sync-исполнение; повисший промис в изоляте
+        // (патологический thenable) добиваем гонкой с запасом поверх бюджета.
+        let raceTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          raw = await Promise.race([
+            evalP,
+            new Promise((_res, rej) => {
+              raceTimer = setTimeout(() => rej(new Error('isolate call timed out (host race)')), budgetMs + 500);
+              raceTimer.unref?.();
+            }),
+          ]);
+        } finally {
+          clearTimeout(raceTimer);
+        }
       }
       // Ревью C2: харнесс живёт в ОДНОМ контексте с бандлом — top-level код мог подменить
       // __isolateHarness. Не-строка/не-JSON = вмешательство → session-fatal malformed (fail-closed),

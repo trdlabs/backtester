@@ -245,6 +245,69 @@ describe('IsolateModuleExecutor (POC — analysis/18 вариант A)', () => {
     }
   });
 
+  it('синхронный и асинхронный заходы дают ОДИНАКОВЫЕ решения (парность sync↔async)', async () => {
+    // Синхронный путь (`evalClosureSync`) включается вне главного потока и снимает измеренные
+    // +116…+217 мкс/бар (bt#191/196). Включать его можно только доказав, что он не двигает ни
+    // одного значения, — поэтому оба пути гоняются здесь В ОДНОМ процессе над одной лентой.
+    const src = `export default function createStrategyModule() {
+       return {
+         onBarClose(ctx) {
+           const v = ctx.indicators.value('sma', 3);
+           return { kind: 'annotate', tags: ['b' + ctx.bar.close + '_sma_' + (v === undefined ? 'w' : String(v)) + '_r' + ctx.rng.next()] };
+         },
+       };
+     }`;
+    const closes = [1.5, 2.5, 4.5, 5.0, 6.25];
+    const bars = closes.map((close, i) => ({ ts: 60_000 * (i + 1), open: close - 0.5, high: close + 0.5, low: close - 1, close, volume: 10 }));
+
+    const collect = async (syncCalls: boolean): Promise<string[]> => {
+      const exec = new IsolateModuleExecutor(writeBundle(src), DEFAULT_SANDBOX, { syncCalls });
+      try {
+        await exec.initStrategy(dummyModule, makeCtx('BTCUSDT', bars[0]!.ts));
+        const out: string[] = [];
+        for (const bar of bars) {
+          const ctx = { ...makeCtx('BTCUSDT', bar.ts), bar } as unknown as StrategyContext;
+          const d = await exec.executeStrategyHook(dummyModule, 'onBarClose', ctx);
+          out.push((d[0] as unknown as { tags: string[] }).tags[0]!);
+        }
+        expect(exec.errors).toEqual([]);
+        return out;
+      } finally {
+        exec.close();
+      }
+    };
+
+    const asyncTags = await collect(false);
+    const syncTags = await collect(true);
+    // Теги несут цену бара, значение индикатора И очередной отсчёт rng — то есть расхождение в
+    // любом из трёх (в том числе в порядке потребления rng) провалит сравнение.
+    expect(syncTags).toEqual(asyncTags);
+    expect(syncTags).toHaveLength(bars.length);
+  });
+
+  it('синхронный заход fail-closed по нативному таймауту (хостовая гонка ему не нужна)', { timeout: 15_000 }, async () => {
+    // Хостовая гонка на синхронном пути снята намеренно: она ставилась против повисшего ПРОМИСА в
+    // изоляте, а синхронный вызов промиса не возвращает. Стоп-краном остаётся нативный `timeout`,
+    // и этот тест проверяет, что он действительно срабатывает — иначе снятие гонки было бы
+    // ослаблением гарда, а не устранением его повода.
+    const bundle = writeBundle(
+      `export default function createStrategyModule() {
+         return { onBarClose() { for (;;) {} } };
+       }`,
+    );
+    const tightPolicy = { ...DEFAULT_SANDBOX, limits: { ...DEFAULT_SANDBOX.limits, wallTimeMsPerCall: 500 } };
+    const exec = new IsolateModuleExecutor(bundle, tightPolicy, { syncCalls: true });
+    try {
+      const ctx = makeCtx('BTCUSDT', 60_000);
+      await exec.initStrategy(dummyModule, ctx);
+      const decisions = await exec.executeStrategyHook(dummyModule, 'onBarClose', ctx);
+      expect(decisions).toEqual([]);
+      expect(exec.errors.some((e) => e.code === 'sandbox_timeout')).toBe(true);
+    } finally {
+      exec.close();
+    }
+  });
+
   it(
     'бесконечный цикл в TOP-LEVEL коде бандла → fail-closed под таймаутом, воркер не виснет (ревью C1)',
     { timeout: 15_000 },
