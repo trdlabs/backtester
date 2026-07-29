@@ -197,6 +197,31 @@ async function measure(rung: Rung, json: string): Promise<number[]> {
   return samples;
 }
 
+/**
+ * Все ступени ЧЕРЕДУЯСЬ, а не по очереди целиком.
+ *
+ * Фазовый порядок оказался источником систематического смещения (см. отзыв в `profile-isolate-cpu`):
+ * долгая работа предыдущей ступени занимала оба закреплённых ядра, фоновый оптимизирующий
+ * компилятор V8 не успевал, и следующая ступень весь прогон шла неоптимизированной. Внутри прогона
+ * это стабильно — гейт половин пропускает; между прогонами гуляет в разы. Чередование раскладывает
+ * помеху на все ступени поровну и делает результат воспроизводимым между процессами.
+ */
+async function measureAll(rungs: readonly Rung[], json: string): Promise<Map<string, number[]>> {
+  for (let w = 0; w < WARMUP_PASSES; w += 1) {
+    for (const rung of rungs) for (let i = 0; i < BARS; i += 1) await rung.run(json);
+  }
+  const samples = new Map<string, number[]>(rungs.map((r) => [r.id, []]));
+  for (let r = 0; r < REPEATS; r += 1) {
+    for (const rung of rungs) {
+      const t0 = process.hrtime.bigint();
+      for (let i = 0; i < BARS; i += 1) await rung.run(json);
+      const t1 = process.hrtime.bigint();
+      samples.get(rung.id)!.push(Number(t1 - t0) / 1000 / BARS);
+    }
+  }
+  return samples;
+}
+
 const PARAM_COUNTS = (process.env.IB_PARAMS ?? '0,8,64').split(',').map((s) => Number(s.trim()));
 const REAL_PARAMS = PARAM_COUNTS[1] ?? 8;
 
@@ -227,9 +252,10 @@ async function isolateHeapMb(): Promise<number> {
 
 let prev: number | undefined;
 const results = new Map<string, number>();
+const allSamples = await measureAll(RUNGS, REAL_JSON);
 for (const rung of RUNGS) {
   const heapBefore = await isolateHeapMb();
-  const samples = await measure(rung, REAL_JSON);
+  const samples = allSamples.get(rung.id)!;
   const heapAfter = await isolateHeapMb();
   if (process.env.IB_HEAP === 'true') {
     console.log(
