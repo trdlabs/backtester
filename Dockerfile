@@ -6,7 +6,7 @@
 # Docker CLI only (no daemon) for the DooD sandbox runner — pinned >=25 for `--mount volume-subpath`.
 FROM docker:27-cli AS dockercli
 
-FROM node:22-slim
+FROM node:24-slim
 WORKDIR /app
 RUN corepack enable
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
