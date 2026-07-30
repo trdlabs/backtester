@@ -55,6 +55,7 @@ const [
   { buildSandboxStrategyBaselineDeps, buildTrustedStrategyBaselineDeps, materializeReadableBundle },
   { resultHash },
   { runBacktestInThread },
+  { threadRouterSpec },
 ] = await Promise.all([
   import('../src/engine/runner.js'),
   import('../src/engine/data-adapter.js'),
@@ -62,6 +63,7 @@ const [
   import('../test/helpers-overlay-sandbox.js'),
   import('../test/helpers/bar-major-fixture.js'),
   import('../src/engine/thread/run-in-thread.js'),
+  import('../test/helpers-thread-spec.js'),
 ]);
 
 
@@ -153,7 +155,9 @@ async function runOnce(backend: Backend, tiled: Tiled, marketTape: unknown): Pro
     const out = await runBacktestInThread({
       request: tiled.request,
       bundleDir: sp.bundleDir,
-      sandboxBackend: 'isolate',
+      // Описание роутера строится ТЕМ ЖЕ помощником, что и в тестах: одна форма на все зовущие
+      // стороны, иначе станок снова начнёт мерить конфигурацию, которой в проде не бывает.
+      router: threadRouterSpec('isolate'),
       dataPort: { kind: 'fixture', dir: tiled.fixturesDir },
       dataset: {
         datasetRef: tiled.request.datasetRef,

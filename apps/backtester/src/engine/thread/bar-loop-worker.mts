@@ -19,42 +19,33 @@ const port = parentPort;
 async function runSpec(spec: ThreadRunSpec): Promise<ThreadRunReply> {
   try {
     const [
-      { runBacktest },
+      { runStrategyBacktest },
       { buildOverlayDataset },
       { FixtureDataPort },
-      { createExecutorRouter, createModuleRegistry },
+      { createOverlayRouter },
       { loadBundle },
-      { createSandboxPolicyRegistry },
-      { DEFAULT_EXEC, DEFAULT_RISK },
-      { loadConfig },
+      { strategyBundleRegistry },
       { tapeFromColumns },
     ] = await Promise.all([
-      import('../runner.js'),
+      import('../run-strategy.js'),
       import('../data-adapter.js'),
       import('../../data/reader.js'),
-      import('../sandbox/routing.js'),
+      import('../sandbox/overlay-router-spec.js'),
       import('../sandbox/bundle.js'),
-      import('../sandbox-policy.js'),
-      import('../profiles.js'),
-      import('../../config.js'),
+      import('../trusted-registry.js'),
       import('../tape-columns.js'),
     ]);
 
-    const policy = loadConfig().overlaySandbox.policy;
-
-    // Реестр и роутер строятся ЗДЕСЬ — они непередаваемы через границу потока по построению.
-    const registry = createModuleRegistry({
-      strategyBundles: [loadBundle(spec.bundleDir)],
-      riskProfiles: [DEFAULT_RISK],
-      executionProfiles: [DEFAULT_EXEC],
-      sandboxPolicies: [policy],
-    });
-    const router = createExecutorRouter({
-      sandboxPolicies: createSandboxPolicyRegistry([policy]),
-      sandboxPolicyRef: { id: policy.id, version: policy.version },
-      sandboxDeps: { harnessDir: loadConfig().overlaySandbox.harnessDir },
-      sandboxBackend: spec.sandboxBackend,
-    });
+    // Реестр и роутер непередаваемы через границу потока (у них методы), поэтому строятся ЗДЕСЬ —
+    // но ТЕМИ ЖЕ функциями, что и на главном потоке, и из описания, посчитанного ТАМ.
+    //
+    // Прежняя редакция собирала их по-своему: реестр без доверенных стратегий и оверлеев, с
+    // `DEFAULT_RISK`/`DEFAULT_EXEC` вместо профилей из `TRUSTED_REGISTRY_DEFINITION`, а роутер — с
+    // `harnessDir` из собственного `loadConfig()` и без тома с universe. Совпадало это с прод-путём
+    // только на одной конкретной стратегии и только в bind-режиме; гейт паритета сравнивал поток со
+    // станком, устроенным так же, и потому молчал.
+    const registry = strategyBundleRegistry(loadBundle(spec.bundleDir));
+    const router = createOverlayRouter(spec.router);
 
     // Лента собирается ТОЙ ЖЕ фабрикой, что и на главном потоке, каким бы путём ни пришли данные:
     // `tapeFromColumns` внутри зовёт `marketTapeFromCanonicalRows`, а `buildOverlayDataset` — её же.
@@ -77,7 +68,13 @@ async function runSpec(spec: ThreadRunSpec): Promise<ThreadRunReply> {
     }
 
     try {
-      const result = await runBacktest(spec.request as never, {
+      // `runStrategyBacktest`, а НЕ `runBacktest` напрямую — та же точка входа, что у прод-ветки
+      // стратегии. Разница не косметическая: она срезает `engine` и `overlayRefs` ДО раннера, потому
+      // что `engine` не является полем контракта 017 (`additionalProperties:false` отклонит запрос) и
+      // не должен попадать в хэшируемый `RunOutcome`. Фикстуры станков этих полей не несут — их
+      // добавляет HTTP-приём, — поэтому прежний прямой вызов проходил тесты и сломался бы на первом
+      // же настоящем задании из очереди.
+      const result = await runStrategyBacktest(spec.request as never, {
         registry,
         router,
         marketTape,

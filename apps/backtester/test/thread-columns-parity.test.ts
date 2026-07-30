@@ -37,10 +37,11 @@ import { __resetTapeCachesForTest, overlayTapeCache, tapeCacheKey } from '../src
 import { FixtureDataPort } from '../src/data/reader.js';
 import { canonicalJson } from '../src/determinism/canonical-json.js';
 import { buildOverlayDatasetWithColumns } from '../src/engine/data-adapter.js';
-import { runBacktest } from '../src/engine/runner.js';
+import { runStrategyBacktest } from '../src/engine/run-strategy.js';
 import { encodeTapeColumns, tapeFromColumns } from '../src/engine/tape-columns.js';
 import { runBacktestInThread } from '../src/engine/thread/run-in-thread.js';
 import { buildSandboxStrategyBaselineDeps, materializeReadableBundle } from './helpers-overlay-sandbox.js';
+import { threadRouterSpec } from './helpers-thread-spec.js';
 import { resultHash } from './helpers/bar-major-fixture.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -245,11 +246,19 @@ describe.skipIf(!THREAD_SEAM_LOADS)('гейт колонок — прогон п
   it(
     'один запрос, две дороги, один хэш',
     async () => {
-      const request = JSON.parse(readFileSync(REQUEST_PATH, 'utf8')) as {
-        symbols: string[];
-        timeframe: string;
-        datasetRef: string;
-        period: { from: string; to: string };
+      // `engine:'strategy'` добавлен НАМЕРЕННО — так запрос выглядит после HTTP-приёма, и именно
+      // в таком виде он доходит до `processNextQueued`. Фикстура его не несёт, и пока гейт гонял
+      // голую фикстуру, он не замечал, что поток звал `runBacktest` напрямую вместо
+      // `runStrategyBacktest`: поле `engine` не входит в контракт 017, и раннер отверг бы запрос с
+      // `additionalProperties:false`. Расхождение проявилось бы на первом настоящем задании.
+      const request = {
+        ...(JSON.parse(readFileSync(REQUEST_PATH, 'utf8')) as {
+          symbols: string[];
+          timeframe: string;
+          datasetRef: string;
+          period: { from: string; to: string };
+        }),
+        engine: 'strategy' as const,
       };
       const bundle = JSON.parse(readFileSync(BUNDLE_PATH, 'utf8'));
       const sp = await materializeReadableBundle(bundle);
@@ -279,7 +288,9 @@ describe.skipIf(!THREAD_SEAM_LOADS)('гейт колонок — прогон п
       const { registry, router } = buildSandboxStrategyBaselineDeps({ spDir: sp.bundleDir, sandboxBackend: 'isolate' });
       let mainHash: string;
       try {
-        const out = await runBacktest(request as never, { registry, router, marketTape: materialized.tape } as never);
+        // Главная сторона идёт ТОЙ ЖЕ точкой входа, что и прод-ветка стратегии, — иначе сравнение
+        // снова стало бы «поток против станка», а не «поток против прода».
+        const out = await runStrategyBacktest(request as never, { registry, router, marketTape: materialized.tape } as never);
         const errors = router.errors();
         expect(errors, `ошибки песочницы на главном потоке: ${JSON.stringify(errors).slice(0, 600)}`).toEqual([]);
         mainHash = resultHash(out);
@@ -296,7 +307,7 @@ describe.skipIf(!THREAD_SEAM_LOADS)('гейт колонок — прогон п
         {
           request,
           bundleDir: sp.bundleDir,
-          sandboxBackend: 'isolate',
+          router: threadRouterSpec('isolate'),
           dataPort: { kind: 'columns', columns: materialized.columns! },
         },
         { execArgv: ['--import', 'tsx'] },
