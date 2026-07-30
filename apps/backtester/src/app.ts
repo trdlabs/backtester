@@ -43,6 +43,7 @@ import type { BundleStore } from './sandbox/bundle-store';
 import type { SandboxConfig } from './sandbox/sandbox-executor';
 import { createArtifactStore, createBundleStore } from './storage/stores';
 import { createS3ObjectClient } from './storage/s3-client';
+import { BarLoopThreadPool, defaultMaxWorkers } from './engine/thread/thread-pool';
 
 export interface BuildAppOptions {
   store?: JobStore;
@@ -191,6 +192,33 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
   };
 
   const completionDeps: CompletionDeps = { store, clock, uid, postWebhook };
+  /**
+   * Тёплый пул потоков барного цикла — только когда путь потока включён.
+   *
+   * Размер равен `workerConcurrency` СОЗНАТЕЛЬНО, отдельной настройки нет: одновременно
+   * исполняемых заданий ровно столько, значит и потоков нужно не больше. Две настройки, обязанные
+   * совпадать, рано или поздно разойдутся, и разойдутся молча.
+   *
+   * Про число ядер. Барный цикл упирается в счёт, поэтому потоков больше, чем ядер, не ускоряет, а
+   * замедляет — ядер от этого не прибавляется. Node внутри контейнера этого сам не выяснит:
+   * `availableParallelism()` учитывает маску привязки, но НЕ квоту cgroup, и в контейнере с одним
+   * выделенным ядром на 32-ядерной машине вернёт 32. Поэтому здесь не автоподстройка, а
+   * предупреждение: решение о размере принимает развёртывание, которое знает, сколько ядер у
+   * машины и сколько сервисов их делят.
+   */
+  let barLoopPool: BarLoopThreadPool | undefined;
+  if (config.barLoopThread) {
+    const cores = defaultMaxWorkers();
+    if (config.workerConcurrency > cores) {
+      console.warn(
+        `[config] workerConcurrency=${config.workerConcurrency} превышает доступный параллелизм (${cores}). ` +
+          'Барный цикл упирается в счёт: лишние потоки отнимают процессор на переключения, а не добавляют ' +
+          'вычислительной мощности. Задайте WORKER_CONCURRENCY по числу ядер, выделенных этому сервису.',
+      );
+    }
+    barLoopPool = new BarLoopThreadPool({ maxWorkers: config.workerConcurrency });
+  }
+
   const workerDeps: WorkerDeps = {
     ...completionDeps,
     dataPort,
@@ -204,6 +232,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     coalesceEnabled: config.coalesceEnabled,
     barBatching: config.barBatching,
     barLoopThread: config.barLoopThread,
+    ...(barLoopPool !== undefined ? { barLoopPool } : {}),
     barMajor: config.barMajor,
     barMajorBatch: config.barMajorBatch,
     batchBars: config.batchBars,
@@ -336,6 +365,9 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
   const dispose = async (): Promise<void> => {
     stopWorker();
     await server.close();
+    // Потоки пула переживают закрытие сервера, если их не завершить явно: процесс не выйдет, а в
+    // тестах они накопились бы от приложения к приложению.
+    if (barLoopPool !== undefined) await barLoopPool.close();
     if (ownedPool) await ownedPool.end();
   };
 
