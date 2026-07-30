@@ -138,7 +138,7 @@ export const ENV_VARS: readonly EnvVarSpec[] = [
   flagVar('BACKTESTER_BAR_BATCHING', '17b: батчинг flat-stretch onBarClose в одно sandbox-сообщение (dark launch). Взаимоисключим с BACKTESTER_BAR_MAJOR (fail-fast).'),
   flagVar(
     'BACKTESTER_BAR_LOOP_THREAD',
-    'Барный цикл прогона стратегии в отдельном worker_thread (dark launch, off = прежнее поведение). Даёт две вещи: главный поток перестаёт голодать по event loop, поэтому хартбит лизы тикает во время счёта (структурное закрытие P3-5 вместо продления лизы перед циклом), и становится безопасен синхронный заход в изолят, снимающий ~150 мкс/бар штрафа асинхронного пути. Требует Node 24: под 22 хуки tsx в worker_thread не активируются и поток не грузит свой граф. Результат прогона не меняет — паритет побитовый (гейт thread-columns-parity).',
+    'Барный цикл прогона стратегии в отдельном worker_thread (dark launch, off = прежнее поведение). Даёт две вещи: главный поток перестаёт голодать по event loop, поэтому сердцебиение аренды (lease) отправляется во время счёта — структурное закрытие P3-5 вместо продления аренды перед циклом, и становится безопасен синхронный заход в изолят, снимающий ~150 мкс/бар штрафа асинхронного пути. Требует Node 24: под 22 хуки tsx в worker_thread не активируются и поток не грузит свой граф. Результат прогона не меняет — паритет побитовый (гейт thread-columns-parity).',
   ),
   flagVar('BACKTESTER_BAR_MAJOR', '17d: bar-major исполнение — один бар по всем символам до продвижения (dark launch). Взаимоисключим с BACKTESTER_BAR_BATCHING (fail-fast).'),
   flagVar('BACKTESTER_BAR_MAJOR_BATCH', 'Slice B: 3-фазный батч-транспорт per-bar IPC bar-major; чистый суб-режим BACKTESTER_BAR_MAJOR (инертен без него).'),
