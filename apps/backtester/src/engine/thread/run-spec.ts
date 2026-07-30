@@ -27,6 +27,7 @@
 // замер bt#199 её выбрал: колонки типизированных массивов против канонических строк — 2.9 МБ и 1 мс
 // против 12.5 МБ и 164–211 мс на 60 тыс. строк. Отсюда второй вариант `ThreadDataPortSpec`.
 
+import type { OverlayRouterSpec } from '../sandbox/overlay-router-spec.js';
 import type { TapeColumns } from '../tape-columns.js';
 
 /**
@@ -74,7 +75,21 @@ export interface ThreadRunFlags {
   readonly barBatching?: { readonly maxBars: number };
   readonly barMajor?: boolean;
   readonly barMajorBatch?: boolean;
-  readonly contextFreeze?: boolean;
+  // `contextFreeze` здесь СОЗНАТЕЛЬНО отсутствует: `StrategyRunDeps` его не принимает, и прод-ветка
+  // стратегии его не передаёт. Держать knob, который ничего не делает, — верный способ однажды
+  // «включить» его и потратить день на выяснение, почему ничего не изменилось.
+  /**
+   * `RunDeps.universe` — НЕ то же самое, что `universe` в описании роутера, и путать их нельзя.
+   * Здесь потолок числа символов (`maxN`), которым раннер ограничивает набор; там фактическое `n`
+   * этого прогона, по которому масштабируется память сессии песочницы. Прод передаёт оба, каждое
+   * своему потребителю, — значит и спека обязана нести оба.
+   */
+  readonly universe?: {
+    readonly enabled: boolean;
+    readonly maxN: number;
+    readonly memBaseMb: number;
+    readonly memPerSymbolMb: number;
+  };
 }
 
 /** Полная спека: всё, что нужно потоку, чтобы собрать зависимости и выполнить прогон. */
@@ -83,8 +98,14 @@ export interface ThreadRunSpec {
   readonly request: unknown;
   /** Каталог материализованного бандла стратегии на диске — поток читает его сам. */
   readonly bundleDir: string;
-  /** Бэкенд исполнения недоверенного кода внутри потока. */
-  readonly sandboxBackend: 'docker' | 'isolate';
+  /**
+   * ОПИСАНИЕ роутера, посчитанное на главном потоке (`overlayRouterSpecFor`), а не собранное здесь.
+   *
+   * Раньше на этом месте стоял один `sandboxBackend`, а остальное поток добирал из своего
+   * `loadConfig()` — и терял том режима DooD вместе с universe-масштабированием. Теперь конфигурация
+   * ровно одна и едет целиком; собрать её иначе, чем главный поток, стало невозможно.
+   */
+  readonly router: OverlayRouterSpec;
   readonly dataPort: ThreadDataPortSpec;
   /** Обязателен для `dataPort.kind === 'fixture'`; при `columns` игнорируется (метки внутри колонок). */
   readonly dataset?: ThreadDatasetSpec;

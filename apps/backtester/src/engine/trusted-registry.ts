@@ -36,3 +36,18 @@ export function buildInlineOverlayRegistry(
     executionProfiles: [...TRUSTED_REGISTRY_DEFINITION.executionProfiles],
   });
 }
+
+/**
+ * Реестр для прогона стратегии-БАНДЛА — единственная форма, общая для главного потока и worker_thread.
+ *
+ * Обёртка тонкая, и она не для краткости. Пока обе стороны собирали реестр «по образцу», поток
+ * успел собрать другой: только бандл, без доверенных стратегий и оверлеев, с `DEFAULT_RISK` вместо
+ * профилей из `TRUSTED_REGISTRY_DEFINITION`. Порядок аргументов `buildInlineOverlayRegistry` тоже
+ * ловушка: перепутав его, бандл регистрируют как ОВЕРЛЕЙ, ссылка на стратегию разрешается в
+ * одноимённый доверенный модуль, и недоверенный код уходит исполняться in-process мимо песочницы —
+ * причём с тем же `result_hash`, потому что twin-equivalence это и гарантирует. Одно имя на обе
+ * стороны убирает и то и другое.
+ */
+export function strategyBundleRegistry(bundle: ModuleBundle): ModuleRegistry019 {
+  return buildInlineOverlayRegistry([], [bundle]);
+}

@@ -31,15 +31,15 @@ import type { MarketTapeDataset } from '@trading/research-contracts/research';
 import { buildOverlayDataset } from '../engine/data-adapter';
 import { runOverlayBacktest } from '../engine/run-overlay';
 import { runStrategyBacktest } from '../engine/run-strategy';
-import { buildInlineOverlayRegistry, buildTrustedRegistry } from '../engine/trusted-registry';
+import { buildInlineOverlayRegistry, buildTrustedRegistry, strategyBundleRegistry } from '../engine/trusted-registry';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadBundle, type ModuleBundle as SandboxModuleBundle } from '../engine/sandbox/bundle';
 import { materializeBundle } from '../engine/sandbox/bundle-materialize';
 import { mountConfigFor } from '../engine/sandbox/mounts';
 import { ensureHarnessInVolume } from '../engine/sandbox/harness-volume';
-import { createExecutorRouter, type ExecutorRouter } from '../engine/sandbox/routing';
-import { createSandboxPolicyRegistry } from '../engine/sandbox-policy';
+import { type ExecutorRouter } from '../engine/sandbox/routing';
+import { createOverlayRouter, type OverlayRouterSpec } from '../engine/sandbox/overlay-router-spec';
 import type { SandboxExecutorDeps } from '../engine/sandbox/sandbox-executor';
 import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
@@ -190,18 +190,34 @@ async function executorFor(
   return new SandboxModuleExecutor(bundle, deps.sandbox);
 }
 
-function overlayRouterFor(deps: WorkerDeps, symbolsCount?: number): ExecutorRouter {
+/**
+ * ОПИСАНИЕ оверлей-роутера для этого прогона — единственный источник истины о его конфигурации.
+ *
+ * Вынесено из `overlayRouterFor` не ради красоты: барный цикл может исполняться в отдельном потоке,
+ * и туда конфигурацию надо ПЕРЕДАТЬ, а не собрать заново. Пока поток собирал её сам, он терял и
+ * том (режим DooD), и universe-масштабирование — молча, потому что обе стороны были похожи ровно
+ * настолько, чтобы разница не бросалась в глаза. Теперь описание одно, и обе стороны применяют его
+ * одной функцией `createOverlayRouter`.
+ */
+export function overlayRouterSpecFor(deps: WorkerDeps, symbolsCount?: number): OverlayRouterSpec {
   const policy = deps.overlaySandbox.policy;
   const universe = deps.universe;
-  return createExecutorRouter({
-    sandboxPolicies: createSandboxPolicyRegistry([policy]),
-    sandboxPolicyRef: { id: policy.id, version: policy.version },
+  return {
+    policy,
     sandboxDeps: overlaySandboxDeps(deps.overlaySandbox),
-    sandboxBackend: deps.overlaySandbox.backend,
+    // Дефолт разрешается ЗДЕСЬ, а не на дальней стороне: `createExecutorRouter` ветвится только на
+    // `=== 'isolate'`, поэтому `undefined` и `'docker'` для него одно и то же, — но описание,
+    // уезжающее в другой поток, обязано быть полным, иначе «отсутствует» пришлось бы трактовать
+    // одинаково в двух местах. Поведение не меняется.
+    sandboxBackend: deps.overlaySandbox.backend ?? 'docker',
     ...(universe?.enabled === true && symbolsCount !== undefined
       ? { universe: { enabled: true, n: symbolsCount, memBaseMb: universe.memBaseMb, memPerSymbolMb: universe.memPerSymbolMb } }
       : {}),
-  });
+  };
+}
+
+function overlayRouterFor(deps: WorkerDeps, symbolsCount?: number): ExecutorRouter {
+  return createOverlayRouter(overlayRouterSpecFor(deps, symbolsCount));
 }
 
 /** Per-run base dir for materialized bundles: under the shared volume in volume mode, else tmpdir. */
@@ -954,7 +970,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       // Pre-flight guards (bundle present, manifest.kind, moduleRef match) already ran above.
       const r = claimed.request;
       const marketTape = materialized.marketTape!;
-      const registry = buildInlineOverlayRegistry([], [sandboxBundle!.bundle]);
+      const registry = strategyBundleRegistry(sandboxBundle!.bundle);
       sandboxRouter = workerInternals.overlayRouterFor(deps, r.symbols.length);
       await chargeEngineAttempt(); // INV-5: engine-commit charge (strategy path)
       const outcome = await runStrategyBacktest(engineRequest, {
