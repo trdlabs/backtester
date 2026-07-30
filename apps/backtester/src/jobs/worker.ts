@@ -28,7 +28,8 @@ import {
   type MaterializedDataset,
 } from '../data/reader';
 import type { MarketTapeDataset } from '@trading/research-contracts/research';
-import { buildOverlayDataset } from '../engine/data-adapter';
+import { buildOverlayDataset, buildOverlayDatasetWithColumns } from '../engine/data-adapter';
+import type { TapeColumns } from '../engine/tape-columns';
 import { runOverlayBacktest } from '../engine/run-overlay';
 import { runStrategyBacktest } from '../engine/run-strategy';
 import { buildInlineOverlayRegistry, buildTrustedRegistry, strategyBundleRegistry } from '../engine/trusted-registry';
@@ -40,6 +41,7 @@ import { mountConfigFor } from '../engine/sandbox/mounts';
 import { ensureHarnessInVolume } from '../engine/sandbox/harness-volume';
 import { type ExecutorRouter } from '../engine/sandbox/routing';
 import { createOverlayRouter, type OverlayRouterSpec } from '../engine/sandbox/overlay-router-spec';
+import { runBacktestInThread } from '../engine/thread/run-in-thread';
 import type { SandboxExecutorDeps } from '../engine/sandbox/sandbox-executor';
 import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
@@ -89,6 +91,8 @@ export { RunnerError };
 
 interface SandboxBundleHandle {
   readonly bundle: SandboxModuleBundle;
+  /** Каталог, куда бандл материализован. Нужен пути потока: он читает бандл сам, у себя. */
+  readonly bundleDir: string;
   readonly cleanup: () => Promise<void>;
 }
 
@@ -125,6 +129,11 @@ export interface WorkerDeps extends CompletionDeps {
   obs?: ObsRegistry;
   /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Default off (dark launch). */
   barBatching?: boolean;
+  /**
+   * Считать барный цикл стратегии в отдельном потоке. Отсутствие/false ⇒ прежнее поведение
+   * байт-в-байт: цикл на главном потоке, колонки в кэше не строятся.
+   */
+  barLoopThread?: boolean;
   /** 17d: bar-major execution mode — one bar across all symbols before advancing. Default off (dark launch). */
   barMajor?: boolean;
   /** Slice B: collapse bar-major per-bar IPC into 3-phase batched transport. Pure sub-mode of barMajor — inert unless barMajor is also on. Default off (dark launch). */
@@ -174,7 +183,7 @@ async function sandboxBundleFor(deps: WorkerDeps, hash: ContentHash): Promise<Sa
   const bundle = await deps.bundleStore.get(hash);
   if (!bundle) throw new RunnerError('missing_module', `unknown bundle: ${hash}`);
   const materialized = await materializeBundle(bundle, bundleBaseDir(deps.overlaySandbox));
-  return { bundle: loadBundle(materialized.bundleDir), cleanup: materialized.cleanup };
+  return { bundle: loadBundle(materialized.bundleDir), bundleDir: materialized.bundleDir, cleanup: materialized.cleanup };
 }
 
 async function executorFor(
@@ -325,7 +334,7 @@ function makeWalkForwardRunFold(
  * object so tests can `vi.spyOn(workerInternals, 'sandboxBundleFor')` and prove a dedup HIT performs
  * NONE of them (a bare intra-module call would not be interceptable by the spy). Compute-skip proof.
  */
-export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor, makeWalkForwardRunFold, resolvePromotionGate };
+export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor, overlayRouterSpecFor, makeWalkForwardRunFold, resolvePromotionGate };
 
 /**
  * P0-1: a sandboxed run degrades internal hook failures to `idle` and only RECORDS them on the router
@@ -336,7 +345,19 @@ export const workerInternals = { sandboxBundleFor, executorFor, overlayRouterFor
  */
 export function assertSandboxClean(router: ExecutorRouter | undefined): void {
   if (!router) return;
-  const errors = router.errors();
+  assertNoSandboxErrors(router.errors());
+}
+
+/**
+ * Тот же отказ, но по готовому списку ошибок.
+ *
+ * Нужен потому, что на пути потока роутера здесь нет — он живёт и умирает внутри worker_thread, а
+ * оттуда возвращается только список записанных им ошибок. Разводить два места, формирующих
+ * `sandbox_error`, нельзя: таксономия ошибок прогона — часть контракта, и «почти такое же»
+ * сообщение на одном из путей означало бы, что один и тот же сбой выглядит по-разному в зависимости
+ * от того, где считался цикл.
+ */
+export function assertNoSandboxErrors(errors: readonly unknown[]): void {
   if (errors.length > 0) {
     throw new RunnerError('sandbox_error', `sandbox execution failed: ${JSON.stringify(errors)}`);
   }
@@ -619,6 +640,11 @@ interface Materialized {
   engineRequest: BacktestRunRequest;
   /** overlay/strategy tape (absent for momentum). */
   marketTape?: MarketTapeDataset;
+  /**
+   * Колоночный двойник той же ленты — то, в чём она переезжает в отдельный поток. Присутствует
+   * только при включённом `barLoopThread`: без потребителя колонки лишь занимают память кэша.
+   */
+  columns?: TapeColumns;
   /** momentum dataset (absent for overlay/strategy). */
   dataset?: MaterializedDataset;
   /**
@@ -646,11 +672,22 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
   const runId = claimed.runId;
   if (engine === 'overlay' || engine === 'strategy') {
     const r = claimed.request;
-    // Кэш хранит материализацию (лента + опциональные колонки для потока). Колонки здесь пока не
-    // строятся: их потребитель — барный цикл в отдельном потоке, и пока он не подключён, запись в
-    // кэше выросла бы в памяти, ничего не давая. Гейт паритета колонок гоняет тот же кэш через
-    // `buildOverlayDatasetWithColumns` — см. `test/thread-columns-parity.test.ts`.
-    const { tape: marketTape } = await overlayTapeCache.getOrBuild(
+    // Кэш хранит МАТЕРИАЛИЗАЦИЮ: ленту и — только при включённом пути потока — её колоночного
+    // двойника. Колонки без потребителя не строятся сознательно: они прибавляют к записи кэша
+    // 3.5 МБ на ленте только со свечами и 6.2 МБ на ленте со всеми видами (замер
+    // `scripts/profile-tape-memory.mts` на 60 тыс. строк), а кэш держит до 16 записей.
+    //
+    // Решение читать флаг ЗДЕСЬ, а не на каждом вызове, тоже намеренное: `overlayTapeCache` общий,
+    // и если бы одни прогоны клали в него материализацию с колонками, а другие без, то попадание в
+    // кэш стало бы лотереей — прогон с потоком мог бы получить запись без колонок и молча
+    // остаться без данных. Флаг процессный, значит внутри процесса ответ один для всех.
+    const selector = {
+      datasetRef: r.datasetRef,
+      symbols: r.symbols,
+      timeframe: r.timeframe,
+      period: r.period,
+    };
+    const materialization = await overlayTapeCache.getOrBuild(
       tapeCacheKey({
         datasetRef: r.datasetRef,
         symbols: r.symbols,
@@ -658,15 +695,11 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
         from: r.period.from,
         to: r.period.to,
       }),
-      async () => ({
-        tape: await buildOverlayDataset(deps.dataPort, {
-          datasetRef: r.datasetRef,
-          symbols: r.symbols,
-          timeframe: r.timeframe,
-          period: r.period,
-        }),
-      }),
+      deps.barLoopThread === true
+        ? () => buildOverlayDatasetWithColumns(deps.dataPort, selector)
+        : async () => ({ tape: await buildOverlayDataset(deps.dataPort, selector) }),
     );
+    const marketTape = materialization.tape;
     // Wire-summary fingerprint only — NOT part of the hashed RunOutcome (platform golden), hence
     // `tapeFingerprint` and not `contentRef`: no reason to push every candle number through
     // decimal.js for a drift key (analysis/19 defect #7).
@@ -701,6 +734,7 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
     }
     return {
       engine, datasetFingerprint: dsFingerprint, engineRequest, marketTape,
+      ...(materialization.columns !== undefined ? { columns: materialization.columns } : {}),
       ...(coverage !== undefined ? { coverage } : {}),
       ...(datasetTimeframe !== undefined ? { datasetTimeframe } : {}),
     };
@@ -970,18 +1004,53 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       // Pre-flight guards (bundle present, manifest.kind, moduleRef match) already ran above.
       const r = claimed.request;
       const marketTape = materialized.marketTape!;
-      const registry = strategyBundleRegistry(sandboxBundle!.bundle);
-      sandboxRouter = workerInternals.overlayRouterFor(deps, r.symbols.length);
       await chargeEngineAttempt(); // INV-5: engine-commit charge (strategy path)
-      const outcome = await runStrategyBacktest(engineRequest, {
-        registry,
-        marketTape,
-        ...(sandboxRouter ? { router: sandboxRouter } : {}),
+      const runFlags = {
         ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
         ...(deps.barMajor === true ? { barMajor: true } : {}),
         ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
         ...(deps.universe ? { universe: deps.universe } : {}),
-      });
+      };
+      let outcome: RunOutcome;
+      if (deps.barLoopThread === true) {
+        // ПУТЬ ПОТОКА. Главный поток остаётся свободным на всё время счёта: таймеры тикают, хартбит
+        // лизы живёт. Это структурное закрытие P3-5, где сегодня стоит митигация «продлить лизу
+        // перед входом в цикл» с оговоркой, что один длинный прогон её всё равно отпустит.
+        //
+        // Колонки обязаны присутствовать: `materializeFor` строит их ровно при этом флаге. Их
+        // отсутствие — рассогласование, а не повод построить ленту второй раз, поэтому падаем
+        // громко, а не чиним молча.
+        const columns = materialized.columns;
+        if (columns === undefined) {
+          throw new RunnerError(
+            'validation_error',
+            'barLoopThread включён, но материализация пришла без колонок — путь потока не может получить ленту',
+          );
+        }
+        const threaded = await runBacktestInThread({
+          request: engineRequest,
+          bundleDir: sandboxBundle!.bundleDir,
+          // Описание роутера считается ЗДЕСЬ той же функцией, что и для главного потока; поток его
+          // только применяет (`engine/sandbox/overlay-router-spec.ts`).
+          router: workerInternals.overlayRouterSpecFor(deps, r.symbols.length),
+          dataPort: { kind: 'columns', columns },
+          flags: runFlags,
+        });
+        // Роутер жил и умер внутри потока, поэтому `assertSandboxClean` здесь неприменим — но отказ
+        // обязан быть тем же самым, иначе один и тот же сбой выглядел бы по-разному в зависимости от
+        // того, где считался цикл.
+        assertNoSandboxErrors(threaded.sandboxErrors);
+        outcome = threaded.result as RunOutcome;
+      } else {
+        const registry = strategyBundleRegistry(sandboxBundle!.bundle);
+        sandboxRouter = workerInternals.overlayRouterFor(deps, r.symbols.length);
+        outcome = await runStrategyBacktest(engineRequest, {
+          registry,
+          marketTape,
+          ...(sandboxRouter ? { router: sandboxRouter } : {}),
+          ...runFlags,
+        });
+      }
       if (outcome.status !== 'completed') {
         throw new RunnerError(
           'validation_error',

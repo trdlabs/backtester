@@ -55,6 +55,7 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     jobObs: false,
     coalesceEnabled: false,
     barBatching: false,
+    barLoopThread: false,
     barMajor: false,
   contextFreeze: true,
     barMajorBatch: false,

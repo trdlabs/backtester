@@ -144,6 +144,15 @@ export interface AppConfig {
   readonly coalesceEnabled: boolean;
   /** 17b: batch flat-stretch onBarClose calls into one sandbox message. Default off (dark launch). */
   readonly barBatching: boolean;
+  /**
+   * Считать барный цикл стратегии в отдельном worker_thread. Дефолт `false` (прежнее поведение).
+   *
+   * Включает ВЕСЬ путь потока целиком: `materializeFor` начинает класть в `overlayTapeCache` рядом
+   * с лентой её колоночного двойника (иначе данные нечем переносить через границу), а ветка
+   * стратегии уходит в `runBacktestInThread`. Держать одно без другого бессмысленно — колонки без
+   * потребителя только занимают память воркера.
+   */
+  readonly barLoopThread: boolean;
   /** 17d: bar-major execution mode — one bar across all symbols before advancing. Default off (dark launch). */
   /**
    * Морозить ли `StrategyContext` на каждом баре. Дефолт `true` (прежнее поведение).
@@ -471,6 +480,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = processEnv()): AppConfig {
     jobObs: env.BACKTESTER_JOB_OBS === 'true',
     coalesceEnabled: env.BACKTESTER_COALESCE_ENABLED === 'true',
     barBatching: env.BACKTESTER_BAR_BATCHING === 'true',
+    barLoopThread: env.BACKTESTER_BAR_LOOP_THREAD === 'true',
     // Флаг назван «...DISABLED» и выключен по умолчанию — конвенция dark-launch этого репозитория
     // (машинно проверяется в env-schema.test.ts: у каждого флага default_state = off). Поэтому
     // «ничего не выставили» означает прежнее поведение, а оптимизация включается осознанно.
