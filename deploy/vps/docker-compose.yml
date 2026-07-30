@@ -1,0 +1,89 @@
+# U8 — бэктестер как развёртываемая единица: образ, пиннутый по digest.
+#
+# ЗАЧЕМ ЭТОТ ФАЙЛ. Сегодня стенд поднимается `up.sh` — из каталога с исходниками, под tsx, без
+# супервизора. Проверка на staging 2026-07-30 показала, во что это обходится: каталог развёртывания
+# там ДАЖЕ НЕ git-репозиторий, а скопированное дерево, и установить, какой код исполняется,
+# невозможно — ни коммита, ни digest'а. Пиннить нечего, потому что развёрнуто не то, что публикуется.
+# Свидетельство: control-center `docs/operations/evidence/2026-07-30-backtester-staging-image-validation.md`.
+#
+# ДВА СЕРВИСА ИЗ ОДНОГО ОБРАЗА, а не один. У API и воркера разная природа нагрузки: API обязан
+# отвечать быстро, воркер занимает ядро барным циклом на десятки секунд. В одном процессе воркер
+# отнимал бы у API время, поэтому API поднимается с `BACKTESTER_AUTO_WORKER=false`, а воркер идёт
+# отдельной точкой входа. Это же позволяет менять число воркеров, не трогая API.
+#
+# ПИННИНГ ПО DIGEST, А НЕ ПО ТЕГУ. `latest` — движущаяся ссылка: два развёртывания «одного и того
+# же» дадут разный код. Digest неподвижен, и именно он записывается в журнал развёртываний.
+# Подставляется через `BACKTESTER_IMAGE` (см. README рядом).
+#
+# ПРО ПЕСОЧНИЦУ И СОКЕТ DOCKER. Файл НЕ монтирует docker-сокет. Это осознанно: с
+# `BACKTESTER_SANDBOX_BACKEND=isolate` недоверенный код исполняется в изоляте внутри процесса, и
+# сокет не нужен вовсе. Голый сокет ≈ root на хосте (аудит 17, SBX-2), и не заводить его —
+# правильнее, чем заводить и обносить прокси. Для docker-бэкенда потребуется отдельная надстройка
+# с socket-proxy; она сюда намеренно не встроена, чтобы её нельзя было включить по невнимательности.
+
+name: backtester
+
+x-common: &common
+  image: ${BACKTESTER_IMAGE:?нужен BACKTESTER_IMAGE, пиннутый по digest — см. README}
+  restart: unless-stopped
+  env_file: [backtester.env]
+  # Стенд ходит в Postgres и (в режиме mock) в mock-platform на хосте. Отдельная сеть с
+  # host-gateway вместо `network_mode: host`: контейнеры не занимают хостовые порты и не могут
+  # случайно перебить чужой сервис — на staging это уже случалось.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - bt-artifacts:/data/artifacts
+    - bt-bundles:/data/bundles
+  environment:
+    BACKTESTER_ARTIFACTS_DIR: /data/artifacts
+    BACKTESTER_BUNDLES_DIR: /data/bundles
+
+services:
+  api:
+    <<: *common
+    container_name: backtester-api
+    environment:
+      BACKTESTER_ARTIFACTS_DIR: /data/artifacts
+      BACKTESTER_BUNDLES_DIR: /data/bundles
+      # Воркер живёт отдельным сервисом — здесь только HTTP.
+      BACKTESTER_AUTO_WORKER: "false"
+      BACKTESTER_HOST: 0.0.0.0
+    ports:
+      # Наружу только через localhost хоста: стенд не публичный.
+      - "127.0.0.1:${BACKTESTER_PORT:-18080}:${BACKTESTER_PORT:-18080}"
+    healthcheck:
+      # Настоящая проверка, а не «процесс жив»: `/health` отвечает только после миграций и
+      # подъёма хранилища.
+      test: ["CMD", "node", "-e", "fetch(`http://127.0.0.1:${BACKTESTER_PORT:-18080}/health`).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  worker:
+    <<: *common
+    container_name: backtester-worker
+    command: ["node_modules/.bin/tsx", "apps/backtester/src/worker-main.ts"]
+    environment:
+      BACKTESTER_ARTIFACTS_DIR: /data/artifacts
+      BACKTESTER_BUNDLES_DIR: /data/bundles
+    depends_on:
+      api:
+        # Воркер стартует после того, как API применил миграции: обе точки входа зовут buildApp,
+        # и одновременный старт означал бы гонку двух мигрантов на одной базе.
+        condition: service_healthy
+    healthcheck:
+      # `/readyz`, а не `/healthz`: первый отвечает, только когда цикл осушения действительно
+      # крутится, второй — что процесс поднялся.
+      test: ["CMD", "node", "-e", "fetch(`http://127.0.0.1:${WORKER_HEALTH_PORT:-18081}/readyz`).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  # Именованные тома, а не bind: артефакты переживают пересоздание контейнера, но не привязаны к
+  # путям на хосте — иначе развёртывание зависело бы от раскладки конкретной машины.
+  bt-artifacts:
+  bt-bundles:
