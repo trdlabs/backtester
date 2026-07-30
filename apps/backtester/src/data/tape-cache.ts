@@ -1,5 +1,7 @@
-import type { MarketTapeDataset } from '@trading/research-contracts/research';
 import { readEnvVar } from '../env.js';
+// Импорт ТОЛЬКО типа — стирается при компиляции, поэтому направление data → engine здесь не создаёт
+// рантайм-цикла (обратное направление, engine → data, живое: `data-adapter` открывает порт данных).
+import type { OverlayMaterialization } from '../engine/tape-columns.js';
 import type { MaterializedDataset } from './reader.js';
 
 /** Build a stable cross-run cache key from the DATA dimensions of a run. Symbol order is normalized. */
@@ -88,8 +90,17 @@ export function readMaxEntries(): number {
   return Number.isFinite(n) && n >= 0 ? n : 16;
 }
 
-/** Long-lived singletons — persist across runs for the life of the worker process. */
-export const overlayTapeCache = new TapeCache<MarketTapeDataset>(readMaxEntries());
+/**
+ * Long-lived singletons — persist across runs for the life of the worker process.
+ *
+ * Значение оверлей-кэша — МАТЕРИАЛИЗАЦИЯ, а не одна лента: рядом с лентой может лежать её
+ * колоночный двойник для барного цикла в отдельном потоке (`engine/tape-columns.ts`). Двух кэшей
+ * вместо одного здесь быть не должно — у них разошлись бы вытеснения, и запись оказалась бы то с
+ * лентой без колонок, то наоборот; одно значение с одним временем жизни делает такое состояние
+ * непредставимым. Колонки строятся по явному запросу вызывающего: держать их без потребителя —
+ * чистая надбавка к памяти воркера (замер их цены — `scripts/profile-tape-memory.mts`).
+ */
+export const overlayTapeCache = new TapeCache<OverlayMaterialization>(readMaxEntries());
 export const momentumTapeCache = new TapeCache<MaterializedDataset>(readMaxEntries());
 
 /**

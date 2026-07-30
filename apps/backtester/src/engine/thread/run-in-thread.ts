@@ -40,6 +40,16 @@ export interface RunInThreadOptions {
    * поверх них давал бы вторую, несогласованную причину смерти прогона.
    */
   readonly timeoutMs?: number;
+  /**
+   * `execArgv` потока. По умолчанию наследуется родительский — под `tsx` оттуда приходит загрузчик
+   * TypeScript, без которого поток не импортирует исходники.
+   *
+   * Переопределять приходится там, где у родителя загрузчика нет, а entry всё ещё исходный `.mts`:
+   * так устроен vitest — он трансформирует модули сам, своим конвейером, и в `process.execArgv`
+   * ничего для дочернего процесса не кладёт. Прод сюда не попадает: там рядом лежит собранный
+   * `.mjs`, и загрузчик ему не нужен вовсе.
+   */
+  readonly execArgv?: readonly string[];
 }
 
 export interface ThreadRunOutcome {
@@ -58,7 +68,9 @@ export async function runBacktestInThread(
   spec: ThreadRunSpec,
   opts: RunInThreadOptions = {},
 ): Promise<ThreadRunOutcome> {
-  const worker = new Worker(opts.entry ?? workerEntry(), { execArgv: process.execArgv });
+  const worker = new Worker(opts.entry ?? workerEntry(), {
+    execArgv: opts.execArgv !== undefined ? [...opts.execArgv] : process.execArgv,
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const reply = await new Promise<ThreadRunReply>((res, rej) => {
