@@ -136,6 +136,10 @@ export const ENV_VARS: readonly EnvVarSpec[] = [
   envVar('BACKTESTER_AUTH_TOKEN', 'string', null, 'Bearer-токен /v1 API (fail-closed). На loopback допустим dev-дефолт; на не-loopback BACKTESTER_HOST обязателен (fail-fast, P2-10).', { secret: true }),
   envVar('BACKTESTER_AUTO_WORKER', 'bool', 'true', 'HTTP-нода запускает фоновый worker-tick; false — только API (multi-process с worker-main).'),
   flagVar('BACKTESTER_BAR_BATCHING', '17b: батчинг flat-stretch onBarClose в одно sandbox-сообщение (dark launch). Взаимоисключим с BACKTESTER_BAR_MAJOR (fail-fast).'),
+  flagVar(
+    'BACKTESTER_BAR_LOOP_THREAD',
+    'Барный цикл прогона стратегии в отдельном worker_thread (dark launch, off = прежнее поведение). Даёт две вещи: главный поток перестаёт голодать по event loop, поэтому хартбит лизы тикает во время счёта (структурное закрытие P3-5 вместо продления лизы перед циклом), и становится безопасен синхронный заход в изолят, снимающий ~150 мкс/бар штрафа асинхронного пути. Требует Node 24: под 22 хуки tsx в worker_thread не активируются и поток не грузит свой граф. Результат прогона не меняет — паритет побитовый (гейт thread-columns-parity).',
+  ),
   flagVar('BACKTESTER_BAR_MAJOR', '17d: bar-major исполнение — один бар по всем символам до продвижения (dark launch). Взаимоисключим с BACKTESTER_BAR_BATCHING (fail-fast).'),
   flagVar('BACKTESTER_BAR_MAJOR_BATCH', 'Slice B: 3-фазный батч-транспорт per-bar IPC bar-major; чистый суб-режим BACKTESTER_BAR_MAJOR (инертен без него).'),
   envVar('BACKTESTER_BATCH_BARS', 'int', '64', '17b: максимум баров на hookBatch (клампится к >= 2; мусор → 64).'),

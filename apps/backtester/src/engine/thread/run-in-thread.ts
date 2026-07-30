@@ -36,6 +36,24 @@ function workerEntry(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), 'bar-loop-worker.mts');
 }
 
+/**
+ * `execArgv` для потока: наследуем родительские, но гарантируем загрузчик TypeScript.
+ *
+ * Entry потока — исходный `.mts`, а исходнику загрузчик нужен ВСЕГДА: встроенный стриппер типов
+ * Node разберёт синтаксис, но не переотобразит `../runner.js` в `../runner.ts` — это делает именно
+ * tsx. Унаследовать загрузчик можно, только если родитель сам запущен под tsx; когда родителя
+ * поднял кто-то другой (vitest трансформирует модули своим конвейером и в `execArgv` ничего не
+ * кладёт), наследовать нечего, и поток падал бы на первом же импорте.
+ *
+ * Поэтому загрузчик добавляется по факту его отсутствия, а не по признаку «мы в тестах». Прод
+ * запускается `tsx src/index.ts`, загрузчик там уже есть, и ветка добавления не срабатывает.
+ */
+function defaultExecArgv(entry: string): string[] {
+  if (!entry.endsWith('.mts') && !entry.endsWith('.ts')) return [...process.execArgv];
+  const hasTsLoader = process.execArgv.some((a) => a.includes('tsx'));
+  return hasTsLoader ? [...process.execArgv] : ['--import', 'tsx', ...process.execArgv];
+}
+
 export interface RunInThreadOptions {
   /** Путь к entry потока (тесты/станки подменяют). */
   readonly entry?: string;
@@ -73,8 +91,9 @@ export async function runBacktestInThread(
   spec: ThreadRunSpec,
   opts: RunInThreadOptions = {},
 ): Promise<ThreadRunOutcome> {
-  const worker = new Worker(opts.entry ?? workerEntry(), {
-    execArgv: opts.execArgv !== undefined ? [...opts.execArgv] : process.execArgv,
+  const entry = opts.entry ?? workerEntry();
+  const worker = new Worker(entry, {
+    execArgv: opts.execArgv !== undefined ? [...opts.execArgv] : defaultExecArgv(entry),
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

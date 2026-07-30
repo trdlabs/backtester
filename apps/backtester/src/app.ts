@@ -203,6 +203,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     ...(computeLock ? { computeLock } : {}),
     coalesceEnabled: config.coalesceEnabled,
     barBatching: config.barBatching,
+    barLoopThread: config.barLoopThread,
     barMajor: config.barMajor,
     barMajorBatch: config.barMajorBatch,
     batchBars: config.batchBars,
