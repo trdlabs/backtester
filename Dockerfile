@@ -35,6 +35,12 @@ COPY apps/backtester/fixtures apps/backtester/fixtures/
 RUN pnpm --filter @trdlabs/backtester-sdk build
 # Build the overlay harness _engine (gitignored; compiled from src/engine/indicators/**).
 RUN node apps/backtester/scripts/build-sandbox-harness-overlay.mjs
+# Build the ISOLATE harness (_isolate/harness.js). Тоже gitignored, значит в чистом чекауте его нет,
+# и без этой строки он попадал в образ ТОЛЬКО с машины разработчика, где его оставил `pretest`.
+# Собранный локально образ выглядел исправным, а собранный из git — молча оставался без харнесса, и
+# бэкенд `BACKTESTER_SANDBOX_BACKEND=isolate` падал бы при первом же прогоне. Проверено прямым
+# опытом: сборка с убранным из контекста `_isolate/` даёт образ без него.
+RUN node apps/backtester/scripts/build-isolate-harness.mjs
 
 ENV NODE_ENV=production
 ENV BACKTESTER_HOST=0.0.0.0
