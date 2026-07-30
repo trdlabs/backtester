@@ -115,7 +115,19 @@ function makeProbeFactory(shape: ProbeShape): () => StrategyModule {
  * Детерминированный ценовой ряд: LCG-блуждание вокруг тренда, без обращения к Math.random,
  * чтобы прогон был воспроизводим побайтово (и годился как база сравнения для Rust-порта).
  */
-export function syntheticRows(symbol: string, n: number, seed: number): CanonicalRowV2[] {
+/**
+ * Несёт ли синтетическая лента рыночные виды (OI / funding / ликвидации / taker).
+ *
+ * Знать это обязательно, потому что виды меняют не значения, а СОСТАВ работы на баре:
+ * `PointInTimeContextBuilder` выставляет `ctx.market` только когда лента несёт хотя бы один вид,
+ * и тогда на каждом баре дополнительно строится PIT-поверхность, а `serializeContext` ещё и
+ * зондирует её окнами. Без видов вся эта ветка не исполняется вовсе.
+ *
+ * До появления этого флага станок умел мерить ТОЛЬКО ленту без видов — то есть форму, которой на
+ * проде не бывает: боевые ленты `mock-platform` несут все четыре. Замеры станка поэтому были
+ * неполны по построению, и расхождение с прод-путём списывалось на машину.
+ */
+export function syntheticRows(symbol: string, n: number, seed: number, marketKinds = false): CanonicalRowV2[] {
   const out: CanonicalRowV2[] = new Array(n);
   let state = seed >>> 0;
   let px = 100;
@@ -135,16 +147,17 @@ export function syntheticRows(symbol: string, n: number, seed: number): Canonica
       close: px,
       volume: 1000,
       turnover: px * 1000,
-      oi_total_usd: null,
-      funding_rate: null,
-      liq_long_usd: null,
-      liq_short_usd: null,
-      has_oi: false,
-      has_funding: false,
-      has_liquidations: false,
-      taker_buy_volume_usd: null,
-      taker_sell_volume_usd: null,
-      has_taker_flow: false,
+      // Значения выведены из той же цены — детерминированы и не требуют второго генератора.
+      oi_total_usd: marketKinds ? px * 1_000_000 : null,
+      funding_rate: marketKinds ? 0.0001 : null,
+      liq_long_usd: marketKinds ? px * 10 : null,
+      liq_short_usd: marketKinds ? px * 8 : null,
+      has_oi: marketKinds,
+      has_funding: marketKinds,
+      has_liquidations: marketKinds,
+      taker_buy_volume_usd: marketKinds ? px * 500 : null,
+      taker_sell_volume_usd: marketKinds ? px * 480 : null,
+      has_taker_flow: marketKinds,
     } as unknown as CanonicalRowV2;
   }
   return out;
@@ -161,6 +174,8 @@ export interface WorkloadSpec {
    * `bundle` — реальный бандл в V8-изоляте (меряет то, что реально стоит прод-путь).
    */
   readonly module?: { readonly id: string; readonly version: string };
+  /** Несёт ли лента рыночные виды. Прод-ленты несут все четыре; `false` — форма, которой на проде нет. */
+  readonly marketKinds?: boolean;
 }
 
 export function makeRequest(spec: WorkloadSpec): BacktestRunRequest {
@@ -192,16 +207,11 @@ export function makeTrustedDeps(spec: WorkloadSpec): RunDeps {
     executionProfiles: [SAME_BAR_NO_COST],
   });
 
-  const allRows: CanonicalRowV2[] = [];
-  for (const [i, symbol] of spec.symbols.entries()) {
-    allRows.push(...syntheticRows(symbol, spec.bars, spec.seed + i * 7919));
-  }
-  const built = marketTapeFromCanonicalRows('runner-perf-probe', '1m', allRows);
-  if (!built.ok) throw new Error('perf fixture tape build failed: ' + built.detail);
-
+  // Та же лента, что и у isolate-режима (`buildTape`), включая рыночные виды: иначе два режима
+  // одного станка мерили бы РАЗНЫЙ объём работы на баре, и сравнивать их было бы нельзя.
   return {
     registry,
-    marketTape: built.tape,
+    marketTape: buildTape(spec),
     router: createTrustedRouter(),
     barMajor: spec.barMajor,
   } as RunDeps;
@@ -211,7 +221,7 @@ export function makeTrustedDeps(spec: WorkloadSpec): RunDeps {
 export function buildTape(spec: WorkloadSpec): MarketTapeDataset {
   const allRows: CanonicalRowV2[] = [];
   for (const [i, symbol] of spec.symbols.entries()) {
-    allRows.push(...syntheticRows(symbol, spec.bars, spec.seed + i * 7919));
+    allRows.push(...syntheticRows(symbol, spec.bars, spec.seed + i * 7919, spec.marketKinds === true));
   }
   const built = marketTapeFromCanonicalRows('runner-perf-probe', '1m', allRows);
   if (!built.ok) throw new Error('perf fixture tape build failed: ' + built.detail);
