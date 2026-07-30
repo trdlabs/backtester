@@ -149,6 +149,14 @@ export interface WorkerDeps extends CompletionDeps {
   barMajorBatch?: boolean;
   /** 17b: max bars per hookBatch (clamped >= 2 by config). */
   batchBars?: number;
+  /**
+   * Морозить ли контекст на каждом баре (`BACKTESTER_CONTEXT_FREEZE_DISABLED`). Отсутствие ⇒ `true`.
+   *
+   * Флаг существовал в конфиге, но до прогона не доходил: `StrategyRunDeps` его не принимал.
+   * Развёртывание при этом уже просило его снять (`deploy/vps/backtester.env.example`), и просьба
+   * молча игнорировалась. Замер: 68.8 → 56.9 мкс/бар (−17%) при совпадающем `result_hash`.
+   */
+  contextFreeze?: boolean;
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap, no scaled policy (byte-identical). */
   universe?: { enabled: boolean; maxN: number; memBaseMb: number; memPerSymbolMb: number };
   /** E2: per-hypothesis-family trial ledger. Absent ⇒ trial ledger + DSR OFF (kill-switch). */
@@ -308,6 +316,7 @@ function makeWalkForwardRunFold(
             ...(deps.barMajor === true ? { barMajor: true } : {}),
             ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
             ...(deps.universe ? { universe: deps.universe } : {}),
+            ...(deps.contextFreeze !== undefined ? { contextFreeze: deps.contextFreeze } : {}),
           })
         : runOverlayBacktest(request, { registry, marketTape: tape, router, ...(deps.universe ? { universe: deps.universe } : {}) }),
   };
@@ -1014,11 +1023,14 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       const r = claimed.request;
       const marketTape = materialized.marketTape!;
       await chargeEngineAttempt(); // INV-5: engine-commit charge (strategy path)
+      // Один объект на обе ветки — потоковую и прямую: разъехавшиеся флаги дали бы одинаковый
+      // результат при разной стоимости, а это ровно тот класс расхождений, который гейты не ловят.
       const runFlags = {
         ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
         ...(deps.barMajor === true ? { barMajor: true } : {}),
         ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
         ...(deps.universe ? { universe: deps.universe } : {}),
+        ...(deps.contextFreeze !== undefined ? { contextFreeze: deps.contextFreeze } : {}),
       };
       let outcome: RunOutcome;
       if (deps.barLoopThread === true) {

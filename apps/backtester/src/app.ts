@@ -232,6 +232,7 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     coalesceEnabled: config.coalesceEnabled,
     barBatching: config.barBatching,
     barLoopThread: config.barLoopThread,
+    contextFreeze: config.contextFreeze,
     ...(barLoopPool !== undefined ? { barLoopPool } : {}),
     barMajor: config.barMajor,
     barMajorBatch: config.barMajorBatch,

@@ -38,6 +38,11 @@ const CONTEXT_FREEZE = process.env.PROFILE_CONTEXT_FREEZE !== 'false';
 
 const LOOKBACK = Math.max(0, Number(process.env.PROFILE_LOOKBACK ?? 0));
 const BACKEND = process.env.PROFILE_BACKEND === 'isolate' ? 'isolate' : 'trusted';
+// Несёт ли лента рыночные виды. По умолчанию НЕТ — так станок мерил всегда, и менять историческую
+// точку отсчёта молча нельзя. Но прод-ленты несут все четыре, поэтому без `=true` станок меряет
+// форму, которой на проде не существует: `ctx.market` не строится, `serializeContext` не зондирует
+// окна, и целая ветка бара выпадает из замера.
+const MARKET_KINDS = process.env.PROFILE_MARKET_KINDS === 'true';
 const WALL_MS_PER_CALL = Math.max(2_000, Number(process.env.PROFILE_WALL_MS_PER_CALL ?? 600_000));
 const probe = { ...DEFAULT_PROBE, lookback: LOOKBACK };
 
@@ -79,6 +84,7 @@ const spec: WorkloadSpec = {
   bars: BARS,
   seed: 12345,
   barMajor: BAR_MAJOR,
+  marketKinds: MARKET_KINDS,
   probe,
   ...(inlineBundle !== undefined
     ? { module: { id: inlineBundle.manifest.id, version: inlineBundle.manifest.version } }
@@ -91,7 +97,7 @@ console.log(
     (BACKEND === 'isolate'
       ? `module=${spec.module!.id}@${spec.module!.version} batch=64 wallMsPerCall=${WALL_MS_PER_CALL}`
       : `probe=entry/${probe.entryEvery}+hold/${probe.holdBars}+lookback/${probe.lookback}`) +
-    ` contextFreeze=${CONTEXT_FREEZE} cores=${cpus().length}`,
+    ` contextFreeze=${CONTEXT_FREEZE} marketKinds=${MARKET_KINDS} cores=${cpus().length}`,
 );
 
 // Лента строится ОДИН раз и переиспользуется: её постройка (deep-freeze 60k баров) не относится к

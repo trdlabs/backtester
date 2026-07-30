@@ -17,6 +17,16 @@ export interface StrategyRunDeps {
   readonly barMajorBatch?: boolean;
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap (byte-identical). */
   readonly universe?: { readonly enabled: boolean; readonly maxN: number; readonly memBaseMb: number; readonly memPerSymbolMb: number };
+  /**
+   * Морозить ли контекст на каждом баре. Absent ⇒ `true` (прежнее поведение).
+   *
+   * До этого поля прод-путь стратегии физически не мог передать флаг: он считался в конфиге и
+   * терялся здесь. При этом `deploy/vps/backtester.env.example` уже выставлял
+   * `BACKTESTER_CONTEXT_FREEZE_DISABLED=true` — то есть развёртывание просило снять заморозку,
+   * а она молча оставалась. Замер разницы: 68.8 против 56.9 мкс/бар (−17%) при ПОБИТОВО
+   * совпадающем `result_hash`.
+   */
+  readonly contextFreeze?: boolean;
 }
 
 /**
@@ -38,5 +48,8 @@ export async function runStrategyBacktest(
     ...(deps.barMajor ? { barMajor: true } : {}),
     ...(deps.barMajorBatch ? { barMajorBatch: true } : {}),
     ...(deps.universe ? { universe: deps.universe } : {}),
+    // Передаётся ТОЛЬКО когда задан явно: `RunDeps` трактует отсутствие как `true`, и подстановка
+    // значения по умолчанию здесь сделала бы поле неотличимым от «вызывающий ничего не просил».
+    ...(deps.contextFreeze !== undefined ? { contextFreeze: deps.contextFreeze } : {}),
   });
 }
