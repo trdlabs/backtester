@@ -32,7 +32,7 @@ import type { ThreadRunReply, ThreadRunSpec } from './run-spec.js';
  * `execArgv`; с `--no-experimental-strip-types` поток отвечает «Unknown file extension .mts», что и
  * доказывает: tsx там не живёт. До перевода образа на Node 24 путь потока в проде нерабочий.
  */
-function workerEntry(): string {
+export function workerEntry(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), 'bar-loop-worker.mts');
 }
 
@@ -48,7 +48,7 @@ function workerEntry(): string {
  * Поэтому загрузчик добавляется по факту его отсутствия, а не по признаку «мы в тестах». Прод
  * запускается `tsx src/index.ts`, загрузчик там уже есть, и ветка добавления не срабатывает.
  */
-function defaultExecArgv(entry: string): string[] {
+export function defaultExecArgv(entry: string): string[] {
   if (!entry.endsWith('.mts') && !entry.endsWith('.ts')) return [...process.execArgv];
   const hasTsLoader = process.execArgv.some((a) => a.includes('tsx'));
   return hasTsLoader ? [...process.execArgv] : ['--import', 'tsx', ...process.execArgv];
