@@ -27,6 +27,7 @@ async function runSpec(spec: ThreadRunSpec): Promise<ThreadRunReply> {
       { createSandboxPolicyRegistry },
       { DEFAULT_EXEC, DEFAULT_RISK },
       { loadConfig },
+      { tapeFromColumns },
     ] = await Promise.all([
       import('../runner.js'),
       import('../data-adapter.js'),
@@ -36,6 +37,7 @@ async function runSpec(spec: ThreadRunSpec): Promise<ThreadRunReply> {
       import('../sandbox-policy.js'),
       import('../profiles.js'),
       import('../../config.js'),
+      import('../tape-columns.js'),
     ]);
 
     const policy = loadConfig().overlaySandbox.policy;
@@ -54,14 +56,25 @@ async function runSpec(spec: ThreadRunSpec): Promise<ThreadRunReply> {
       sandboxBackend: spec.sandboxBackend,
     });
 
-    // Лента материализуется в потоке — копировать её через границу было бы дороже, чем построить.
-    const dataPort = new FixtureDataPort(spec.dataPort.dir);
-    const marketTape = await buildOverlayDataset(dataPort, {
-      datasetRef: spec.dataset.datasetRef,
-      symbols: [...spec.dataset.symbols],
-      timeframe: spec.dataset.timeframe,
-      period: spec.dataset.period,
-    });
+    // Лента собирается ТОЙ ЖЕ фабрикой, что и на главном потоке, каким бы путём ни пришли данные:
+    // `tapeFromColumns` внутри зовёт `marketTapeFromCanonicalRows`, а `buildOverlayDataset` — её же.
+    // Вторая реализация сборки на этой стороне разъехалась бы с первой ровно тогда, когда фабрику
+    // поменяют, и разъехалась бы молча.
+    let marketTape;
+    if (spec.dataPort.kind === 'columns') {
+      marketTape = tapeFromColumns(spec.dataPort.columns);
+    } else {
+      if (spec.dataset === undefined) {
+        throw new Error('bar-loop-worker: dataPort.kind="fixture" требует spec.dataset');
+      }
+      const dataPort = new FixtureDataPort(spec.dataPort.dir);
+      marketTape = await buildOverlayDataset(dataPort, {
+        datasetRef: spec.dataset.datasetRef,
+        symbols: [...spec.dataset.symbols],
+        timeframe: spec.dataset.timeframe,
+        period: spec.dataset.period,
+      });
+    }
 
     try {
       const result = await runBacktest(spec.request as never, {

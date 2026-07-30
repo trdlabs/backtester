@@ -11,24 +11,29 @@
 // shared-instance хазард, из-за которого universe-режим в POC отвергается fail-closed. Цена —
 // старт потока на прогон; на фоне прогона в секунды это шум, и она измерима отдельно.
 
-import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ThreadRunReply, ThreadRunSpec } from './run-spec.js';
 
 /**
- * Путь к entry потока.
+ * Путь к entry потока — исходный `.mts`, он же TypeScript.
  *
- * `new Worker(path)` принимает ФАЙЛ, а не спецификатор модуля, поэтому обычная резолюция
- * `.mjs`→`.mts`, которую делает tsx для импортов, здесь не работает: файла с расширением `.mjs` в
- * дереве исходников просто нет. Отсюда явная проверка — скомпилированный `.mjs` рядом с `.js`,
- * иначе исходный `.mts`.
+ * Раньше здесь стояла проверка «есть ли рядом скомпилированный `.mjs`». Она была написана под
+ * сборку, которой в этом репозитории нет: приложение нигде не компилируется в JS, а прод-образ
+ * запускает `tsx apps/backtester/src/index.ts` напрямую по исходникам. Ветка не срабатывала ни разу
+ * и только создавала впечатление, будто где-то существует собранный вариант.
+ *
+ * ВНИМАНИЕ, ОГРАНИЧЕНИЕ СРЕДЫ (замерено, не предположение). Поток грузит свой граф только под
+ * Node 24. Под Node 22 — а это版 прод-образа (`node:22-slim`) и версия CI — хуки tsx в worker_thread
+ * не активируются НИ ПРИ КАКОЙ передаче флагов: `.mts` разбирает встроенный стриппер типов Node, а
+ * переотображение `.js`→`.ts` при импорте (фича именно tsx) не происходит, и первый же
+ * `import('../runner.js')` падает с `Cannot find module`. Проверено прямым перебором вариантов
+ * `execArgv`; с `--no-experimental-strip-types` поток отвечает «Unknown file extension .mts», что и
+ * доказывает: tsx там не живёт. До перевода образа на Node 24 путь потока в проде нерабочий.
  */
 function workerEntry(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const compiled = resolve(here, 'bar-loop-worker.mjs');
-  return existsSync(compiled) ? compiled : resolve(here, 'bar-loop-worker.mts');
+  return resolve(dirname(fileURLToPath(import.meta.url)), 'bar-loop-worker.mts');
 }
 
 export interface RunInThreadOptions {
@@ -40,6 +45,16 @@ export interface RunInThreadOptions {
    * поверх них давал бы вторую, несогласованную причину смерти прогона.
    */
   readonly timeoutMs?: number;
+  /**
+   * `execArgv` потока. По умолчанию наследуется родительский — под `tsx` оттуда приходит загрузчик
+   * TypeScript, без которого поток не импортирует исходники.
+   *
+   * Переопределять приходится там, где у родителя загрузчика нет, а entry всё ещё исходный `.mts`:
+   * так устроен vitest — он трансформирует модули сам, своим конвейером, и в `process.execArgv`
+   * ничего для дочернего процесса не кладёт. Прод сюда не попадает: там рядом лежит собранный
+   * `.mjs`, и загрузчик ему не нужен вовсе.
+   */
+  readonly execArgv?: readonly string[];
 }
 
 export interface ThreadRunOutcome {
@@ -58,7 +73,9 @@ export async function runBacktestInThread(
   spec: ThreadRunSpec,
   opts: RunInThreadOptions = {},
 ): Promise<ThreadRunOutcome> {
-  const worker = new Worker(opts.entry ?? workerEntry(), { execArgv: process.execArgv });
+  const worker = new Worker(opts.entry ?? workerEntry(), {
+    execArgv: opts.execArgv !== undefined ? [...opts.execArgv] : process.execArgv,
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const reply = await new Promise<ThreadRunReply>((res, rej) => {

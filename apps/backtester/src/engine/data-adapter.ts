@@ -16,6 +16,7 @@ import type {
 } from '@trading/research-contracts/research';
 import type { CanonicalRow as ReaderRow } from '@trading/research-contracts';
 import { marketTapeFromCanonicalRows } from './market-tape.js';
+import { encodeTapeColumns, type OverlayMaterialization } from './tape-columns.js';
 import type { BacktesterDataPort } from '../data/reader.js';
 import { RunnerError } from '../runner/errors.js';
 
@@ -54,6 +55,25 @@ export function toCanonicalRowV2(r: ReaderRow): CanonicalRowV2 {
 }
 
 /**
+ * Как `buildOverlayDataset`, но возвращает ещё и колоночного двойника ленты для барного цикла в
+ * отдельном потоке.
+ *
+ * Колонки строятся ЗДЕСЬ, а не на стороне потребителя, по единственной причине: канонические строки
+ * живут только внутри этой функции и после постройки ленты выбрасываются. Снаружи их уже не достать —
+ * пришлось бы читать источник второй раз, в обход `overlayTapeCache`, ради тех же самых данных.
+ *
+ * Метки ленты (`datasetRef` + таймфрейм ДЕСКРИПТОРА, а не запроса) уезжают ВНУТРЬ колонок, поэтому
+ * проверка P2-19 выше по этой же функции — «клиент не вправе переклеить 1m как 60m» — переносится в
+ * поток вместе с данными, а не остаётся на главном потоке.
+ */
+export async function buildOverlayDatasetWithColumns(
+  port: BacktesterDataPort,
+  sel: OverlayDatasetSelector,
+): Promise<OverlayMaterialization> {
+  return materializeOverlay(port, sel, true);
+}
+
+/**
  * Open `sel.datasetRef` on `port`, stream its `[from, to)` window for `sel.symbols`, and materialize an
  * engine `MarketTapeDataset` via `marketTapeFromCanonicalRows`. Throws on unknown dataset or a failed
  * tape build (`non_market_source`).
@@ -62,6 +82,15 @@ export async function buildOverlayDataset(
   port: BacktesterDataPort,
   sel: OverlayDatasetSelector,
 ): Promise<MarketTapeDataset> {
+  return (await materializeOverlay(port, sel, false)).tape;
+}
+
+/** Общее тело обоих входов: разница только в том, кодируются ли строки в колонки перед выбросом. */
+async function materializeOverlay(
+  port: BacktesterDataPort,
+  sel: OverlayDatasetSelector,
+  withColumns: boolean,
+): Promise<OverlayMaterialization> {
   const reader = await port.openDataset(sel.datasetRef);
   if (reader === undefined) {
     throw new Error(`buildOverlayDataset: unknown dataset '${sel.datasetRef}'`);
@@ -109,5 +138,10 @@ export async function buildOverlayDataset(
       `buildOverlayDataset: tape build failed (${result.reason}): ${result.detail}`,
     );
   }
-  return result.tape;
+  return {
+    tape: result.tape,
+    // Тот же `descriptor.timeframe`, которым построена лента — иначе колонки описывали бы её
+    // неверно, и поток собрал бы ленту с другим таймфреймом из тех же свечей.
+    ...(withColumns ? { columns: encodeTapeColumns(sel.datasetRef, descriptor.timeframe, mappedRows) } : {}),
+  };
 }

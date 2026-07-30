@@ -257,11 +257,14 @@ function makeWalkForwardRunFold(
         : buildTrustedRegistry();
   const r = engineRequest;
   const realIo: WalkForwardFoldIO = {
+    // Значение кэша — материализация (лента + опциональные колонки); фолду нужна только лента.
     buildTape: (period) =>
-      overlayTapeCache.getOrBuild(
-        tapeCacheKey({ datasetRef: r.datasetRef, symbols: r.symbols, timeframe: r.timeframe, from: period.from, to: period.to }),
-        () => buildOverlayDataset(deps.dataPort, { datasetRef: r.datasetRef, symbols: r.symbols, timeframe: r.timeframe, period }),
-      ),
+      overlayTapeCache
+        .getOrBuild(
+          tapeCacheKey({ datasetRef: r.datasetRef, symbols: r.symbols, timeframe: r.timeframe, from: period.from, to: period.to }),
+          async () => ({ tape: await buildOverlayDataset(deps.dataPort, { datasetRef: r.datasetRef, symbols: r.symbols, timeframe: r.timeframe, period }) }),
+        )
+        .then((m) => m.tape),
     makeRouter: () => workerInternals.overlayRouterFor(deps, r.symbols.length),
     runEngine: (request, tape, router) =>
       engine === 'strategy'
@@ -627,7 +630,11 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
   const runId = claimed.runId;
   if (engine === 'overlay' || engine === 'strategy') {
     const r = claimed.request;
-    const marketTape = await overlayTapeCache.getOrBuild(
+    // Кэш хранит материализацию (лента + опциональные колонки для потока). Колонки здесь пока не
+    // строятся: их потребитель — барный цикл в отдельном потоке, и пока он не подключён, запись в
+    // кэше выросла бы в памяти, ничего не давая. Гейт паритета колонок гоняет тот же кэш через
+    // `buildOverlayDatasetWithColumns` — см. `test/thread-columns-parity.test.ts`.
+    const { tape: marketTape } = await overlayTapeCache.getOrBuild(
       tapeCacheKey({
         datasetRef: r.datasetRef,
         symbols: r.symbols,
@@ -635,13 +642,14 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
         from: r.period.from,
         to: r.period.to,
       }),
-      () =>
-        buildOverlayDataset(deps.dataPort, {
+      async () => ({
+        tape: await buildOverlayDataset(deps.dataPort, {
           datasetRef: r.datasetRef,
           symbols: r.symbols,
           timeframe: r.timeframe,
           period: r.period,
         }),
+      }),
     );
     // Wire-summary fingerprint only — NOT part of the hashed RunOutcome (platform golden), hence
     // `tapeFingerprint` and not `contentRef`: no reason to push every candle number through
