@@ -41,7 +41,8 @@ import { mountConfigFor } from '../engine/sandbox/mounts';
 import { ensureHarnessInVolume } from '../engine/sandbox/harness-volume';
 import { type ExecutorRouter } from '../engine/sandbox/routing';
 import { createOverlayRouter, type OverlayRouterSpec } from '../engine/sandbox/overlay-router-spec';
-import { runBacktestInThread } from '../engine/thread/run-in-thread';
+import { runBacktestInThread, unwrapThreadReply } from '../engine/thread/run-in-thread';
+import type { BarLoopThreadPool } from '../engine/thread/thread-pool';
 import type { SandboxExecutorDeps } from '../engine/sandbox/sandbox-executor';
 import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
@@ -134,6 +135,14 @@ export interface WorkerDeps extends CompletionDeps {
    * байт-в-байт: цикл на главном потоке, колонки в кэше не строятся.
    */
   barLoopThread?: boolean;
+  /**
+   * Тёплый пул потоков барного цикла. Живёт столько же, сколько приложение, и закрывается вместе с
+   * ним — модульным синглтоном его делать нельзя, иначе потоки переживут `dispose()` и утекут.
+   *
+   * Отсутствие ⇒ поток создаётся на прогон (прежнее поведение). Так остаётся работать всё, что
+   * поднимает `WorkerDeps` в обход `buildApp`.
+   */
+  barLoopPool?: BarLoopThreadPool;
   /** 17d: bar-major execution mode — one bar across all symbols before advancing. Default off (dark launch). */
   barMajor?: boolean;
   /** Slice B: collapse bar-major per-bar IPC into 3-phase batched transport. Pure sub-mode of barMajor — inert unless barMajor is also on. Default off (dark launch). */
@@ -1027,15 +1036,22 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
             'barLoopThread включён, но материализация пришла без колонок — путь потока не может получить ленту',
           );
         }
-        const threaded = await runBacktestInThread({
+        const threadSpec = {
           request: engineRequest,
           bundleDir: sandboxBundle!.bundleDir,
           // Описание роутера считается ЗДЕСЬ той же функцией, что и для главного потока; поток его
           // только применяет (`engine/sandbox/overlay-router-spec.ts`).
           router: workerInternals.overlayRouterSpecFor(deps, r.symbols.length),
-          dataPort: { kind: 'columns', columns },
+          dataPort: { kind: 'columns' as const, columns },
           flags: runFlags,
-        });
+        };
+        // Тёплый пул, если он есть: поток переиспользуется, изолят внутри — свежий на каждый
+        // прогон. Постоянная цена входа (~415 мс: создание потока плюс импорт графа модулей)
+        // платится один раз за жизнь процесса, а не на каждом задании.
+        const threaded =
+          deps.barLoopPool !== undefined
+            ? unwrapThreadReply(await deps.barLoopPool.run(threadSpec))
+            : await runBacktestInThread(threadSpec);
         // Роутер жил и умер внутри потока, поэтому `assertSandboxClean` здесь неприменим — но отказ
         // обязан быть тем же самым, иначе один и тот же сбой выглядел бы по-разному в зависимости от
         // того, где считался цикл.

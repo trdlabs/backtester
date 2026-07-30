@@ -75,6 +75,25 @@ export interface RunInThreadOptions {
   readonly execArgv?: readonly string[];
 }
 
+/**
+ * Разобрать ответ потока в исход прогона.
+ *
+ * Вынесено отдельной функцией, потому что путей к ответу два — одноразовый поток
+ * (`runBacktestInThread`) и тёплый пул (`BarLoopThreadPool`), — а разбор обязан быть один. Две
+ * копии этой логики разъехались бы на том, как именно ошибка внутри цикла отличается от ошибки
+ * запуска потока, и один и тот же сбой выглядел бы по-разному в зависимости от пути.
+ */
+export function unwrapThreadReply(reply: ThreadRunReply): ThreadRunOutcome {
+  if (!reply.ok) {
+    // Стек потока приклеивается к сообщению: иначе он теряется на границе и ошибка внутри цикла
+    // выглядела бы как ошибка запуска потока.
+    const err = new Error(reply.message);
+    if (reply.stack !== undefined) err.stack = `${err.stack ?? ''}\n--- поток ---\n${reply.stack}`;
+    throw err;
+  }
+  return { result: reply.result, sandboxErrors: reply.sandboxErrors };
+}
+
 export interface ThreadRunOutcome {
   readonly result: unknown;
   readonly sandboxErrors: readonly unknown[];
@@ -110,14 +129,7 @@ export async function runBacktestInThread(
       }
       worker.postMessage(spec);
     });
-    if (!reply.ok) {
-      // Стек потока приклеивается к сообщению: иначе он теряется на границе и ошибка внутри цикла
-      // выглядела бы как ошибка запуска потока.
-      const err = new Error(reply.message);
-      if (reply.stack !== undefined) err.stack = `${err.stack ?? ''}\n--- поток ---\n${reply.stack}`;
-      throw err;
-    }
-    return { result: reply.result, sandboxErrors: reply.sandboxErrors };
+    return unwrapThreadReply(reply);
   } finally {
     clearTimeout(timer);
     await worker.terminate();

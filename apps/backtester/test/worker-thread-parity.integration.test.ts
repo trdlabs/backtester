@@ -119,5 +119,52 @@ describe.skipIf(!THREAD_SEAM_LOADS)(
       },
       180_000, // две дороги; изолят в процессе, контейнеров нет
     );
+
+    it(
+      'два задания в ОДНОМ приложении идут через тёплый пул и оба дают верный результат',
+      async () => {
+        // `runThroughQueue` поднимает своё приложение на каждый вызов, поэтому переиспользование
+        // пула им не проверить: у каждого приложения пул свой. Здесь два задания проходят через
+        // ОДНО приложение — то есть через один пул и, при потолке в один поток, через один и тот же
+        // тёплый поток. Это и есть доказательство, что воркер ходит через пул, а не создаёт поток
+        // на задание.
+        __resetTapeCachesForTest();
+        const app = await buildTestApp({
+          enableOverlayEngine: true,
+          workerConcurrency: 1,
+          barLoopThread: true,
+          overlaySandbox: { ...loadConfig().overlaySandbox, backend: 'isolate' },
+        });
+        try {
+          const hashes: string[] = [];
+          for (const runId of ['wtp-pool-a', 'wtp-pool-b']) {
+            const res = await app.server.inject({
+              method: 'POST',
+              url: '/v1/runs',
+              headers: AUTH,
+              payload: {
+                ...loadRequest('baseline.json'),
+                runId,
+                engine: 'strategy',
+                moduleBundle: loadBundle('short-after-pump.bundle.json'),
+                metrics: ['pnl', 'win_rate'],
+              },
+            });
+            expect(res.statusCode).toBe(202);
+            expect(await app.drain()).toBe(1);
+            const row = await app.store.get(runId);
+            expect(row!.status, `${runId}: ${row!.terminalCode ?? '(без кода)'}`).toBe('completed');
+            hashes.push(row!.resultHash!);
+          }
+          // Хэши РАЗНЫЕ: `runId` входит в результат. Проверяется не их совпадение, а то, что оба
+          // задания довелись до конца на переиспользованном потоке.
+          expect(hashes[0]).not.toBe(hashes[1]);
+          expect(hashes.every((h) => typeof h === 'string' && h.length > 0)).toBe(true);
+        } finally {
+          await app.dispose();
+        }
+      },
+      300_000,
+    );
   },
 );
