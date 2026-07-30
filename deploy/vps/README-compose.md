@@ -26,8 +26,11 @@ Safe-deployment framework требует пиннить единицу разв�
 docker pull ghcr.io/trdlabs/backtester:latest
 docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/trdlabs/backtester:latest
 
-# 2. Записать ИМЕННО digest, а не тег
-export BACKTESTER_IMAGE='ghcr.io/trdlabs/backtester@sha256:<digest>'
+# 2. Записать ИМЕННО digest, а не тег — в файл `.env` рядом с compose.
+#    Не `export`: переменная окружения живёт до конца сессии, и следующая команда
+#    `docker compose ps` упадёт на незаполненном `${BACKTESTER_IMAGE:?}`. Файл ещё и
+#    отвечает на вопрос «какая версия здесь развёрнута» — прочитать можно с машины.
+echo 'BACKTESTER_IMAGE=ghcr.io/trdlabs/backtester@sha256:<digest>' > .env
 
 # 3. Env — тот же контракт, что у up.sh
 cp backtester.env.example backtester.env && $EDITOR backtester.env
