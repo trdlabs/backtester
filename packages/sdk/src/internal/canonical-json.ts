@@ -18,6 +18,22 @@ function quantizeToString(n: number): string {
   if (!Number.isFinite(n)) {
     throw new Error(`canonical-json: non-finite number not allowed (got ${n})`);
   }
+  // Быстрый путь для БЕЗОПАСНЫХ ЦЕЛЫХ — не оптимизация «на глазок», а тождество.
+  //
+  // Артефакт прогона состоит из целых в подавляющей части: `barIndex`, `barTs`, счётчики, размеры.
+  // На 60-тысячебарном окне это сотни тысяч чисел, и каждое сейчас проходит круг
+  // `new Decimal(n)` → `toDecimalPlaces(8)` → `toFixed()`, то есть разбор строки, аллокация
+  // объекта и обратная сборка строки — ради значения, которое не меняется.
+  //
+  // Почему результат ТОТ ЖЕ побайтово:
+  //   · округление до 8 знаков целого не двигает — дробной части нет;
+  //   · `toFixed()` у Decimal не печатает лишние нули и не уходит в экспоненту, а `String(n)`
+  //     для безопасного целого даёт ровно те же цифры (экспонента у Number начинается с 1e21,
+  //     что выше `MAX_SAFE_INTEGER`, поэтому граница `isSafeInteger` закрывает и этот случай);
+  //   · `-0` проходит `Number.isInteger`, и `String(-0)` === `'0'` — та же нормализация, что
+  //     ниже делает ветка `isZero()`.
+  // Тождество закреплено тестом `canonical-json-fast-path.test.ts` (сверка со старым путём).
+  if (Number.isSafeInteger(n)) return String(n);
   let d = new Decimal(n).toDecimalPlaces(SCALE, Decimal.ROUND_HALF_EVEN);
   if (d.isZero()) d = new Decimal(0); // normalize `-0 -> 0`
   return d.toFixed(); // fixed notation, no trailing zeros, no exponent
