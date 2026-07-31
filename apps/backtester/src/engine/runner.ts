@@ -405,7 +405,23 @@ function preBarStages(env: BarEnv, t: number): void {
   runProtectionCheck(bar, t, symbol, portfolio, engine.exec, acc);
 }
 
-async function processBar(env: BarEnv, t: number, base: StrategyDecision | null): Promise<void> {
+/**
+ * @param ctx Контекст бара `t`, УЖЕ построенный вызывающим для хука стратегии.
+ *
+ * Раньше `processBar` строил его заново, и на каждом баре получалось два полных графа контекста
+ * вместо одного: объект, три-четыре замыкания (`clock`, `data`, `indicators`, `rng`), плюс
+ * рыночная поверхность, когда лента несёт виды.
+ *
+ * Второй граф был тождественно равен первому, а не просто похож. Между постройками исполняется
+ * ровно один участок кода — хук стратегии, — и мутировать портфель он не может: хук живёт в
+ * песочнице и возвращает решение, а не трогает состояние. Всё, что портфель меняет
+ * (`preBarStages`: расчёт pending и protection-check), отрабатывает ДО первой постройки. Метка
+ * тоже одна и та же: `candles[t].close` и `bar.close` — одно число.
+ *
+ * Поэтому контекст передаётся, а не пересобирается. Параметр обязателен намеренно: необязательный
+ * со «сборкой по умолчанию» означал бы, что новый вызывающий может молча вернуть прежнюю цену.
+ */
+async function processBar(env: BarEnv, t: number, base: StrategyDecision | null, ctx: StrategyContext): Promise<void> {
   const { symbol, candles, builder, overlays, portfolio, engine, acc, module, strategyExec, fundingCol, gridTs, cadenceMinutes } = env;
   const { router, risk, exec, composer } = engine;
   const bar = candles[t];
@@ -418,7 +434,6 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null)
   // (3) apply base → entry/signal overlay'и → risk → pending(open).
   // 17b: base приходит от вызывающего (runSymbol сегодня; batch-путь — Task 4) и может быть `null`
   // (пропуск executor-хука); совпадает с fallback'ом самого firstDecision (`{kind:'idle'}`).
-  const ctx = builder.build(t, stateAt(portfolio, bar.close));
   // Прогон без entry-оверлеев — обычный случай, и в нём композировать нечего: см.
   // `OverlayComposer.withoutOverlays`. Пропускается промис, микрозадача и замыкание getDecision.
   const entryBase: StrategyDecision = base ?? { kind: 'idle' };
@@ -689,19 +704,25 @@ async function runSymbol(
       }
       const { stoppedAt, decisions } = await strategyExec.executeStrategyHookBatch(module, ctxs);
       // Empty prefix: SAME per-bar body with base = null (byte-identical bookkeeping).
+      //
+      // Контексты окна уже построены выше и передаются в `processBar` как есть. Это законно ровно
+      // потому же, почему законен сам батч: окно набирается только на ПЛОСКОМ участке (нет позиции,
+      // нет pending, нет оверлеев), решений внутри префикса нет по определению `stoppedAt`, а
+      // `preBarStages` на плоском участке — no-op. Значит состояние портфеля на каждом баре окна
+      // ровно то, при котором его контекст и строился.
       for (let j = 0; j < stoppedAt; j += 1) {
-        await processBar(env, t + j, null);
+        await processBar(env, t + j, null, ctxs[j]!);
         if (j < stoppedAt - 1) preBarStages(env, t + j + 1); // no-ops while flat; keeps stage order
       }
       if (stoppedAt > 0) preBarStages(env, t + stoppedAt);
-      await processBar(env, t + stoppedAt, firstDecision(decisions));
+      await processBar(env, t + stoppedAt, firstDecision(decisions), ctxs[stoppedAt]!);
       t += stoppedAt; // loop's t += 1 completes the stoppedAt + 1 advance
       continue;
     }
 
     const ctx = builder.build(t, stateAt(portfolio, candles[t].close));
     const base = firstDecision(await strategyExec.executeStrategyHook(module, 'onBarClose', ctx));
-    await processBar(env, t, base);
+    await processBar(env, t, base, ctx);
   }
 
   await finalizeSymbol(env);
@@ -874,7 +895,12 @@ async function runBarMajor(
         const bases = await active[0]!.env.strategyExec.executeStrategyHookBarMajor(
           active.map((a) => ({ module: a.env.module, ctx: a.ctx })),
         );
-        for (let i = 0; i < active.length; i += 1) await processBar(active[i]!.env, active[i]!.t, bases[i]!);
+        // Контекст каждого символа построен в фазе сбора `active` и передаётся дальше: до
+        // `processBar` между постройкой и использованием исполняется только батч-вызов хука,
+        // а он портфель не трогает.
+        for (let i = 0; i < active.length; i += 1) {
+          await processBar(active[i]!.env, active[i]!.t, bases[i]!, active[i]!.ctx);
+        }
       } else {
         for (const s of present) {                   // Slice A interleave — тот же порядок символов
           const env = envs[s];
@@ -883,7 +909,7 @@ async function runBarMajor(
           preBarStages(env, t);
           const ctx = env.builder.build(t, stateAt(env.portfolio, env.candles[t].close));
           const base = firstDecision(await env.strategyExec.executeStrategyHook(env.module, 'onBarClose', ctx));
-          await processBar(env, t, base);
+          await processBar(env, t, base, ctx);
           cursor[s] += 1;
         }
       }
