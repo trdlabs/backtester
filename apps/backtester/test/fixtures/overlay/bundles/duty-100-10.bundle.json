@@ -1,0 +1,35 @@
+{
+  "manifest": {
+    "id": "duty_cycle_100_10",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "duty cycle 100/10",
+    "summary": "Вход каждые 100 баров, удержание 10",
+    "rationale": "Фикстура перф-станка: задаёт долю баров в позиции, не является торговой идеей",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "params": {},
+    "capabilities": {
+      "platformSdk": true
+    },
+    "dataNeeds": {
+      "closedCandlesUpToCurrent": true,
+      "asOfIndicators": false
+    },
+    "hooks": [
+      "onBarClose",
+      "onPositionBar"
+    ],
+    "bundleContractVersion": "019.1"
+  },
+  "entry": "module/index.js",
+  "files": {
+    "module/index.js": "// Фикстура станка: вход каждые 100 баров, выход через 10.\n//\n// Доля баров в позиции = holdBars / entryEvery. Батч 17b работает только на ПЛОСКИХ участках,\n// поэтому эта доля прямо задаёт, сколько баров проходит по дорогому (небатчевому) пути.\nexport default function createStrategyModule() {\n  let bar = -1;\n  let sinceEntry = -1;\n  return {\n    manifest: {\"id\":\"duty_cycle_100_10\",\"version\":\"0.1.0\"},\n    onBarClose() {\n      bar += 1;\n      if (sinceEntry >= 0) return { kind: 'idle' };\n      if (bar % 100 === 0) {\n        sinceEntry = 0;\n        return { kind: 'enter', side: 'long' };\n      }\n      return { kind: 'idle' };\n    },\n    onPositionBar() {\n      if (sinceEntry < 0) return { kind: 'idle' };\n      sinceEntry += 1;\n      if (sinceEntry >= 10) {\n        sinceEntry = -1;\n        return { kind: 'exit' };\n      }\n      return { kind: 'idle' };\n    },\n  };\n}\n"
+  }
+}

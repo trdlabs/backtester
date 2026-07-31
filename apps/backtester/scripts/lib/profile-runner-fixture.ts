@@ -10,6 +10,9 @@
 // всё, что покажет профиль, — это работа раннера вокруг хука. Режим изолята меряется отдельно тем же
 // станком (`PROFILE_BACKEND=isolate`) и служит верхней границей, сопоставимой с 48.6 с.
 
+import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
+
 import { loadConfig } from '../../src/config.js';
 import { createTrustedRouter } from '../../src/engine/module-executor.js';
 import { createExecutorRouter, createModuleRegistry } from '../../src/engine/sandbox/routing.js';
@@ -176,20 +179,36 @@ export interface WorkloadSpec {
   readonly module?: { readonly id: string; readonly version: string };
   /** Несёт ли лента рыночные виды. Прод-ленты несут все четыре; `false` — форма, которой на проде нет. */
   readonly marketKinds?: boolean;
+  /** Батч баров 17b. Отсутствие/меньше 2 ⇒ выключен, как в проде. */
+  readonly batchBars?: number;
+  /** Путь к настоящей ленте (`.ndjson`/`.ndjson.gz`). Задан ⇒ `bars`/`seed`/`marketKinds` не используются. */
+  readonly tapeFile?: string;
 }
 
 export function makeRequest(spec: WorkloadSpec): BacktestRunRequest {
+  // При настоящей ленте период и символы берутся ИЗ ДАННЫХ, а не из `T0`/`spec.bars`: запрос с
+  // чужим окном отклонится валидацией ещё до симуляции, и это выглядело бы как поломка станка.
+  const real = spec.tapeFile !== undefined ? rowsFromFile(spec.tapeFile) : undefined;
+  const period = real !== undefined
+    ? {
+        from: new Date(real[0]!.minute_ts).toISOString(),
+        to: new Date(real[real.length - 1]!.minute_ts).toISOString(),
+      }
+    : {
+        from: new Date(T0).toISOString(),
+        to: new Date(T0 + spec.bars * 60_000).toISOString(),
+      };
+  const symbols = real !== undefined
+    ? [...new Set(real.map((r) => r.symbol))]
+    : [...spec.symbols];
   return {
     runId: 'runner-perf-probe',
     mode: 'research',
     moduleRef: spec.module ?? { id: MANIFEST.id, version: MANIFEST.version },
-    datasetRef: 'runner-perf-probe',
-    symbols: [...spec.symbols],
+    datasetRef: real !== undefined ? 'runner-perf-real' : 'runner-perf-probe',
+    symbols,
     timeframe: '1m',
-    period: {
-      from: new Date(T0).toISOString(),
-      to: new Date(T0 + spec.bars * 60_000).toISOString(),
-    },
+    period,
     riskProfileRef: { id: DEFAULT_RISK.id, version: DEFAULT_RISK.version },
     executionProfileRef: { id: SAME_BAR_NO_COST.id, version: SAME_BAR_NO_COST.version },
     seed: spec.seed,
@@ -218,7 +237,35 @@ export function makeTrustedDeps(spec: WorkloadSpec): RunDeps {
 }
 
 /** Лента строится отдельно от deps, чтобы isolate- и trusted-режим мерили ОДНИ И ТЕ ЖЕ данные. */
+/**
+ * Настоящие канонические строки из файла (`.ndjson` или `.ndjson.gz`), выгруженные из mock-platform.
+ *
+ * Синтетическая лента — случайное блуждание с гладким OI — НЕ ПОРОЖДАЕТ паттернов, на которые
+ * реагируют реальные стратегии: `short_after_pump` ждёт памп +10% за 20 минут, `long_oi` — дамп с
+ * восстановлением открытого интереса и подтверждением ликвидациями. Обе на синтетике дают ноль
+ * сделок (проверено счётчиком в станке). Значит батч 17b на ней работает все 100% баров, и любой
+ * замер батча на синтетике — его ПОТОЛОК, а не рабочее значение.
+ *
+ * Выгрузка делается `scripts/export-rows.py` (см. control-center) и кладётся рядом со станком;
+ * в репозиторий не коммитится — это десятки мегабайт рыночных данных, а не фикстура кода.
+ */
+function rowsFromFile(path: string): CanonicalRowV2[] {
+  const raw = path.endsWith('.gz') ? gunzipSync(readFileSync(path)) : readFileSync(path);
+  const rows: CanonicalRowV2[] = [];
+  for (const line of raw.toString('utf8').split('\n')) {
+    if (line.length > 0) rows.push(JSON.parse(line) as CanonicalRowV2);
+  }
+  if (rows.length === 0) throw new Error(`лента ${path}: ноль строк — фикстура пуста`);
+  return rows;
+}
+
 export function buildTape(spec: WorkloadSpec): MarketTapeDataset {
+  if (spec.tapeFile !== undefined) {
+    const rows = rowsFromFile(spec.tapeFile);
+    const built = marketTapeFromCanonicalRows('runner-perf-real', '1m', rows);
+    if (!built.ok) throw new Error('perf fixture tape build failed: ' + built.detail);
+    return built.tape;
+  }
   const allRows: CanonicalRowV2[] = [];
   for (const [i, symbol] of spec.symbols.entries()) {
     allRows.push(...syntheticRows(symbol, spec.bars, spec.seed + i * 7919, spec.marketKinds === true));
@@ -240,6 +287,24 @@ export function buildTape(spec: WorkloadSpec): MarketTapeDataset {
  *   выродится в lockstep (450 мкс/бар) и замер будет мерить уже почищенный #166 транспорт.
  *
  * Универс-сессии в isolate-режиме не поддерживаются (routing.ts падает fail-fast) — поэтому их тут нет.
+ */
+/**
+ * ЧЕМ СТАНОК ОТЛИЧАЕТСЯ ОТ ПРОДА — список обязателен к сверке перед любым выводом.
+ *
+ * Расхождения станка с прод-путём породили в этой программе несколько неверных выводов подряд:
+ * числа снимались на конфигурации, которой в проде не существует, а разница списывалась на железо.
+ * Поэтому отличия перечислены здесь явно, а не расползаются по умолчаниям.
+ *
+ * | ось | станок | прод |
+ * | --- | --- | --- |
+ * | рыночные виды ленты | `PROFILE_MARKET_KINDS` (по умолчанию НЕТ) | все четыре ЕСТЬ |
+ * | батч баров 17b | `PROFILE_BATCH_BARS` (по умолчанию 0 = выкл, как в проде) | выкл |
+ * | заморозка контекста | `PROFILE_CONTEXT_FREEZE` (по умолчанию вкл) | СНЯТА |
+ * | поток барного цикла | НЕТ — цикл на главном потоке, заход АСИНХРОННЫЙ | поток + СИНХРОННЫЙ заход |
+ *
+ * Последняя строка — известное и НЕ закрытое расхождение: асинхронный заход стоит измеренные
+ * ~150 мкс/бар (bt#191/196), которых прод не платит. Пока станок не умеет гонять цикл в потоке,
+ * всё, что профиль показывает про `evalHarness` / `idle` / `TextDecoder`, к проду не относится.
  */
 export function makeIsolateDeps(spec: WorkloadSpec, bundleDir: string, wallTimeMsPerCall: number): RunDeps {
   const policy = loadConfig().overlaySandbox.policy;
@@ -265,7 +330,10 @@ export function makeIsolateDeps(spec: WorkloadSpec, bundleDir: string, wallTimeM
     marketTape: buildTape(spec),
     router,
     barMajor: spec.barMajor,
-    barBatching: { maxBars: 64 },
+    // Батч 17b по умолчанию ВЫКЛЮЧЕН — как в проде. Раньше здесь стояло жёсткое `{ maxBars: 64 }`,
+    // и станок мерил ветку, которой прод не исполняет: батч меняет не только транспорт, но и путь
+    // в `runSymbol` (окно контекстов вместо одного) — то есть другой объём работы на баре.
+    ...(spec.batchBars !== undefined && spec.batchBars >= 2 ? { barBatching: { maxBars: spec.batchBars } } : {}),
     sandboxPolicyRef: { id: scaled.id, version: scaled.version },
   } as RunDeps;
 }
