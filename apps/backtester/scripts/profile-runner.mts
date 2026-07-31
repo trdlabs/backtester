@@ -43,15 +43,31 @@ const BACKEND = process.env.PROFILE_BACKEND === 'isolate' ? 'isolate' : 'trusted
 // форму, которой на проде не существует: `ctx.market` не строится, `serializeContext` не зондирует
 // окна, и целая ветка бара выпадает из замера.
 const MARKET_KINDS = process.env.PROFILE_MARKET_KINDS === 'true';
+// Батч баров 17b. По умолчанию ВЫКЛЮЧЕН — как в проде (`BACKTESTER_BAR_BATCHING=false`). Раньше он
+// был жёстко зашит в `makeIsolateDeps` как `{maxBars:64}`, и станок мерил ветку `runSymbol` с окном
+// контекстов, которую прод не исполняет. Значение <2 трактуется как «выключен» (батч из одного бара
+// смысла не имеет и в раннере всё равно отсекается).
+const BATCH_BARS = Math.max(0, Number(process.env.PROFILE_BATCH_BARS ?? 0));
+// Путь к НАСТОЯЩЕЙ ленте (выгрузка из mock-platform). Задан ⇒ синтетика не строится, а `PROFILE_BARS`
+// и `PROFILE_MARKET_KINDS` игнорируются: длина и состав видов берутся из данных.
+const TAPE_FILE = process.env.PROFILE_TAPE_FILE;
 const WALL_MS_PER_CALL = Math.max(2_000, Number(process.env.PROFILE_WALL_MS_PER_CALL ?? 600_000));
 const probe = { ...DEFAULT_PROBE, lookback: LOOKBACK };
 
 // В isolate-режиме модуль исполняет РЕАЛЬНЫЙ бандл, поэтому `moduleRef` обязан указывать на его
 // манифест, а не на зонд: иначе реестр не разрешит ссылку и прогон будет отклонён до симуляции.
+//
+// `PROFILE_BUNDLE` — имя фикстуры бандла. Ключ существует потому, что бандл по умолчанию
+// (`short_after_pump`) на синтетической ленте НЕ СОВЕРШАЕТ НИ ОДНОЙ СДЕЛКИ: ему нужен памп +10% за
+// 20 минут, а лента — случайное блуждание с шагом ±0.2. Значит станок мерил ПЛОСКИЙ прогон, а
+// плоскость решает, работает ли батч 17b (он включается лишь при отсутствии позиции, pending и
+// оверлеев). Настоящая стратегия (`long-oi.bundle.json` — `long-dump-reversal-oi-liq-fsm`, та, что
+// торгует на paper) держит позицию и проходит по дорогому пути.
 const BUNDLE_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..',
-  'test/fixtures/overlay/bundles/short-after-pump.bundle.json',
+  'test/fixtures/overlay/bundles',
+  process.env.PROFILE_BUNDLE ?? 'short-after-pump.bundle.json',
 );
 
 /**
@@ -85,6 +101,8 @@ const spec: WorkloadSpec = {
   seed: 12345,
   barMajor: BAR_MAJOR,
   marketKinds: MARKET_KINDS,
+  ...(BATCH_BARS >= 2 ? { batchBars: BATCH_BARS } : {}),
+  ...(TAPE_FILE !== undefined ? { tapeFile: TAPE_FILE } : {}),
   probe,
   ...(inlineBundle !== undefined
     ? { module: { id: inlineBundle.manifest.id, version: inlineBundle.manifest.version } }
@@ -97,7 +115,8 @@ console.log(
     (BACKEND === 'isolate'
       ? `module=${spec.module!.id}@${spec.module!.version} batch=64 wallMsPerCall=${WALL_MS_PER_CALL}`
       : `probe=entry/${probe.entryEvery}+hold/${probe.holdBars}+lookback/${probe.lookback}`) +
-    ` contextFreeze=${CONTEXT_FREEZE} marketKinds=${MARKET_KINDS} cores=${cpus().length}`,
+    ` contextFreeze=${CONTEXT_FREEZE} marketKinds=${MARKET_KINDS} batchBars=${BATCH_BARS >= 2 ? BATCH_BARS : 'выкл'}` +
+    ` cores=${cpus().length}`,
 );
 
 // Лента строится ОДИН раз и переиспользуется: её постройка (deep-freeze 60k баров) не относится к
@@ -119,6 +138,10 @@ interface Sample {
   readonly wallMs: number;
   readonly hash: string;
   readonly barsProcessed: number;
+  readonly trades: number;
+  readonly orders: number;
+  readonly meaningfulDecisions: number;
+  readonly riskDecisions: number;
 }
 
 async function runOnce(): Promise<Sample> {
@@ -129,10 +152,30 @@ async function runOnce(): Promise<Sample> {
     throw new Error('прогон отклонён: ' + JSON.stringify(out.validation));
   }
   const evidence = out.baseline as unknown as { readonly evidence?: { readonly barsProcessed?: number } };
+  // Сделки и бары-в-позиции печатаются НЕ для полноты отчёта. Без них станок молча меряет
+  // стратегию, которая ничего не делает, и выдаёт это за замер торгового пути: `short_after_pump`
+  // на синтетической ленте не входит в позицию ни разу, и это выяснилось только по метрикам
+  // `pnl:0, win_rate:0` постфактум. Число сделок — самопроверка фикстуры, а не украшение.
+  const res = out.baseline as unknown as {
+    readonly trades?: readonly unknown[];
+    readonly orders?: readonly unknown[];
+    readonly riskDecisions?: readonly unknown[];
+    readonly decisionRecords?: readonly { readonly finalDecision?: { readonly kind?: string } | null }[];
+  };
+  // `решений` и `риска` РАЗЛИЧАЮТ ПРИЧИНУ, когда сделок ноль: молчит стратегия (решений 0) или её
+  // выходы отклоняет риск (решения есть, ордеров нет). Без этой пары «сделок=0» ничего не объясняет,
+  // и приходится гадать — чем я уже занимался дважды за сессию.
+  const meaningful = (res.decisionRecords ?? []).filter(
+    (d) => d.finalDecision != null && d.finalDecision.kind !== undefined && d.finalDecision.kind !== 'idle',
+  ).length;
   return {
     wallMs,
     hash: contentRef(out.baseline),
     barsProcessed: evidence.evidence?.barsProcessed ?? BARS * SYMBOLS.length,
+    trades: res.trades?.length ?? 0,
+    orders: res.orders?.length ?? 0,
+    meaningfulDecisions: meaningful,
+    riskDecisions: res.riskDecisions?.length ?? 0,
   };
 }
 
@@ -147,7 +190,8 @@ try {
     samples.push(s);
     console.log(
       `  #${i + 1}: ${s.wallMs.toFixed(0)} мс  ${((s.wallMs * 1000) / s.barsProcessed).toFixed(1)} мкс/бар  ` +
-        `баров=${s.barsProcessed}  hash=${s.hash.slice(7, 19)}…`,
+        `баров=${s.barsProcessed}  решений=${s.meaningfulDecisions}  риска=${s.riskDecisions}  ` +
+        `ордеров=${s.orders}  сделок=${s.trades}  hash=${s.hash.slice(7, 19)}…`,
     );
   }
 } finally {
