@@ -34,7 +34,7 @@ import { type CandleDataset, loadCandleDataset } from './dataset.js';
 import { ExecutionSimulator } from './execution.js';
 import { computeBarFunding } from './funding.js';
 import { computeComparison, computeMetrics, effectiveElapsedYears, INITIAL_EQUITY } from './metrics.js';
-import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter, firstDecision } from './module-executor.js';
+import { type ModuleExecutor, type ExecutorRouter, createTrustedRouter, firstDecision, IDLE_DECISION } from './module-executor.js';
 // Type-only (erased at runtime ⇒ 018 НЕ зависит от 019 в рантайме): форма реестра sandbox-политик
 // для additive-полей RunDeps. Sandbox-aware router передаётся явно через `deps.router` (строит 019).
 import type { SandboxPolicyRegistry } from './sandbox-policy.js';
@@ -436,7 +436,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null,
   // (пропуск executor-хука); совпадает с fallback'ом самого firstDecision (`{kind:'idle'}`).
   // Прогон без entry-оверлеев — обычный случай, и в нём композировать нечего: см.
   // `OverlayComposer.withoutOverlays`. Пропускается промис, микрозадача и замыкание getDecision.
-  const entryBase: StrategyDecision = base ?? { kind: 'idle' };
+  const entryBase: StrategyDecision = base ?? IDLE_DECISION;
   const comp =
     overlays.entry.length === 0
       ? OverlayComposer.withoutOverlays(entryBase)
@@ -483,7 +483,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null,
     barTs: bar.ts,
     symbol,
     hook: 'onBarClose',
-    baseDecision: base ?? { kind: 'idle' },
+    baseDecision: base ?? IDLE_DECISION,
     overlayEffects: comp.effects,
     finalDecision: final,
     riskDecision,
@@ -496,7 +496,7 @@ async function processBar(env: BarEnv, t: number, base: StrategyDecision | null,
     const posBase: StrategyDecision =
       module.onPositionBar !== undefined
         ? firstDecision(await strategyExec.executeStrategyHook(module, 'onPositionBar', ctxPos))
-        : { kind: 'idle' };
+        : IDLE_DECISION;
     const compPos =
       overlays.post.length === 0
         ? OverlayComposer.withoutOverlays(posBase)
