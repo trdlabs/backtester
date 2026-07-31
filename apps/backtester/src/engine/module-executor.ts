@@ -82,8 +82,23 @@ function normalizeOverlay(
  * `{ kind: 'idle' }` fallback below — bar-major's result_hash parity with the lockstep runner depends
  * on it.
  */
+/**
+ * Канонический «ничего не делаем» — ОДИН объект на процесс, а не новый на каждом баре.
+ *
+ * `{ kind: 'idle' }` создавался в четырёх местах горячего пути: `firstDecision` (раз на бар),
+ * `entryBase`, `baseDecision` в записи решения и синтетический базис для `onPositionBar`. На
+ * прогоне в 60 тыс. баров это до 180 тыс. одинаковых неизменяемых объектов, каждый из которых
+ * живёт до сборки мусора. Профиль показывает сборщик как самую крупную статью после границы
+ * изолята — значит дешёвые аллокации здесь не бесплатны.
+ *
+ * Значение в артефакте не меняется: сериализуется `{"kind":"idle"}` в обоих случаях. Заморозка
+ * не «на всякий случай»: общий объект, который кто-то мутирует, — это тихая порча ЧУЖИХ записей
+ * решений, и лучше получить исключение в тот же момент, чем расхождение хэша через месяц.
+ */
+export const IDLE_DECISION: StrategyDecision = Object.freeze({ kind: 'idle' }) as StrategyDecision;
+
 export function firstDecision(decisions: readonly StrategyDecision[]): StrategyDecision {
-  return decisions.length > 0 ? decisions[0]! : { kind: 'idle' };
+  return decisions.length > 0 ? decisions[0]! : IDLE_DECISION;
 }
 
 /**
