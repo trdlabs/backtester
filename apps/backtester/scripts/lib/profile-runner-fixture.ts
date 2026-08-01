@@ -38,6 +38,44 @@ const SAME_BAR_NO_COST: ExecutionProfile = {
   slippageModel: { kind: 'fixed_bps', bps: 0 },
 };
 
+/**
+ * Параметры стратегии, сопоставимые по размеру с боевыми.
+ *
+ * Зачем. `params` входят в снимок контекста и потому `JSON.stringify`-уются в сообщение изоляту
+ * НА КАЖДОМ БАРЕ, хотя весь прогон неизменны. Станок держал `params: {}` — то есть единственную
+ * конфигурацию, которой в проде не бывает: у боевой `long_oi` `DEFAULT_PARAMS` весит 1123 байта.
+ *
+ * ЗАМЕРЕНО (зеркало, 60 тыс. баров, чередование арм, минимумы): пустые params — 77.0 мкс/бар,
+ * 840 байт — 74.8. Разницы НЕТ, арма с параметрами даже быстрее. То есть на этом объёме payload
+ * цена перехода от размера практически не зависит.
+ *
+ * Это ОПРОВЕРГАЕТ наклон «9.7 мкс на килобайт», выведенный из `profile-isolate-boundary`: у той
+ * лестницы в собственных данных 512 байт мерились медленнее 653, что и было признаком шума.
+ * Вывод для будущих правок: выносить инварианты (`params`/`run`) за границу ради скорости
+ * СМЫСЛА НЕТ — механизм вызова стоит дорого сам по себе, а не из-за байтов.
+ *
+ * Фикстура всё равно остаётся реалистичной: конфигурация станка должна совпадать с прод-постурой
+ * по умолчанию, иначе следующий забытый ключ снова даст число, к проду не относящееся.
+ *
+ * Форма скопирована со структуры long_oi (ладдер TP, DCA-массивы, окна, защита), а не набрана
+ * случайным мусором: размер должен набираться так же — вложенностью и числом ключей, потому что
+ * от этого зависит и стоимость `JSON.parse` внутри изолята, не только длина строки.
+ */
+const REALISTIC_PARAMS = {
+  trigger: { mode: 'high_to_low', pct: 10, windowMin: 20, minVolumeUsd: 250_000 },
+  watch: { maxMinutes: 40, cooldownMinutes: 20, minBouncePct: 0.5, maxBouncePct: 4 },
+  entry: { requireOiRecovery: true, oiRecoveryPct: 0.6, oiWindowMin: 3, requireLongLiq: true, minLongLiqUsd: 50_000 },
+  tpLadder: { tp1Pct: 1.5, tp1Action: 'partial_exit', tp1ExitPercent: 50, tp2Pct: 3 },
+  dca: { maxAdds: 2, dropPcts: [1.5, 3], sizeMultipliers: [1, 1.5], requireOiConfirm: true, minGapMin: 5 },
+  protection: { moveProtectionToBEAfterTp1: true, hardStopPct: 5, trailAfterTp2Pct: 1 },
+  failFast: { enabled: false, afterMin: 12, maxAdversePct: 2.5, requireNoTp1: true },
+  warmup: { candlesMin: 30 },
+  sizing: { baseOrderUsd: 100, maxNotionalUsd: 500, maxConcurrentPositions: 5 },
+  filters: { minPrice: 0.0001, maxSpreadBps: 25, excludeSymbols: [] as string[] },
+  maxHoldMin: 180,
+  hardStopPct: 5,
+} as const;
+
 const MANIFEST = {
   id: 'perf_probe',
   version: '1.0.0',
@@ -48,8 +86,10 @@ const MANIFEST = {
   author: 'agent',
   contractVersion: CONTRACT_VERSION,
   status: 'research_only',
-  paramsSchema: { type: 'object', additionalProperties: false, properties: {} },
-  params: {},
+  // `additionalProperties: true` — схема здесь не проверяет форму, а лишь пропускает параметры;
+  // цель фикстуры в том, чтобы через границу ходил реалистичный по размеру объект.
+  paramsSchema: { type: 'object', additionalProperties: true, properties: {} },
+  params: REALISTIC_PARAMS,
   capabilities: { platformSdk: true },
   dataNeeds: {},
   hooks: ['onBarClose', 'onPositionBar'],
