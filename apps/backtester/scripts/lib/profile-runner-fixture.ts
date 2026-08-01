@@ -69,9 +69,14 @@ const REALISTIC_PARAMS = {
   dca: { maxAdds: 2, dropPcts: [1.5, 3], sizeMultipliers: [1, 1.5], requireOiConfirm: true, minGapMin: 5 },
   protection: { moveProtectionToBEAfterTp1: true, hardStopPct: 5, trailAfterTp2Pct: 1 },
   failFast: { enabled: false, afterMin: 12, maxAdversePct: 2.5, requireNoTp1: true },
-  warmup: { candlesMin: 30 },
-  sizing: { baseOrderUsd: 100, maxNotionalUsd: 500, maxConcurrentPositions: 5 },
-  filters: { minPrice: 0.0001, maxSpreadBps: 25, excludeSymbols: [] as string[] },
+  warmup: { candlesMin: 30, requireOiHistory: true, requireLiqHistory: false },
+  // ВНИМАНИЕ: сюда нельзя класть `sizing`/`filters`/лимиты риска и исполнения. Валидатор бьёт
+  // `separation_violation` (FR-015): размер ордера и фильтры инструментов — зона RiskProfile /
+  // ExecutionProfile, а не параметров стратегии. Первая редакция фикстуры содержала `sizing`,
+  // и это поймал CI, а не локальный `tsc`: правку ФИКСТУРЫ надо гонять тестами, а не только типами.
+  oiRecovery: { windowMin: 3, minPct: 0.6, smoothing: 'none', requireMonotonic: false },
+  liqConfirm: { windowMin: 5, minLongUsd: 50_000, minRatioPct: 60, ignoreShortSide: true },
+  bounce: { minPct: 0.5, maxPct: 4, measureFrom: 'local_low', confirmBars: 2 },
   maxHoldMin: 180,
   hardStopPct: 5,
 } as const;
