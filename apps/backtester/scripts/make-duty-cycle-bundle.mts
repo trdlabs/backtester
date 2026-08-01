@@ -60,7 +60,10 @@ export default function createStrategyModule() {
       sinceEntry += 1;
       if (sinceEntry >= ${holdBars}) {
         sinceEntry = -1;
-        return { kind: 'exit' };
+        // Поле target ОБЯЗАТЕЛЬНО по контракту (ExitDecision). Без него решение отвергается
+        // схемой, позиция не закрывается, и фикстура тихо вырождается: 600 входов дали одну
+        // сделку, потому что после первого входа портфель больше никогда не был flat.
+        return { kind: 'exit', target: 'time_exit' };
       }
       return { kind: 'idle' };
     },

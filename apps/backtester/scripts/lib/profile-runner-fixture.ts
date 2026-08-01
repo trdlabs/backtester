@@ -19,7 +19,7 @@ import { createExecutorRouter, createModuleRegistry } from '../../src/engine/san
 import { createSandboxPolicyRegistry } from '../../src/engine/sandbox-policy.js';
 import { loadBundle } from '../../src/engine/sandbox/bundle.js';
 import { marketTapeFromCanonicalRows } from '../../src/engine/market-tape.js';
-import { DEFAULT_RISK } from '../../src/engine/profiles.js';
+import { DEFAULT_EXEC, DEFAULT_RISK } from '../../src/engine/profiles.js';
 import type { RunDeps } from '../../src/engine/runner.js';
 import { CONTRACT_VERSION } from '@trading/research-contracts/research';
 import type {
@@ -183,6 +183,19 @@ export interface WorkloadSpec {
   readonly batchBars?: number;
   /** Путь к настоящей ленте (`.ndjson`/`.ndjson.gz`). Задан ⇒ `bars`/`seed`/`marketKinds` не используются. */
   readonly tapeFile?: string;
+  /**
+   * Профили риска и исполнения: `nocost` (историческая точка отсчёта станка) или `prod`.
+   *
+   * `nocost` — `paper_match`: заполнение по закрытию ТОГО ЖЕ бара, нулевые комиссия и проскальзывание.
+   * Выбран когда-то ради сравнимости trusted- и isolate-режимов между собой.
+   * `prod` — `default_exec`: заполнение по открытию СЛЕДУЮЩЕГО бара, настоящие bps. Это то, что
+   * исполняет прод, и на торговом пути разница не косметическая: расчёт pending переносится на
+   * следующий бар, считаются комиссия и проскальзывание.
+   *
+   * Режим ПОТОКА обязан быть `prod`: поток строит прод-реестр (`strategyBundleRegistry`), и
+   * `paper_match` в нём отсутствует — запрос будет отклонён как `invalid_module_ref`.
+   */
+  readonly execProfile?: 'nocost' | 'prod';
 }
 
 export function makeRequest(spec: WorkloadSpec): BacktestRunRequest {
@@ -210,7 +223,10 @@ export function makeRequest(spec: WorkloadSpec): BacktestRunRequest {
     timeframe: '1m',
     period,
     riskProfileRef: { id: DEFAULT_RISK.id, version: DEFAULT_RISK.version },
-    executionProfileRef: { id: SAME_BAR_NO_COST.id, version: SAME_BAR_NO_COST.version },
+    executionProfileRef:
+      spec.execProfile === 'prod'
+        ? { id: DEFAULT_EXEC.id, version: DEFAULT_EXEC.version }
+        : { id: SAME_BAR_NO_COST.id, version: SAME_BAR_NO_COST.version },
     seed: spec.seed,
     metrics: ['pnl'],
   } as unknown as BacktestRunRequest;
@@ -257,6 +273,25 @@ function rowsFromFile(path: string): CanonicalRowV2[] {
   }
   if (rows.length === 0) throw new Error(`лента ${path}: ноль строк — фикстура пуста`);
   return rows;
+}
+
+/**
+ * Строки ленты — настоящие из файла или синтетические. Отдельно от `buildTape`, потому что режиму
+ * ПОТОКА нужны именно строки: через границу потока едут колонки (`encodeTapeColumns`), а не лента —
+ * у ленты есть методы, а structured clone переносит только данные.
+ */
+export function buildRows(spec: WorkloadSpec): CanonicalRowV2[] {
+  if (spec.tapeFile !== undefined) return rowsFromFile(spec.tapeFile);
+  const allRows: CanonicalRowV2[] = [];
+  for (const [i, symbol] of spec.symbols.entries()) {
+    allRows.push(...syntheticRows(symbol, spec.bars, spec.seed + i * 7919, spec.marketKinds === true));
+  }
+  return allRows;
+}
+
+/** Ссылка на датасет — одна и та же у ленты и у колонок, иначе поток соберёт ленту под чужим именем. */
+export function datasetRefOf(spec: WorkloadSpec): string {
+  return spec.tapeFile !== undefined ? 'runner-perf-real' : 'runner-perf-probe';
 }
 
 export function buildTape(spec: WorkloadSpec): MarketTapeDataset {
@@ -315,7 +350,8 @@ export function makeIsolateDeps(spec: WorkloadSpec, bundleDir: string, wallTimeM
   const registry = createModuleRegistry({
     strategyBundles: [loadBundle(bundleDir)],
     riskProfiles: [DEFAULT_RISK],
-    executionProfiles: [SAME_BAR_NO_COST],
+    // Оба профиля в реестре: какой из них исполнится, решает ССЫЛКА В ЗАПРОСЕ, а не состав реестра.
+    executionProfiles: [SAME_BAR_NO_COST, DEFAULT_EXEC],
     sandboxPolicies: [scaled],
   });
 

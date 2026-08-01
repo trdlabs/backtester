@@ -21,7 +21,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { assertQuietBench, assertStableSamples, minOf } from './lib/bench-gate.js';
-import { makeIsolateDeps, makeRequest, makeTrustedDeps, DEFAULT_PROBE, type WorkloadSpec } from './lib/profile-runner-fixture.js';
+import { buildRows, datasetRefOf, makeIsolateDeps, makeRequest, makeTrustedDeps, DEFAULT_PROBE, type WorkloadSpec } from './lib/profile-runner-fixture.js';
+import { loadConfig } from '../src/config.js';
+import { runBacktestInThread } from '../src/engine/thread/run-in-thread.js';
+import type { ThreadRunSpec } from '../src/engine/thread/run-spec.js';
+import { encodeTapeColumns } from '../src/engine/tape-columns.js';
+import type { RunOutcome } from '../src/engine/artifacts.js';
 import { runBacktest, type RunDeps } from '../src/engine/runner.js';
 import { contentRef } from '../src/determinism/hash.js';
 import { materializeBundle } from '../src/engine/sandbox/bundle-materialize.js';
@@ -51,6 +56,17 @@ const BATCH_BARS = Math.max(0, Number(process.env.PROFILE_BATCH_BARS ?? 0));
 // Путь к НАСТОЯЩЕЙ ленте (выгрузка из mock-platform). Задан ⇒ синтетика не строится, а `PROFILE_BARS`
 // и `PROFILE_MARKET_KINDS` игнорируются: длина и состав видов берутся из данных.
 const TAPE_FILE = process.env.PROFILE_TAPE_FILE;
+// Гонять ли барный цикл в отдельном потоке — КАК В ПРОДЕ. По умолчанию нет: историческую точку
+// отсчёта станка молча сдвигать нельзя, но без `=true` профиль торгового пути нечитаем (см.
+// `threadSpec`).
+const THREAD = process.env.PROFILE_THREAD === 'true';
+// Профили риска/исполнения: историческая точка отсчёта станка (`nocost`) или прод (`prod`).
+// В режиме потока выбора нет — поток строит прод-реестр, и `paper_match` в нём отсутствует.
+const EXEC_PROFILE: 'nocost' | 'prod' = process.env.PROFILE_EXEC === 'prod' || THREAD ? 'prod' : 'nocost';
+if (THREAD && process.env.PROFILE_EXEC !== undefined && process.env.PROFILE_EXEC !== 'prod') {
+  // Молча подменить профиль — значит выдать несравнимое число за сравнимое.
+  throw new Error(`PROFILE_THREAD=true требует PROFILE_EXEC=prod (задано "${process.env.PROFILE_EXEC}")`);
+}
 const WALL_MS_PER_CALL = Math.max(2_000, Number(process.env.PROFILE_WALL_MS_PER_CALL ?? 600_000));
 const probe = { ...DEFAULT_PROBE, lookback: LOOKBACK };
 
@@ -103,6 +119,7 @@ const spec: WorkloadSpec = {
   marketKinds: MARKET_KINDS,
   ...(BATCH_BARS >= 2 ? { batchBars: BATCH_BARS } : {}),
   ...(TAPE_FILE !== undefined ? { tapeFile: TAPE_FILE } : {}),
+  execProfile: EXEC_PROFILE,
   probe,
   ...(inlineBundle !== undefined
     ? { module: { id: inlineBundle.manifest.id, version: inlineBundle.manifest.version } }
@@ -115,7 +132,7 @@ console.log(
     (BACKEND === 'isolate'
       ? `module=${spec.module!.id}@${spec.module!.version} batch=64 wallMsPerCall=${WALL_MS_PER_CALL}`
       : `probe=entry/${probe.entryEvery}+hold/${probe.holdBars}+lookback/${probe.lookback}`) +
-    ` contextFreeze=${CONTEXT_FREEZE} marketKinds=${MARKET_KINDS} batchBars=${BATCH_BARS >= 2 ? BATCH_BARS : 'выкл'}` +
+    ` contextFreeze=${CONTEXT_FREEZE} marketKinds=${MARKET_KINDS} batchBars=${BATCH_BARS >= 2 ? BATCH_BARS : 'выкл'} поток=${THREAD} профили=${EXEC_PROFILE}` +
     ` cores=${cpus().length}`,
 );
 
@@ -139,14 +156,45 @@ interface Sample {
   readonly hash: string;
   readonly barsProcessed: number;
   readonly trades: number;
-  readonly orders: number;
   readonly meaningfulDecisions: number;
   readonly riskDecisions: number;
 }
 
+/**
+ * Спека прогона в ПОТОКЕ — та же, что строит воркер (`jobs/worker.ts`).
+ *
+ * Зачем режим вообще нужен. Станок гонял цикл на ГЛАВНОМ потоке, а там заход в изолят
+ * асинхронный (`evalClosure`); в проде цикл живёт в worker_thread, где включается синхронный
+ * (`evalClosureSync`) и снимается измеренный штраф ~150 мкс на пересечение (bt#191/196). На
+ * профиле торгового пути это дало `evalHarness` 131 мкс/бар и `idle` 96 мкс/бар — две трети
+ * видимого, и всё это конфигурация, которой в проде НЕТ. Пока станок не умеет так же, профиль
+ * торгового пути нечитаем: любая доля считается от фантома.
+ *
+ * Через границу едут КОЛОНКИ, а не лента: structured clone переносит данные, но не методы.
+ */
+function threadSpec(): ThreadRunSpec {
+  if (materialized === undefined) {
+    throw new Error('режим потока требует бандла: задайте PROFILE_BACKEND=isolate');
+  }
+  const policy = { ...loadConfig().overlaySandbox.policy };
+  const scaled = { ...policy, limits: { ...policy.limits, wallTimeMsPerCall: WALL_MS_PER_CALL } };
+  return {
+    request: request as unknown,
+    bundleDir: materialized.bundleDir,
+    router: { policy: scaled, sandboxDeps: {}, sandboxBackend: 'isolate' },
+    dataPort: { kind: 'columns', columns: encodeTapeColumns(datasetRefOf(spec), '1m', buildRows(spec)) },
+    flags: {
+      contextFreeze: CONTEXT_FREEZE,
+      ...(BATCH_BARS >= 2 ? { barBatching: { maxBars: BATCH_BARS } } : {}),
+    },
+  };
+}
+
 async function runOnce(): Promise<Sample> {
   const started = process.hrtime.bigint();
-  const out = await runBacktest(request, { ...deps, contextFreeze: CONTEXT_FREEZE });
+  const out = THREAD
+    ? ((await runBacktestInThread(threadSpec())).result as RunOutcome)
+    : await runBacktest(request, { ...deps, contextFreeze: CONTEXT_FREEZE });
   const wallMs = Number(process.hrtime.bigint() - started) / 1e6;
   if (out.status !== 'completed') {
     throw new Error('прогон отклонён: ' + JSON.stringify(out.validation));
@@ -156,11 +204,17 @@ async function runOnce(): Promise<Sample> {
   // стратегию, которая ничего не делает, и выдаёт это за замер торгового пути: `short_after_pump`
   // на синтетической ленте не входит в позицию ни разу, и это выяснилось только по метрикам
   // `pnl:0, win_rate:0` постфактум. Число сделок — самопроверка фикстуры, а не украшение.
+  // ВНИМАНИЕ на источник: `BacktestRunResult` НЕ несёт `orders` и `riskDecisions` — они живут только
+  // во внутренних аккумуляторах раннера. Первая редакция этих счётчиков читала их с результата и
+  // всегда получала undefined → печатала `риска=0 ордеров=0` рядом с шестьюстами решениями и одной
+  // сделкой. Противоречие бросилось в глаза, но могло и не броситься. Считаем по тому, что в
+  // результате ЕСТЬ: вердикт риска приложен к каждой записи решения.
   const res = out.baseline as unknown as {
     readonly trades?: readonly unknown[];
-    readonly orders?: readonly unknown[];
-    readonly riskDecisions?: readonly unknown[];
-    readonly decisionRecords?: readonly { readonly finalDecision?: { readonly kind?: string } | null }[];
+    readonly decisionRecords?: readonly {
+      readonly finalDecision?: { readonly kind?: string } | null;
+      readonly riskDecision?: unknown;
+    }[];
   };
   // `решений` и `риска` РАЗЛИЧАЮТ ПРИЧИНУ, когда сделок ноль: молчит стратегия (решений 0) или её
   // выходы отклоняет риск (решения есть, ордеров нет). Без этой пары «сделок=0» ничего не объясняет,
@@ -173,9 +227,8 @@ async function runOnce(): Promise<Sample> {
     hash: contentRef(out.baseline),
     barsProcessed: evidence.evidence?.barsProcessed ?? BARS * SYMBOLS.length,
     trades: res.trades?.length ?? 0,
-    orders: res.orders?.length ?? 0,
     meaningfulDecisions: meaningful,
-    riskDecisions: res.riskDecisions?.length ?? 0,
+    riskDecisions: (res.decisionRecords ?? []).filter((d) => d.riskDecision != null).length,
   };
 }
 
@@ -191,7 +244,7 @@ try {
     console.log(
       `  #${i + 1}: ${s.wallMs.toFixed(0)} мс  ${((s.wallMs * 1000) / s.barsProcessed).toFixed(1)} мкс/бар  ` +
         `баров=${s.barsProcessed}  решений=${s.meaningfulDecisions}  риска=${s.riskDecisions}  ` +
-        `ордеров=${s.orders}  сделок=${s.trades}  hash=${s.hash.slice(7, 19)}…`,
+        `сделок=${s.trades}  hash=${s.hash.slice(7, 19)}…`,
     );
   }
 } finally {
