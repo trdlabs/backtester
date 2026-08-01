@@ -108,6 +108,25 @@ export class IsolateModuleExecutor implements ModuleExecutor {
   private isolate: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private context: any;
+  /**
+   * P4-2: прекомпилированные ссылки на горячие точки харнесса.
+   *
+   * `evalClosureSync('return globalThis.__isolateHarness.hook($0)', …)` компилирует выражение при
+   * КАЖДОМ вызове, то есть 60 тысяч раз за прогон. Замерено лестницей `profile-isolate-boundary`
+   * на зеркале: те же слои через прекомпилированную ссылку (`applySync`) стоят 7.16 мкс/вызов
+   * против 11.25 у `evalClosureSync` — разница 4.09 мкс и есть цена компиляции строки.
+   *
+   * Семантика вызова не меняется: `hook`/`hookBatch` в харнессе — методы объектного литерала,
+   * `this` внутри них не используется (только замыкания модуля), поэтому receiver = undefined
+   * эквивалентен вызову через `__isolateHarness.hook(...)`. Нативный `timeout` передаётся так же.
+   *
+   * Ссылки — только для СИНХРОННОГО захода (он же прод вне главного потока). Асинхронный путь
+   * остаётся на `evalClosure` без изменений: он не горячий и трогать его нет повода.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private hookRef: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private hookBatchRef: any;
   private openPromise?: Promise<{ ok: true } | { ok: false; error: SessionErrorLike }>;
   /** Fail-closed защёлка: после session-fatal сбоя все последующие вызовы отвечают той же ошибкой. */
   private failed?: SessionErrorLike;
@@ -179,6 +198,18 @@ export class IsolateModuleExecutor implements ModuleExecutor {
       );
     }
     await (await this.isolate.compileScript(harnessSrc)).run(this.context);
+
+    // P4-2: взять ссылки на горячие методы харнесса ОДИН раз. Неудача здесь не фатальна —
+    // вызовы просто пойдут прежним путём через `evalClosure`, поэтому мы не превращаем
+    // оптимизацию в новый повод уронить сессию.
+    try {
+      const harnessRef = await this.context.global.get('__isolateHarness', { reference: true });
+      this.hookRef = await harnessRef.get('hook', { reference: true });
+      this.hookBatchRef = await harnessRef.get('hookBatch', { reference: true });
+    } catch {
+      this.hookRef = undefined;
+      this.hookBatchRef = undefined;
+    }
 
     // ESM-граф бандла: только файлы из descriptor.files (whitelist), только относительные
     // импорты внутри bundleDir — self-contained канон (зеркало docker-пути, FR-003/FR-010:
@@ -263,7 +294,7 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     args: readonly unknown[],
     hook: string,
     barIndex?: number,
-    opts?: { promise?: boolean; timeoutMs?: number },
+    opts?: { promise?: boolean; timeoutMs?: number; ref?: unknown },
   ): Promise<{ ok: true; json: string } | { ok: false; error: SessionErrorLike }> {
     try {
       const budgetMs = opts?.timeoutMs ?? this.policy.limits.wallTimeMsPerCall;
@@ -280,10 +311,20 @@ export class IsolateModuleExecutor implements ModuleExecutor {
         //
         // Плата — вызов блокирует ТЕКУЩИЙ поток на время хука. Поэтому режим по умолчанию включён
         // только вне главного потока (см. `syncCalls`).
-        raw = this.context.evalClosureSync(expression, args as unknown[], {
-          result: { copy: true },
-          timeout: budgetMs,
-        });
+        // P4-2: через прекомпилированную ссылку, когда она есть (−4.09 мкс/вызов — цена компиляции
+        // выражения, замерено лестницей `profile-isolate-boundary`). Без ссылки — прежний путь.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ref = opts?.ref as any;
+        raw =
+          ref !== undefined
+            ? ref.applySync(undefined, args as unknown[], {
+                result: { copy: true },
+                timeout: budgetMs,
+              })
+            : this.context.evalClosureSync(expression, args as unknown[], {
+                result: { copy: true },
+                timeout: budgetMs,
+              });
       } else {
         const evalP: Promise<unknown> = this.context.evalClosure(expression, args as unknown[], {
           result: { copy: true, promise: opts?.promise === true },
@@ -383,6 +424,7 @@ export class IsolateModuleExecutor implements ModuleExecutor {
       [JSON.stringify(msg)],
       hook,
       barIndex,
+      { ref: this.hookRef },
     );
     if (!r.ok) return { ok: false, error: r.error };
     // Кап размера решения (SBX-5-класс): проверка host-side по длине JSON-ответа харнесса.
@@ -497,7 +539,7 @@ export class IsolateModuleExecutor implements ModuleExecutor {
       [JSON.stringify({ hook: 'onBarClose', bars })],
       'onBarClose',
       bookkeepingAfter[0]!.barIndex,
-      { timeoutMs: batchBudgetMs },
+      { timeoutMs: batchBudgetMs, ref: this.hookBatchRef },
     );
     if (!r.ok) return failFast(r.error, 0); // timeout/crash — защёлка уже стоит, отмотки нет
     // БЛОКЕР-2 ревью: SBX-5-кап действует и на батч-ответ (регрессия к lockstep-петле недопустима).
@@ -617,6 +659,17 @@ export class IsolateModuleExecutor implements ModuleExecutor {
 
   /** Teardown изолята — детерминированная очистка (зеркало docker close()). */
   close(): void {
+    // P4-2: ссылки освобождаются ДО dispose изолята — держать их после нельзя, а после dispose
+    // release() уже бросит. Ошибки глотаем: teardown обязан быть идемпотентным.
+    for (const ref of [this.hookRef, this.hookBatchRef]) {
+      try {
+        ref?.release();
+      } catch {
+        /* уже освобождена или изолят мёртв */
+      }
+    }
+    this.hookRef = undefined;
+    this.hookBatchRef = undefined;
     try {
       this.isolate?.dispose();
     } catch {
