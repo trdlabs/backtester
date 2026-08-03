@@ -52,6 +52,30 @@ function windowMinutes(gridTs: readonly number[], idx: number, lookback: number)
 }
 
 /**
+ * ВНУТРЕННЕЕ расширение поверхности: несёт ли лента вид НА ЭТОМ баре. Публичный
+ * `PointInTimeMarketApi` (он опубликован в SDK и описан в авторской документации стратегий) не
+ * трогаем — расширение видит только хост.
+ *
+ * Зачем поля. `serializeContext` должен знать состав ленты, чтобы решить, класть ли `oiAsOf`/`liqAsOf`
+ * в снимок, и до сих пор узнавал это вызовом `oiWindow(1)`/`liqWindow(1)` — то есть строил два
+ * ЗАМОРОЖЕННЫХ МАССИВА и две точки ради двух булевых значений, на каждом баре. Разделяющий замер
+ * (2026-08-04) показал, что пербарная рыночная работа стоит ~18 мкс/бар — две трети всей цены ленты,
+ * — и эти четыре аллокации в ней сидят.
+ *
+ * Почему именно `col !== undefined && idx >= 0`, а не кэш «лента несёт вид» на символ. Пустое окно
+ * означает ДВЕ РАЗНЫЕ вещи: вида нет в ленте ИЛИ бар вне сетки ленты (`idx < 0`). Снимок обязан их
+ * различать — в первом случае ключ ОТСУТСТВУЕТ, во втором тоже отсутствует, но по другой причине, и
+ * `oiAsOf()` там вернул бы `undefined` → `null`, то есть ключ появился бы. Кэш на символ (его чуть не
+ * поставили в прошлый заход) сломал бы ровно этот случай. Здесь условие воспроизведено дословно.
+ */
+export interface MarketApiWithPresence extends PointInTimeMarketApi {
+  /** `oiWindow(1).length > 0` без аллокаций. */
+  readonly hasOiAtBar: boolean;
+  /** `liqWindow(1).length > 0` без аллокаций. */
+  readonly hasLiqAtBar: boolean;
+}
+
+/**
  * Построить PIT-рыночную поверхность на минуту `t` (= `bar.ts` текущего бара) для символа.
  * Минутная сетка берётся из свечей символа; gap → undefined (нет carry-forward); отсутствие kind в
  * ленте → `oiAsOf/liqAsOf` = undefined и окно = `[]`.
@@ -61,7 +85,7 @@ export function pointInTimeMarketApi(
   symbol: string,
   t: number,
   precomputed?: { readonly gridTs: readonly number[]; readonly idx: number },
-): PointInTimeMarketApi {
+): MarketApiWithPresence {
   // P3-1 perf: the caller (PointInTimeContextBuilder) hoists `gridTs` ONCE per symbol and passes the
   // bar index, so this no longer allocates a fresh grid array AND linear-scans it (indexOf) on EVERY
   // bar — the two O(n)-per-bar costs that made a market-tape run O(n²) in tape length. Direct callers
@@ -122,6 +146,10 @@ export function pointInTimeMarketApi(
   // Composition-following (FR-014): funding/taker методы присутствуют ТОЛЬКО когда лента несёт kind →
   // OHLCV/OI/liq-only ленты сохраняют форму 023 контекста (SC-004).
   return Object.freeze({
+    // Состав ленты НА ЭТОМ баре — два сравнения вместо двух окон с заморозкой (см. MarketApiWithPresence).
+    // Условие дословно повторяет `oiWindow(1).length > 0`: окно непусто ⟺ колонка есть И бар на сетке.
+    hasOiAtBar: oiCol !== undefined && idx >= 0,
+    hasLiqAtBar: liqCol !== undefined && idx >= 0,
     oiAsOf: () => (oiCol === undefined || idx < 0 ? undefined : oiPoint(oiCol.at(t))),
     liqAsOf: () => (liqCol === undefined || idx < 0 ? undefined : liqPoint(liqCol.at(t))),
     oiWindow: (lookback: number): readonly (OiPoint | undefined)[] => {
