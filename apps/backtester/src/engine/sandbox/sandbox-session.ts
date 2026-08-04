@@ -15,6 +15,7 @@ import type { SandboxValidationCode } from './errors.js';
 import { toMountSource, type MountConfig } from './mounts.js';
 import type { HookBatchEntry, ReceiveOutcome } from './ipc.js';
 import { readEnvVar } from '../../env.js';
+import type { MarketApiWithPresence } from '../market-access.js';
 
 /** Ошибка одного вызова (стабильный код + bounded detail + хук-контекст). */
 export interface SessionError {
@@ -253,10 +254,14 @@ export class SandboxSession {
       st.barIndex += 1;
       st.lastBarTs = ctx.bar.ts;
       newBar = plainBar(ctx.bar);
-      const m = ctx.market;
+      const m = ctx.market as (typeof ctx.market & Partial<MarketApiWithPresence>) | undefined;
       if (m !== undefined) {
-        if (m.oiWindow(1).length > 0) newOi = m.oiAsOf() ?? null;
-        if (m.liqWindow(1).length > 0) newLiq = m.liqAsOf() ?? null;
+        // Тот же зонд состава, что в `serializeContext`, и убирается по той же причине: `oiWindow(1)`
+        // строит замороженный массив и точку ради БУЛЕВА значения — на каждом переходе бара.
+        // Поверхность из `pointInTimeMarketApi` знает состав сама; запасная ветка нужна для
+        // поверхностей, собранных не ею (тесты, чужие реализации контракта).
+        if (typeof m.hasOiAtBar === 'boolean' ? m.hasOiAtBar : m.oiWindow(1).length > 0) newOi = m.oiAsOf() ?? null;
+        if (typeof m.hasLiqAtBar === 'boolean' ? m.hasLiqAtBar : m.liqWindow(1).length > 0) newLiq = m.liqAsOf() ?? null;
       }
     }
     if (!useMap) { this.barIndex = st.barIndex; this.lastBarTs = st.lastBarTs; } // write scalars back (non-universe)
