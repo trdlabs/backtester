@@ -12,6 +12,7 @@ import type {
   StrategyContext,
 } from '@trading/research-contracts/research';
 import type { LiqPoint, OiPoint } from '@trading/research-contracts/research';
+import type { MarketApiWithPresence } from '../market-access.js';
 
 /** Чисто-данные snapshot контекста хука (host → harness). */
 export interface ContextSnapshot {
@@ -77,10 +78,17 @@ export function serializeContext(ctx: StrategyContext, barIndex: number): Contex
   };
   // 023: рыночные поля — ТОЛЬКО когда лента несёт kind (composition-following). Наличие kind детектим
   // через непустое окно за t (oiWindow(1).length>0 ⇔ OI в ленте); поле опускаем иначе. null = gap(t).
-  const m = ctx.market;
+  const m = ctx.market as (typeof ctx.market & Partial<MarketApiWithPresence>) | undefined;
   if (m === undefined) return base;
-  const oiPresent = m.oiWindow(1).length > 0;
-  const liqPresent = m.liqWindow(1).length > 0;
+  // Быстрый путь: поверхность, построенная `pointInTimeMarketApi`, уже знает состав ленты на баре и
+  // отдаёт его булевыми полями. Прежний способ — `oiWindow(1).length > 0` — строил на КАЖДОМ баре два
+  // замороженных массива и две точки ради двух булевых, и это заметная доля пербарной цены ленты
+  // (разделяющий замер 2026-08-04: пербарная работа ≈18 мкс/бар, две трети всей цены).
+  //
+  // Медленная ветка сохранена НЕ формально: `ctx.market` бывает собран не здесь (ручные поверхности в
+  // тестах, чужие реализации контракта), и для них поведение обязано остаться прежним побайтово.
+  const oiPresent = typeof m.hasOiAtBar === 'boolean' ? m.hasOiAtBar : m.oiWindow(1).length > 0;
+  const liqPresent = typeof m.hasLiqAtBar === 'boolean' ? m.hasLiqAtBar : m.liqWindow(1).length > 0;
   return {
     ...base,
     ...(oiPresent ? { oiAsOf: m.oiAsOf() ?? null } : {}),
