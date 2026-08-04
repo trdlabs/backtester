@@ -36,6 +36,25 @@ assertQuietBench('profile-runner');
 
 const BARS = Math.max(1, Number(process.env.PROFILE_BARS ?? 60_000));
 const REPEATS = Math.max(1, Number(process.env.PROFILE_REPEATS ?? 3));
+
+/**
+ * ДВУХТОЧЕЧНЫЙ РЕЖИМ (`PROFILE_TWO_POINT=true`) — отделяет предельную цену бара от фиксированной.
+ *
+ * Зачем. Один и тот же код давал 243.7 мкс/бар на 2 тыс. баров, 133.8 на 15 тыс. и ~60–80 на 40 тыс.
+ * Разница вчетверо — и это не «оптимизации JS», а фиксированная часть, поделённая на разное число
+ * баров: каждый замерный проход несёт открытие сессии изолята, запуск потока и прочее, что от длины
+ * прогона не зависит. Пока она сидит внутри «мкс/бар», числа с прогонов разной длины НЕСОПОСТАВИМЫ.
+ *
+ * Как считается. Тот же прогон меряется на N и на N/2 барах; предельная цена — разность:
+ *
+ *     предельная = (T(N) − T(N/2)) / (N − N/2)
+ *     фиксированная = T(N) − N × предельная
+ *
+ * Всё, что не зависит от числа баров, в разности сокращается само — не важно, из чего оно состоит.
+ * Дополнительный выигрыш: половинный прогон идёт ПОСЛЕ полного, то есть по уже прогретому JIT, и
+ * разность меньше загрязнена разогревом.
+ */
+const TWO_POINT = process.env.PROFILE_TWO_POINT === 'true';
 const SYMBOLS = (process.env.PROFILE_SYMBOLS ?? 'BTCUSDT').split(',').map((s) => s.trim()).filter((s) => s !== '');
 const BAR_MAJOR = process.env.PROFILE_BAR_MAJOR === 'true';
 // Шаг B2: пербарная заморозка контекста. `false` — прод-режим прогона.
@@ -148,8 +167,45 @@ if (inlineBundle !== undefined) {
   deps = makeTrustedDeps(spec);
 }
 const request = makeRequest(spec);
+// Колонки для режима потока строятся ЗДЕСЬ, а не в `threadSpec()`.
+//
+// Раньше `threadSpec()` звался ВНУТРИ замеряемой области `runOnce`, и `buildRows(spec)` +
+// `encodeTapeColumns` исполнялись на КАЖДОМ замерном проходе. Надпись «подготовка ленты — вне
+// замера» была верна только для непоточного пути, а весь сегодняшний перф снимался как раз в
+// потоке — то есть каждый проход нёс скрытую фиксированную добавку.
+//
+// Она же объясняла, почему цена бара падала с ростом их числа: фиксированное делилось на большее.
+// Сравнения арм от этого не страдали (обе платили одинаково), но абсолютные числа были завышены и
+// НЕ СОПОСТАВИМЫ между прогонами разной длины.
+const threadColumns =
+  THREAD && inlineBundle !== undefined
+    ? encodeTapeColumns(datasetRefOf(spec), '1m', buildRows(spec))
+    : undefined;
+
+/** Одна точка замера: своя лента, свой запрос, свои колонки. Строится ВНЕ замеряемой области. */
+interface Point {
+  readonly request: typeof request;
+  readonly deps: RunDeps;
+  readonly columns: ReturnType<typeof encodeTapeColumns> | undefined;
+  readonly bars: number;
+}
+
+function makePoint(bars: number): Point {
+  const s = { ...spec, bars };
+  return {
+    request: makeRequest(s),
+    // Длину прогона задаёт ДАТАСЕТ, а не период в запросе: с укороченным периодом, но полной лентой
+    // раннер всё равно обрабатывает все бары (проверено — половинная точка давала те же 4000).
+    deps: inlineBundle !== undefined ? makeIsolateDeps(s, materialized!.bundleDir, WALL_MS_PER_CALL) : makeTrustedDeps(s),
+    columns: THREAD && inlineBundle !== undefined ? encodeTapeColumns(datasetRefOf(s), '1m', buildRows(s)) : undefined,
+    bars,
+  };
+}
+
+const fullPoint: Point = { request, deps, columns: threadColumns, bars: BARS };
+const halfPoint: Point | undefined = TWO_POINT ? makePoint(Math.floor(BARS / 2)) : undefined;
 const buildMs = Number(process.hrtime.bigint() - t0) / 1e6;
-console.log(`  [подготовка ленты] ${buildMs.toFixed(0)} мс — вне замера`);
+console.log(`  [подготовка ленты] ${buildMs.toFixed(0)} мс — вне замера${threadColumns !== undefined ? ' (включая колонки потока)' : ''}`);
 
 interface Sample {
   readonly wallMs: number;
@@ -172,17 +228,18 @@ interface Sample {
  *
  * Через границу едут КОЛОНКИ, а не лента: structured clone переносит данные, но не методы.
  */
-function threadSpec(): ThreadRunSpec {
+function threadSpec(p: Point): ThreadRunSpec {
   if (materialized === undefined) {
     throw new Error('режим потока требует бандла: задайте PROFILE_BACKEND=isolate');
   }
+  if (p.columns === undefined) throw new Error('колонки потока не построены');
   const policy = { ...loadConfig().overlaySandbox.policy };
   const scaled = { ...policy, limits: { ...policy.limits, wallTimeMsPerCall: WALL_MS_PER_CALL } };
   return {
-    request: request as unknown,
+    request: p.request as unknown,
     bundleDir: materialized.bundleDir,
     router: { policy: scaled, sandboxDeps: {}, sandboxBackend: 'isolate' },
-    dataPort: { kind: 'columns', columns: encodeTapeColumns(datasetRefOf(spec), '1m', buildRows(spec)) },
+    dataPort: { kind: 'columns', columns: p.columns },
     flags: {
       contextFreeze: CONTEXT_FREEZE,
       ...(BATCH_BARS >= 2 ? { barBatching: { maxBars: BATCH_BARS } } : {}),
@@ -190,11 +247,11 @@ function threadSpec(): ThreadRunSpec {
   };
 }
 
-async function runOnce(): Promise<Sample> {
+async function runOnce(p: Point = fullPoint): Promise<Sample> {
   const started = process.hrtime.bigint();
   const out = THREAD
-    ? ((await runBacktestInThread(threadSpec())).result as RunOutcome)
-    : await runBacktest(request, { ...deps, contextFreeze: CONTEXT_FREEZE });
+    ? ((await runBacktestInThread(threadSpec(p))).result as RunOutcome)
+    : await runBacktest(p.request, { ...p.deps, contextFreeze: CONTEXT_FREEZE });
   const wallMs = Number(process.hrtime.bigint() - started) / 1e6;
   if (out.status !== 'completed') {
     throw new Error('прогон отклонён: ' + JSON.stringify(out.validation));
@@ -233,6 +290,7 @@ async function runOnce(): Promise<Sample> {
 }
 
 const samples: Sample[] = [];
+const halfSamples: Sample[] = [];
 try {
   // Прогрев отбрасывается: первый прогон несёт JIT-разогрев и холодные кэши.
   const warm = await runOnce();
@@ -246,6 +304,17 @@ try {
         `баров=${s.barsProcessed}  решений=${s.meaningfulDecisions}  риска=${s.riskDecisions}  ` +
         `сделок=${s.trades}  hash=${s.hash.slice(7, 19)}…`,
     );
+  }
+  if (TWO_POINT) {
+    // Половинный прогон ПОСЛЕ полного — намеренно: JIT уже прогрет, и разность несёт цену баров,
+    // а не разогрева. Повторов столько же, минимум берётся так же.
+    for (let i = 0; i < REPEATS; i += 1) {
+      const s = await runOnce(halfPoint!);
+      halfSamples.push(s);
+      console.log(
+        `  ½#${i + 1}: ${s.wallMs.toFixed(0)} мс  баров=${s.barsProcessed}  hash=${s.hash.slice(7, 19)}…`,
+      );
+    }
   }
 } finally {
   // Изолят держит живые сессии до `closeAll` — без него процесс не завершится.
@@ -271,3 +340,40 @@ console.log(
     `${((best * 1000) / bars).toFixed(1)} мкс/бар (max ${walls[walls.length - 1]!.toFixed(0)} мс из ${walls.length} повторов)`,
 );
 console.log(`[profile-runner] result_hash=${samples[0]!.hash}`);
+
+if (TWO_POINT && halfSamples.length > 0) {
+  const halfWalls = halfSamples.map((s) => s.wallMs).sort((a, b) => a - b);
+  assertStableSamples('profile-runner ½', halfWalls);
+  const halfBest = minOf(halfWalls);
+  // Длины берутся из ПОСТРОЕННЫХ лент, а не из `evidence.barsProcessed`: последнее в обеих точках
+  // возвращает одно и то же число (проверено отладкой — лента 4000 свечей, а отчёт говорит 8000),
+  // то есть на роль длины прогона не годится. Длина ленты известна нам достоверно: мы её и строили.
+  const halfBars = halfPoint!.bars;
+  const fullBars = fullPoint.bars;
+  const deltaBars = fullBars - halfBars;
+  if (deltaBars <= 0) throw new Error(`двухточечный режим: половинный прогон не короче полного (${halfBars} против ${bars})`);
+  const marginalUs = ((best - halfBest) * 1000) / deltaBars;
+  const fixedMs = best - (marginalUs * fullBars) / 1000;
+  console.log(
+    `[profile-runner] две точки: ${halfBars}→${bars} баров, ${halfBest.toFixed(0)}→${best.toFixed(0)} мс\n` +
+      `[profile-runner] ПРЕДЕЛЬНАЯ цена бара = ${marginalUs.toFixed(1)} мкс  (фиксированная часть прогона ${fixedMs.toFixed(0)} мс` +
+      `, то есть ${((fixedMs * 1000) / bars).toFixed(1)} мкс/бар при ${bars} барах)`,
+  );
+  // Предельная цена не может быть отрицательной: это признак того, что прогоны несопоставимы
+  // (разная торговая активность на половине ленты, шум больше эффекта) — молчать тут нельзя.
+  if (marginalUs <= 0) {
+    console.error('\nДВЕ ТОЧКИ НЕДЕЙСТВИТЕЛЬНЫ: предельная цена ≤ 0 — половинный прогон не быстрее полного.');
+    process.exitCode = 2;
+  } else if (fixedMs < 0) {
+    // Отрицательная фиксированная часть означает, что полный прогон дороже удвоенного половинного.
+    // Это либо СВЕРХЛИНЕЙНОСТЬ (что само по себе находка и требует разбора), либо шум машины —
+    // и одно от другого отличается повтором, а не рассуждением. Молчать нельзя: без этой строки
+    // число уедет в отчёт как «предельная цена», хотя модель «фиксированное + линейное» не описывает
+    // данные вовсе.
+    console.error(
+      `\nДВЕ ТОЧКИ ПОДОЗРИТЕЛЬНЫ: фиксированная часть отрицательна (${fixedMs.toFixed(0)} мс) — полный прогон` +
+        ' дороже удвоенного половинного. Либо сверхлинейность, либо стенд шумит; повторить на тихой машине.',
+    );
+    process.exitCode = 2;
+  }
+}
