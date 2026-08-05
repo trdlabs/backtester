@@ -541,6 +541,12 @@ Canonical status lives in the control-center initiative registry — local statu
 
 Analysis: control-center [`docs/analysis/11-scaling-architecture.md`](../../control-center/docs/analysis/11-scaling-architecture.md).
 
+### Research-loop maturity (cross-repo, 2026-08-05)
+
+Canonical status lives in the control-center initiative registry — local status only, no plan duplication:
+
+- [lab-research-loop-maturity](../../control-center/docs/delivery/initiatives/lab-research-loop-maturity.md) — `proposed`. Source: control-center `docs/analysis/26` (lab vs LLM-alpha industry review). Backtester part — **Р2, the novelty gate**. The E5a kernel is already merged dark: `apps/backtester/src/engine/novelty.ts` (daily-PnL-delta Pearson, novelty = 1 − max|ρ|) + `resolveNovelty` in `jobs/worker.ts`, flags `BACKTESTER_NOVELTY_ENABLED` (default **off**) / `BACKTESTER_NOVELTY_CORR_THRESHOLD` (0.8) / `BACKTESTER_NOVELTY_MIN_OVERLAP_DAYS` (30), advisory-only, pool = prior runs sharing a `comparabilityKey`. Two steps: (a) enable log mode as-is + threshold calibration on real runs; (b) a promotion-time pool scoped to **admitted/live strategies** + enforce (WorldQuant BRAIN pattern: daily-PnL self-correlation ≈ 0.7 with a «+10 % Sharpe» exception). The flag belongs in the `dark-flag-validation` inventory.
+
 ### Phase A — real platform data path
 
 **Verify-spike DONE (2026-07-05).** The backtester's live `RowsDataPort` (historical.2 contract)
