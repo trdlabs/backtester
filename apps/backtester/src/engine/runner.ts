@@ -741,6 +741,9 @@ async function simulateTarget(
   barMajor: boolean,
   barMajorBatch: boolean,
   contextFreeze: boolean,
+  // T1-спайк (PROFILE_THIN_SURFACE) — тот же predicate, что и router (см. `runBacktest::routesToSandbox`
+  // выше и P2-20): по фактическому маршруту исполнения, не по флагу/имени бэкенда.
+  routesToSandbox: boolean,
 ): Promise<BacktestRunResult> {
   const acc: RunAccumulators = {
     decisionRecords: [],
@@ -763,7 +766,7 @@ async function simulateTarget(
 
   let barsProcessed = 0;
   if (barMajor && request.symbols.length > 1) {
-    barsProcessed = await runBarMajor(target, request, dataset, engine, acc, params, overlays, marketTape, barMajorBatch, contextFreeze);
+    barsProcessed = await runBarMajor(target, request, dataset, engine, acc, params, overlays, marketTape, barMajorBatch, contextFreeze, routesToSandbox);
   } else {
     for (const symbol of request.symbols) {
       const candles = dataset.candles(symbol);
@@ -777,7 +780,8 @@ async function simulateTarget(
           // 023: лента передаётся в builder; ctx.market выставляется по составу ленты (composition-following).
           ...(marketTape !== undefined ? { marketTape } : {}),
         },
-        { freeze: contextFreeze },
+        // T1-спайк: executorKind по фактическому маршруту (routesToSandbox), не по флагу/бэкенду.
+        { freeze: contextFreeze, executorKind: routesToSandbox ? 'sandbox' : 'trusted' },
       );
       // Per-symbol изоляция module-state: если стратегия несёт `moduleFactory` (trusted), инстанцируем
       // её свежей на КАЖДЫЙ символ — FSM-state в замыкании `createStrategyModule` не протекает между
@@ -822,6 +826,8 @@ async function runBarMajor(
   marketTape: MarketTapeDataset | undefined,
   barMajorBatch: boolean,
   contextFreeze: boolean,
+  // T1-спайк (PROFILE_THIN_SURFACE) — см. одноимённый параметр simulateTarget выше.
+  routesToSandbox: boolean,
 ): Promise<number> {
   const envs: BarEnv[] = [];
   const perAcc: RunAccumulators[] = [];
@@ -837,7 +843,8 @@ async function runBarMajor(
           params, symbol, candles, rng: createSeededRng(request.seed),
           ...(marketTape !== undefined ? { marketTape } : {}),
         },
-        { freeze: contextFreeze },
+        // T1-спайк: executorKind по фактическому маршруту (routesToSandbox), не по флагу/бэкенду.
+        { freeze: contextFreeze, executorKind: routesToSandbox ? 'sandbox' : 'trusted' },
       );
       const symbolStrategy = target.strategy.moduleFactory !== undefined
         ? { ...target.strategy, module: target.strategy.moduleFactory(params) }
@@ -1043,6 +1050,11 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
   // provenance alone is metadata, not a privilege, so a forged/incomplete bundle-provenance without a
   // handle must NOT slip past the guard (it would run trusted in-process and leak).
   const routesToSandbox = strategy.provenance === 'bundle' && strategy.bundle !== undefined;
+  // T1-спайк (PROFILE_THIN_SURFACE, docs/superpowers/sdd/2026-08-05-t1-thin-surface-measurement):
+  // тот же predicate ЕЩЁ И решает `executorKind`, с которым конструируется
+  // `PointInTimeContextBuilder` (см. `simulateTarget`/`runBarMajor` ниже) — по фактическому маршруту
+  // исполнения (тот же, что использует router), а не по флагу окружения и не по имени бэкенда. Один
+  // источник истины на обоих потребителей: fail-fast guard выше и T1-гейт худой поверхности.
   if (
     request.symbols.length > 1 &&
     strategy.moduleFactory === undefined &&
@@ -1169,6 +1181,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
       deps.barMajor === true,
       deps.barMajorBatch === true,
       deps.contextFreeze !== false,
+      routesToSandbox,
     );
 
     let variant: BacktestRunResult | null = null;
@@ -1186,6 +1199,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
         deps.barMajor === true,
         deps.barMajorBatch === true,
         deps.contextFreeze !== false,
+        routesToSandbox,
       );
       comparison = computeComparison(baseline, variant);
     }

@@ -1,0 +1,34 @@
+{
+  "manifest": {
+    "id": "spike_ctx_probe",
+    "version": "1.0.0",
+    "kind": "strategy",
+    "name": "T1 spike — context probe",
+    "summary": "Идле-стратегия для профиля runner-конвейера (не для продакшна).",
+    "rationale": "T1-спайк (docs/superpowers/sdd/2026-08-05-t1-thin-surface-measurement): единственная задача — пройти реальный isolate-путь конвейера (buildBarEnv → PointInTimeContextBuilder.build → serializeContext → изолят) без побочной торговой логики, чтобы измерить/проверить именно постройку ctx.market, а не решения стратегии.",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {}
+    },
+    "params": {},
+    "capabilities": {
+      "platformSdk": true
+    },
+    "dataNeeds": {
+      "closedCandlesUpToCurrent": true
+    },
+    "hooks": [
+      "onBarClose"
+    ],
+    "bundleContractVersion": "019.1"
+  },
+  "entry": "module/index.js",
+  "files": {
+    "module/index.js": "// T1-спайк (docs/superpowers/sdd/2026-08-05-t1-thin-surface-measurement) — пробная стратегия для\n// profile-runner.mts. Всегда idle: НЕ несёт торговой логики. Единственная цель — пройти реальный\n// sandbox-путь (buildBarEnv -> PointInTimeContextBuilder.build -> serializeContext -> isolate),\n// чтобы измерить/проверить постройку ctx.market (thin vs full surface), а не решения стратегии.\n\nexport default function createStrategyModule() {\n  return {\n    onBarClose(ctx) {\n      void ctx;\n      return { kind: 'idle' };\n    },\n  };\n}\n"
+  }
+}
