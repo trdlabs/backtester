@@ -35,7 +35,7 @@ import { createIndicatorEngine } from './_engine/engine.js';
  */
 const engineByBuffer = new WeakMap();
 
-function indicatorEngineFor(buffer) {
+export function indicatorEngineFor(buffer) {
   let engine = engineByBuffer.get(buffer);
   if (engine === undefined) {
     engine = createIndicatorEngine(buffer);
@@ -55,7 +55,7 @@ function indicatorEngineFor(buffer) {
  */
 const frozenUpToByBuffer = new WeakMap();
 
-function freezeBarsUpTo(buffer, end) {
+export function freezeBarsUpTo(buffer, end) {
   let from = frozenUpToByBuffer.get(buffer) ?? 0;
   if (from >= end) return;
   for (; from < end; from += 1) Object.freeze(buffer[from]);

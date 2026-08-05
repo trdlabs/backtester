@@ -17,10 +17,23 @@
 import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
 import { makeInstanceStore, resolveInstance } from './universe-instances.mjs';
 import { runHookBatchSync } from './hook-batch.mjs';
+import { createPersistentContext } from './persistent-context.mjs';
 
 const store = makeInstanceStore();
 // Диагностические счётчики протокола (batch-однозаходность наблюдаема тестами через stats()).
 const stats = { hookCalls: 0, batchCalls: 0, batchBarsReceived: 0 };
+
+/**
+ * СПАЙК S0 — режим протокола, объявленный хостом при `initSymbol`. НЕ МЕРЖИТСЯ.
+ *
+ * `undefined` — ещё не объявлен; `false` — снимок на событие (легаси); `true` — дельта поверх
+ * персистентной поверхности (`PROFILE_SNAPSHOT_FREE=true` на хосте).
+ *
+ * Флаг ОДИН на обе половины: рассогласование хоста и харнесса обязано падать явно, а не считаться —
+ * иначе замер выглядел бы исправным, меряя не ту конструкцию. Поэтому смена режима внутри сессии и
+ * форма сообщения, не совпавшая с объявленной, роняют вызов (`sandbox_output_malformed`).
+ */
+let deltaMode;
 
 /** Верно зеркалит entry.mjs normalize: null/undefined → [], скаляр → [x]. */
 function normalize(out) {
@@ -65,13 +78,77 @@ function fail(code, detail) {
   return JSON.stringify({ ok: false, code, detail: String(detail ?? '').slice(0, 4096) });
 }
 
+// ── СПАЙК S0: дельта-протокол (`PROFILE_SNAPSHOT_FREE=true`). НЕ МЕРЖИТСЯ. ────────────────────────
+//
+// Форма события (всё, кроме `h`, опционально; отсутствие ключа = «не менялось»):
+//   h  — имя lifecycle-хука
+//   c  — clockNow (sim-clock)
+//   s  — символ; едет ТОЛЬКО при смене активного слота (POC non-universe: один раз)
+//   b  — [ts, open, high, low, close, volume] закрытой свечи t; есть ⇔ переход бара
+//   o  — [ts, oiTotalUsd] | null(gap); ключ есть ⇔ лента несёт OI (только вместе с `b`)
+//   l  — [ts, longUsd, shortUsd] | null(gap); то же для ликвидаций
+//   p  — [side, size, entryPrice, stop|null, take|null] | null — позиция, когда ИЗМЕНИЛАСЬ
+//   i  — [kind, side|null, createdTs] | null — pendingIntent, когда ИЗМЕНИЛСЯ
+//   f  — [equity, openPositions] — портфель, когда ИЗМЕНИЛСЯ
+//
+// `run`/`params`/`symbol` не едут вовсе — они приехали один раз при `initSymbol`.
+let activeSymbol;
+let activeSlot;
+
+function hookDelta(msg) {
+  if (msg.s !== undefined) {
+    activeSymbol = msg.s;
+    activeSlot = store.get(activeSymbol);
+  }
+  const slot = activeSlot;
+  if (slot === undefined || slot.surface === undefined) {
+    return fail('sandbox_output_malformed', `hook before init for symbol ${String(activeSymbol)}`);
+  }
+  const sf = slot.surface;
+  try {
+    if (msg.b !== undefined) {
+      const a = msg.b;
+      const bar = Object.freeze({ ts: a[0], open: a[1], high: a[2], low: a[3], close: a[4], volume: a[5] });
+      slot.buffer.push(bar);
+      // Индекс-выравнивание с буфером свечей — как в легаси: oi/liq пушатся ТОЛЬКО на переходе бара.
+      if (msg.o !== undefined) slot.oiBuffer.push(msg.o === null ? null : { ts: msg.o[0], oiTotalUsd: msg.o[1] });
+      if (msg.l !== undefined) slot.liqBuffer.push(msg.l === null ? null : { ts: msg.l[0], longUsd: msg.l[1], shortUsd: msg.l[2] });
+      sf.onNewBar(bar);
+    }
+    sf.setClock(msg.c);
+    if (msg.p !== undefined) sf.setPosition(msg.p);
+    if (msg.i !== undefined) sf.setPendingIntent(msg.i);
+    if (msg.f !== undefined) sf.setPortfolio(msg.f);
+    const fn = pickHookFor(slot.instance, msg.h);
+    if (fn === undefined) return JSON.stringify({ ok: true, decisions: [] });
+    const out = fn.call(slot.instance, sf.ctx);
+    if (out !== null && typeof out === 'object' && typeof out.then === 'function') {
+      return fail('sandbox_crashed', 'async hooks are not supported by the isolate backend (POC)');
+    }
+    if (msg.h === 'init' || msg.h === 'dispose') return JSON.stringify({ ok: true, decisions: [] });
+    return JSON.stringify({ ok: true, decisions: normalize(out) });
+  } catch (e) {
+    return fail('sandbox_crashed', e && e.message ? e.message : e);
+  }
+}
+
 globalThis.__isolateHarness = {
   /**
    * Инициализировать per-symbol slot: resolveInstance(__bundleModule) + session-seeded rng.
    * Возвращает JSON {ok:true} | {ok:false, code:'bundle_load_failed', detail}.
    */
-  initSymbol(symbol, seed) {
+  initSymbol(symbol, seed, initJson) {
     try {
+      // СПАЙК S0: третий аргумент = хост объявил дельта-протокол и прислал инварианты сессии
+      // (`run`/`params`/`symbol`), которые раньше ехали в КАЖДОМ снимке.
+      const wantDelta = typeof initJson === 'string';
+      if (deltaMode !== undefined && deltaMode !== wantDelta) {
+        return fail(
+          'sandbox_output_malformed',
+          `PROFILE_SNAPSHOT_FREE mismatch: харнесс уже инициализирован в режиме ${deltaMode ? 'дельты' : 'снимка'}`,
+        );
+      }
+      deltaMode = wantDelta;
       const loaded = globalThis.__bundleModule;
       if (loaded === undefined || loaded === null) {
         return fail('bundle_load_failed', 'bundle module is not loaded into the isolate');
@@ -95,10 +172,17 @@ globalThis.__isolateHarness = {
       if (resolved.instance === undefined || resolved.instance === null) {
         return fail('bundle_load_failed', 'entry produced no module instance');
       }
-      store.ensure(symbol, () => ({
+      const slot = store.ensure(symbol, () => ({
         instance: resolved.instance,
         rng: createSeededRng(typeof seed === 'number' ? seed : 0),
       }));
+      if (wantDelta && slot.surface === undefined) {
+        const init = JSON.parse(initJson);
+        if (init === null || typeof init !== 'object' || init.run === null || typeof init.run !== 'object') {
+          return fail('sandbox_output_malformed', 'delta init payload must carry {run, params}');
+        }
+        slot.surface = createPersistentContext({ run: init.run, params: init.params, symbol }, slot);
+      }
       return JSON.stringify({ ok: true });
     } catch (e) {
       return fail('bundle_load_failed', e && e.message ? e.message : e);
@@ -121,6 +205,12 @@ globalThis.__isolateHarness = {
    */
   hookBatch(msgJson) {
     stats.batchCalls += 1;
+    // СПАЙК S0: батч 17b работает по снимкам (`runHookBatchSync` зовёт `rehydrateContext`) и в
+    // объём спайка не входит. Молча посчитать его дельта-режимом нельзя — это дало бы число не той
+    // конструкции; поэтому явный отказ.
+    if (deltaMode === true) {
+      return fail('sandbox_output_malformed', 'hookBatch не поддержан под PROFILE_SNAPSHOT_FREE (спайк): гоняйте с PROFILE_BATCH_BARS=0');
+    }
     let msg;
     try {
       msg = JSON.parse(msgJson);
@@ -166,6 +256,17 @@ globalThis.__isolateHarness = {
       msg = JSON.parse(msgJson);
     } catch {
       return fail('sandbox_output_malformed', 'request is not valid JSON');
+    }
+    // СПАЙК S0: форма сообщения обязана совпасть с объявленной при `initSymbol`. Дельта несёт `h`
+    // и НЕ несёт `snapshot`; легаси — наоборот. Несовпадение = флаг доехал только до одной половины.
+    if (deltaMode === true) {
+      if (msg.snapshot !== undefined || typeof msg.h !== 'string') {
+        return fail('sandbox_output_malformed', 'дельта-харнесс получил сообщение формы снимка (PROFILE_SNAPSHOT_FREE только на одной половине)');
+      }
+      return hookDelta(msg);
+    }
+    if (msg.h !== undefined) {
+      return fail('sandbox_output_malformed', 'снимочный харнесс получил сообщение формы дельты (PROFILE_SNAPSHOT_FREE только на одной половине)');
     }
     const { hook, snapshot, newBar, newOi, newLiq } = msg;
     const symbol = snapshot === undefined || snapshot === null ? undefined : snapshot.symbol;

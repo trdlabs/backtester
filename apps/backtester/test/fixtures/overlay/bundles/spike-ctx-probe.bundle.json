@@ -1,0 +1,35 @@
+{
+  "manifest": {
+    "id": "spike_ctx_probe",
+    "version": "0.1.0",
+    "kind": "strategy",
+    "name": "спайк S0: зонд поверхности контекста",
+    "summary": "Читает весь ctx и решает по прочитанному",
+    "rationale": "Разделитель арм спайка; не торговая идея",
+    "author": "agent",
+    "contractVersion": "017.1",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "params": {},
+    "capabilities": {
+      "platformSdk": true
+    },
+    "dataNeeds": {
+      "closedCandlesUpToCurrent": true,
+      "asOfIndicators": true
+    },
+    "hooks": [
+      "onBarClose",
+      "onPositionBar"
+    ],
+    "bundleContractVersion": "019.1"
+  },
+  "entry": "module/index.js",
+  "files": {
+    "module/index.js": "// СПАЙК S0 — ЗОНД ПОВЕРХНОСТИ КОНТЕКСТА. НЕ МЕРЖИТСЯ.\n//\n// Существует ради одного: сделать армы РАЗЛИЧИМЫМИ по наблюдаемому поведению. Штатные фикстуры\n// станка не годятся — duty-100-50 не читает ctx вовсе (чистый счётчик), short-after-pump на\n// синтетической ленте не совершает ни одной сделки. Обе дают одинаковый хеш при ЛЮБОЙ реализации\n// поверхности, в том числе сломанной.\n//\n// Этот зонд читает ВСЁ, что спайк перевёл на персистентный фасад: bar, data.closedCandles,\n// indicators, market.oiAsOf/liqAsOf, position, pendingIntent, portfolio, clock, run, params, rng —\n// и решает по прочитанному. Совпадение хешей арм здесь = поверхность отдаёт те же значения;\n// расхождение или нулевые сделки = не отдаёт.\nexport default function createStrategyModule() {\n  let held = -1;\n  function fingerprint(ctx) {\n    // Каждое поле участвует в решении: чтение, которое ни на что не влияет, ничего не проверяет.\n    let x = 0;\n    x += ctx.bar.close + ctx.bar.high - ctx.bar.low + ctx.bar.volume + ctx.bar.open + ctx.bar.ts % 7;\n    x += ctx.clock.now() % 11;\n    x += ctx.run.seed % 13 + ctx.run.runId.length + ctx.run.mode.length;\n    x += Object.keys(ctx.params).length;\n    x += ctx.symbol.length;\n    x += ctx.portfolio.equity % 17 + ctx.portfolio.openPositions;\n    x += ctx.position === null ? 0 : ctx.position.entryPrice % 19 + ctx.position.size + ctx.position.side.length;\n    x += ctx.pendingIntent === null ? 0 : ctx.pendingIntent.createdTs % 23;\n    const win = ctx.data.closedCandles(5);\n    for (const b of win) x += b.close % 29;\n    const sma = ctx.indicators.value(\"sma\", 10);\n    if (typeof sma === \"number\") x += sma % 31;\n    const legacy = ctx.data.indicatorAsOf(\"sma_10\");\n    if (typeof legacy === \"number\") x += legacy % 37;\n    if (ctx.market !== undefined) {\n      const oi = ctx.market.oiAsOf();\n      if (oi !== undefined) x += oi.oiTotalUsd % 41;\n      const liq = ctx.market.liqAsOf();\n      if (liq !== undefined) x += (liq.longUsd + liq.shortUsd) % 43;\n      x += ctx.market.oiWindow(3).length + ctx.market.liqWindow(3).length;\n    }\n    x += ctx.rng.next();\n    return x;\n  }\n  return {\n    manifest: { id: \"spike_ctx_probe\", version: \"0.1.0\" },\n    onBarClose(ctx) {\n      const x = fingerprint(ctx);\n      if (held >= 0) return { kind: \"idle\" };\n      if (Math.floor(x) % 37 === 0) { held = 0; return { kind: \"enter\", side: \"long\" }; }\n      return { kind: \"idle\" };\n    },\n    onPositionBar(ctx) {\n      const x = fingerprint(ctx);\n      if (held < 0) return { kind: \"idle\" };\n      held += 1;\n      if (held >= 20 || Math.floor(x) % 53 === 0) { held = -1; return { kind: \"exit\", target: \"time_exit\" }; }\n      return { kind: \"idle\" };\n    },\n  };\n}\n"
+  }
+}

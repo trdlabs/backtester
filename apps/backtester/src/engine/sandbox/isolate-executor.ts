@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { StrategyContext } from '@trading/research-contracts/research';
+import type { IntentSnapshot, PositionSnapshot } from '@trading/research-contracts/research';
 import type { OverlayDecision, StrategyDecision } from '@trading/research-contracts/research';
 import type {
   HypothesisOverlayModule,
@@ -66,9 +67,51 @@ type HookOutcome =
   | { readonly ok: true; readonly decisions: readonly unknown[] }
   | { readonly ok: false; readonly error: SessionErrorLike };
 
+/**
+ * СПАЙК S0 (`PROFILE_SNAPSHOT_FREE=true`) — ПЕРСИСТЕНТНАЯ ПОВЕРХНОСТЬ + ДЕЛЬТА. НЕ МЕРЖИТСЯ.
+ *
+ * Под флагом `run`/`params`/`symbol` уезжают ОДИН раз при `initSymbol`, а на событии остаётся только
+ * изменчивое: бар, дельты рынка и `position`/`pendingIntent`/`portfolio` — и те лишь когда
+ * изменились. Читается из окружения, а не из политики: обе армы обязаны жить в одном бинаре и
+ * чередоваться, а спайк не должен протекать в конфиг. Воркер-поток наследует `process.env`, поэтому
+ * флаг доезжает и до барного цикла в потоке.
+ */
+const SNAPSHOT_FREE: boolean = process.env.PROFILE_SNAPSHOT_FREE === 'true';
+
+/** СПАЙК S0 — пербарная бухгалтерия символа + последнее ОТПРАВЛЕННОЕ значение изменчивых частей. */
+interface SymbolState {
+  barIndex: number;
+  lastBarTs?: number;
+  /** `undefined` = ещё ни разу не отправляли (первое событие всегда несёт полное значение). */
+  prevPosition?: { side: string; size: number; entryPrice: number; stop?: number; take?: number } | null;
+  prevIntent?: { kind: string; side?: string; createdTs: number } | null;
+  prevEquity?: number;
+  prevOpenPositions?: number;
+}
+
 /** isolated-vm бросает на превышении RunOptions.timeout ошибку с 'Script execution timed out.'. */
 function isIsolateTimeout(err: unknown): boolean {
   return err instanceof Error && /timed out/i.test(err.message);
+}
+
+/** СПАЙК S0 — позиция не изменилась с последней ОТПРАВКИ (`undefined` = ещё не отправляли). */
+function samePosition(prev: SymbolState['prevPosition'], p: PositionSnapshot | null): boolean {
+  if (prev === undefined) return false;
+  if (prev === null || p === null) return prev === null && p === null;
+  return (
+    prev.side === p.side &&
+    prev.size === p.size &&
+    prev.entryPrice === p.entryPrice &&
+    prev.stop === p.stop &&
+    prev.take === p.take
+  );
+}
+
+/** СПАЙК S0 — pendingIntent не изменился с последней ОТПРАВКИ. */
+function sameIntent(prev: SymbolState['prevIntent'], i: IntentSnapshot | null): boolean {
+  if (prev === undefined) return false;
+  if (prev === null || i === null) return prev === null && i === null;
+  return prev.kind === i.kind && prev.side === i.side && prev.createdTs === i.createdTs;
 }
 
 /** Зависимости исполнителя (инъекция пути к собранному харнессу — для тестов). */
@@ -97,8 +140,10 @@ export class IsolateModuleExecutor implements ModuleExecutor {
   private readonly syncCalls: boolean;
   private readonly collectedErrors: SandboxErrorArtifact[] = [];
   // Пербарная бухгалтерия newBar/newOi/newLiq per symbol — зеркало SandboxSession (universe=false).
-  private readonly perSymbol = new Map<string, { barIndex: number; lastBarTs?: number }>();
+  private readonly perSymbol = new Map<string, SymbolState>();
   private readonly initedSymbols = new Set<string>();
+  /** СПАЙК S0 — символ, объявленный харнессу последним: ключ маршрутизации тоже едет дельтой. */
+  private lastSentSymbol?: string;
   // AIMD-окно батча: стартуем узко, ×2 на полном потреблении, сброс на раннем стопе — защита от
   // eager-build амплификации (annotate-плотная стратегия стопает батч через 1-7 баров, и без окна
   // хост маршалил бы ВСЕ maxBars payload'ов ради 1-2 потреблённых).
@@ -293,6 +338,65 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     };
   }
 
+  /**
+   * СПАЙК S0 — собрать ДЕЛЬТА-сообщение вместо снимка. НЕ МЕРЖИТСЯ.
+   *
+   * Форма описана в `isolate-entry.mjs` (`hookDelta`). Ключевое: `run`/`params`/`symbol` не едут
+   * вовсе, а `position`/`pendingIntent`/`portfolio` — только когда изменились относительно последнего
+   * ОТПРАВЛЕННОГО значения (отсутствие ключа = не менялось). Сравнение здесь, на хосте, по полям, а
+   * не по идентичности: раннер волен отдавать тот же объект изменённым на месте.
+   *
+   * Рыночные поля `oiAsOf`/`liqAsOf` из снимка не переносятся сознательно: харнесс их не читает
+   * никогда — `rehydrateContext` реконструирует поверхность из накопленных буферов. В снимочном
+   * пути они строились и сериализовались на каждом баре впустую.
+   */
+  private buildDeltaMessage(hook: string, ctx: StrategyContext): { json: string; barIndex: number } {
+    let st = this.perSymbol.get(ctx.symbol);
+    if (st === undefined) {
+      st = { barIndex: -1 };
+      this.perSymbol.set(ctx.symbol, st);
+    }
+    const msg: Record<string, unknown> = { h: hook, c: ctx.clock.now() };
+    if (this.lastSentSymbol !== ctx.symbol) {
+      msg.s = ctx.symbol;
+      this.lastSentSymbol = ctx.symbol;
+    }
+    if (ctx.bar.ts !== st.lastBarTs) {
+      st.barIndex += 1;
+      st.lastBarTs = ctx.bar.ts;
+      const b = ctx.bar;
+      msg.b = [b.ts, b.open, b.high, b.low, b.close, b.volume];
+      const m = ctx.market as (typeof ctx.market & Partial<MarketApiWithPresence>) | undefined;
+      if (m !== undefined) {
+        if (typeof m.hasOiAtBar === 'boolean' ? m.hasOiAtBar : m.oiWindow(1).length > 0) {
+          const p = m.oiAsOf();
+          msg.o = p === undefined || p === null ? null : [p.ts, p.oiTotalUsd];
+        }
+        if (typeof m.hasLiqAtBar === 'boolean' ? m.hasLiqAtBar : m.liqWindow(1).length > 0) {
+          const p = m.liqAsOf();
+          msg.l = p === undefined || p === null ? null : [p.ts, p.longUsd, p.shortUsd];
+        }
+      }
+    }
+    const pos: PositionSnapshot | null = ctx.position;
+    if (!samePosition(st.prevPosition, pos)) {
+      msg.p = pos === null ? null : [pos.side, pos.size, pos.entryPrice, pos.stop ?? null, pos.take ?? null];
+      st.prevPosition =
+        pos === null ? null : { side: pos.side, size: pos.size, entryPrice: pos.entryPrice, stop: pos.stop, take: pos.take };
+    }
+    const intent: IntentSnapshot | null = ctx.pendingIntent;
+    if (!sameIntent(st.prevIntent, intent)) {
+      msg.i = intent === null ? null : [intent.kind, intent.side ?? null, intent.createdTs];
+      st.prevIntent = intent === null ? null : { kind: intent.kind, side: intent.side, createdTs: intent.createdTs };
+    }
+    if (st.prevEquity !== ctx.portfolio.equity || st.prevOpenPositions !== ctx.portfolio.openPositions) {
+      msg.f = [ctx.portfolio.equity, ctx.portfolio.openPositions];
+      st.prevEquity = ctx.portfolio.equity;
+      st.prevOpenPositions = ctx.portfolio.openPositions;
+    }
+    return { json: JSON.stringify(msg), barIndex: st.barIndex };
+  }
+
   /** Вызвать JS в изоляте с per-call wall-таймаутом; ошибки → SessionErrorLike (fail-closed). */
   private async evalHarness(
     expression: string,
@@ -381,9 +485,23 @@ export class IsolateModuleExecutor implements ModuleExecutor {
 
   private async ensureSymbol(ctx: StrategyContext): Promise<HookOutcome | undefined> {
     if (this.initedSymbols.has(ctx.symbol)) return undefined;
+    // СПАЙК S0: под флагом третьим аргументом уезжают инварианты сессии — они же объявляют харнессу
+    // дельта-протокол. Без флага аргумента нет, и харнесс остаётся на снимочном пути.
+    const args: unknown[] = SNAPSHOT_FREE
+      ? [
+          ctx.symbol,
+          ctx.run.seed,
+          JSON.stringify({
+            run: { runId: ctx.run.runId, mode: ctx.run.mode, seed: ctx.run.seed },
+            params: ctx.params,
+          }),
+        ]
+      : [ctx.symbol, ctx.run.seed];
     const r = await this.evalHarness(
-      'return globalThis.__isolateHarness.initSymbol($0, $1)',
-      [ctx.symbol, ctx.run.seed],
+      SNAPSHOT_FREE
+        ? 'return globalThis.__isolateHarness.initSymbol($0, $1, $2)'
+        : 'return globalThis.__isolateHarness.initSymbol($0, $1)',
+      args,
       'init',
     );
     if (!r.ok) return { ok: false, error: r.error };
@@ -415,18 +533,28 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     const notInited = await this.ensureSymbol(ctx);
     if (notInited !== undefined) return notInited;
 
-    const payload = this.buildHookPayload(ctx);
-    const barIndex = payload.snapshot.barIndex;
-    const msg = {
-      hook,
-      snapshot: payload.snapshot,
-      newBar: payload.newBar,
-      ...(payload.newOi !== undefined ? { newOi: payload.newOi } : {}),
-      ...(payload.newLiq !== undefined ? { newLiq: payload.newLiq } : {}),
-    };
+    // СПАЙК S0: под флагом на границу уезжает дельта, а не снимок. Обе ветки живут в одном бинаре —
+    // армы обязаны чередоваться в одном прогоне станка.
+    let json: string;
+    let barIndex: number;
+    if (SNAPSHOT_FREE) {
+      const delta = this.buildDeltaMessage(hook, ctx);
+      json = delta.json;
+      barIndex = delta.barIndex;
+    } else {
+      const payload = this.buildHookPayload(ctx);
+      barIndex = payload.snapshot.barIndex;
+      json = JSON.stringify({
+        hook,
+        snapshot: payload.snapshot,
+        newBar: payload.newBar,
+        ...(payload.newOi !== undefined ? { newOi: payload.newOi } : {}),
+        ...(payload.newLiq !== undefined ? { newLiq: payload.newLiq } : {}),
+      });
+    }
     const r = await this.evalHarness(
       'return globalThis.__isolateHarness.hook($0)',
-      [JSON.stringify(msg)],
+      [json],
       hook,
       barIndex,
       { ref: this.hookRef },
@@ -513,6 +641,14 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     ctxs: readonly StrategyContext[],
   ): Promise<{ stoppedAt: number; decisions: readonly StrategyDecision[] }> {
     if (ctxs.length === 0) return { stoppedAt: -1, decisions: [] };
+    // СПАЙК S0: батч 17b остаётся снимочным (`runHookBatchSync` → `rehydrateContext`) и в объём
+    // спайка не входит. Молча отдать сюда дельту нельзя — это дало бы число не той конструкции;
+    // падаем явно, как и всё остальное рассогласование флага.
+    if (SNAPSHOT_FREE) {
+      throw new Error(
+        'PROFILE_SNAPSHOT_FREE: батч 17b вне объёма спайка — гоняйте с PROFILE_BATCH_BARS=0 (прод-режим)',
+      );
+    }
     const first = ctxs[0]!;
     const failFast = (error: SessionErrorLike, stop: number): { stoppedAt: number; decisions: [] } => {
       this.record(error, first);
