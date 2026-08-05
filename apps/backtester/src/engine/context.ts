@@ -12,13 +12,13 @@ import type {
   StrategyContext,
 } from '@trading/research-contracts/research';
 
-import type { MarketTapeDataset } from '@trading/research-contracts/research';
+import type { MarketTapeDataset, PointInTimeMarketApi } from '@trading/research-contracts/research';
 
 import { createIndicatorEngine } from './indicators/index.js';
 import type { IndicatorEngine } from './indicators/index.js';
 
 import { indicatorApiFor, pointInTimeDataApi } from './dataset.js';
-import { pointInTimeMarketApi } from './market-access.js';
+import { pointInTimeMarketApi, thinPointInTimeMarketApi, THIN_SURFACE_ENABLED } from './market-access.js';
 import type { SeededRng } from '../determinism/rng.js';
 
 /** Рекурсивно заморозить объект/функцию и все достижимые по свойствам значения (идемпотентно). */
@@ -69,6 +69,23 @@ export interface ContextBuilderOptions {
    * пишут, а не там, где её гоняют миллион баров подряд.
    */
   readonly freeze?: boolean;
+  /**
+   * T1-спайк (2026-08-05, PROFILE_THIN_SURFACE) — по какому исполнителю строится рыночная
+   * поверхность `ctx.market`.
+   *
+   * `'trusted'` (по умолчанию) — прежнее поведение ВСЕГДА, независимо от `PROFILE_THIN_SURFACE`:
+   * полная `pointInTimeMarketApi`. Ни один существующий вызывающий код (runner.ts, тесты,
+   * `scripts/profile-context.mts`) это поле не передаёт → нулевой блэст-радиус для них.
+   *
+   * `'sandbox'` — при `PROFILE_THIN_SURFACE=true` строится худая 4-члена поверхность (T1, см.
+   * `market-access.ts::thinPointInTimeMarketApi`); без флага не отличается от `'trusted'`. Выбор
+   * ОБЯЗАН отражать реального исполнителя контекста: пометить `'sandbox'` для контекста, который
+   * попадёт в доверенный путь (`ctx.market.oiWindow(...)` там есть в контракте) — ошибка
+   * вызывающего кода, а не гонка этого спайка. Худая поверхность не реализует
+   * `PointInTimeMarketApi` целиком, поэтому такое рассогласование падает TypeError'ом на первом
+   * же обращении к отсутствующему методу — явно, а не тихим неверным числом.
+   */
+  readonly executorKind?: 'trusted' | 'sandbox';
 }
 
 /** Изменяемое от бара к бару состояние портфеля/позиции/intent'а. */
@@ -94,11 +111,15 @@ export class PointInTimeContextBuilder {
   /** См. `ContextBuilderOptions.freeze`. Читается один раз: менять режим по ходу прогона нельзя. */
   private readonly freezePerBar: boolean;
 
+  /** См. `ContextBuilderOptions.executorKind`. Читается один раз: у построителя один исполнитель. */
+  private readonly executorKind: 'trusted' | 'sandbox';
+
   constructor(
     private readonly base: ContextBuilderBase,
     options: ContextBuilderOptions = {},
   ) {
     this.freezePerBar = options.freeze ?? true;
+    this.executorKind = options.executorKind ?? 'trusted';
     // Заморозка ОДИН РАЗ на символ — и она безусловна, в отличие от пербарной.
     //
     // Всё остальное, до чего дотягивается контекст, защищено само собой: свечи заморожены у
@@ -124,6 +145,30 @@ export class PointInTimeContextBuilder {
     this.marketGridTs = this.carriesMarket && tape !== undefined ? tape.candles(base.symbol).map((b) => b.ts) : undefined;
   }
 
+  /**
+   * T1-спайк (PROFILE_THIN_SURFACE, docs/superpowers/sdd/2026-08-05-t1-thin-surface-measurement).
+   * По умолчанию (флаг выключен ИЛИ `executorKind !== 'sandbox'`) — байт-в-байт прежнее поведение:
+   * полная `pointInTimeMarketApi`. Только когда ОБА условия выполнены — построитель явно помечен
+   * `executorKind: 'sandbox'` И включён `PROFILE_THIN_SURFACE=true` — строится худая 4-члена
+   * поверхность. Условие двойное НАМЕРЕННО: один лишь флаг окружения ничего не переключает —
+   * построитель для доверенного пути никогда не помечается `'sandbox'` вызывающим кодом, поэтому
+   * активация не может протечь на доверенный путь через одну переменную окружения.
+   */
+  private buildMarketSurface(marketTape: MarketTapeDataset, t: number, barIndex: number): PointInTimeMarketApi {
+    // Fast path: barIndex IS the tape-grid index when base.candles aligns with the tape grid (the
+    // norm — same materialized per-symbol stream). Fall back to indexOf only on a misaligned/absent
+    // slot, so the resolved idx is byte-identical to the old self-computed one.
+    const idx = this.marketGridTs![barIndex] === t ? barIndex : this.marketGridTs!.indexOf(t);
+    const precomputed = { gridTs: this.marketGridTs!, idx };
+    if (THIN_SURFACE_ENABLED && this.executorKind === 'sandbox') {
+      // Худая поверхность не реализует PointInTimeMarketApi целиком (нет oiWindow/liqWindow/
+      // funding*/taker*) — публичный контракт (SDK) не трогаем; на этом пути её читают только
+      // песочничные потребители, которым нужны ровно эти четыре члена (см. market-access.ts).
+      return thinPointInTimeMarketApi(marketTape, this.base.symbol, t, precomputed) as unknown as PointInTimeMarketApi;
+    }
+    return pointInTimeMarketApi(marketTape, this.base.symbol, t, precomputed);
+  }
+
   build(barIndex: number, state: PerBarState): StrategyContext {
     const bar = this.base.candles[barIndex];
     if (bar === undefined) {
@@ -143,15 +188,7 @@ export class PointInTimeContextBuilder {
       rng: { next: () => this.base.rng.next() },
       // 023: market выставляется ТОЛЬКО когда лента несёт kind (иначе ключ отсутствует — форма 018).
       ...(this.carriesMarket && this.base.marketTape !== undefined
-        ? {
-            market: pointInTimeMarketApi(this.base.marketTape, this.base.symbol, bar.ts, {
-              gridTs: this.marketGridTs!,
-              // Fast path: barIndex IS the tape-grid index when base.candles aligns with the tape grid
-              // (the norm — same materialized per-symbol stream). Fall back to indexOf only on a
-              // misaligned/absent slot, so the resolved idx is byte-identical to the old self-computed one.
-              idx: this.marketGridTs![barIndex] === bar.ts ? barIndex : this.marketGridTs!.indexOf(bar.ts),
-            }),
-          }
+        ? { market: this.buildMarketSurface(this.base.marketTape, bar.ts, barIndex) }
         : {}),
     };
     return this.freezePerBar ? deepFreeze(ctx) : ctx;

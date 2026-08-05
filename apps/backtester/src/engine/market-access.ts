@@ -164,3 +164,62 @@ export function pointInTimeMarketApi(
     ...(takerCol !== undefined ? { takerAsOf, takerWindow } : {}),
   });
 }
+
+// T1-спайк (2026-08-05, docs/superpowers/sdd/2026-08-05-t1-thin-surface-measurement) — разделяющий
+// перф-замер: сколько стоит построение полной MarketApiWithPresence поверхности, которую песочничные
+// потребители всё равно читают не целиком. На песочничном пути её читают три call site — все три
+// одним и тем же зондом ("тот же зонд состава, что в serializeContext"): `serializeContext`,
+// `SandboxSession.buildHookPayload`, `IsolateModuleExecutor.buildHookPayload` — но набор членов у
+// всех троих один и тот же: `hasOiAtBar`, `hasLiqAtBar`, `oiAsOf()`, `liqAsOf()`. Полная поверхность
+// несёт девять замыканий (oiAsOf/liqAsOf/oiWindow/liqWindow/fundingAsOf/fundingWindow/takerAsOf/
+// takerWindow/fundingReadingAtLocal) и две заморозки ради этих четырёх членов на каждом баре.
+//
+// Флаг PROFILE_THIN_SURFACE=true в одиночку НИЧЕГО не переключает — активация требует ЕЩЁ и явного
+// `executorKind: 'sandbox'` на стороне вызывающего builder'а (context.ts). Так исключена утечка на
+// доверенный путь через одну лишь переменную окружения: построитель для доверенного пути никогда не
+// помечается 'sandbox' вызывающим кодом, поэтому что бы ни было в окружении, `ctx.market` там остаётся
+// полным. Контракт `PointInTimeMarketApi` (публичный, SDK) не меняем: `ThinMarketApi` НЕ расширяет его
+// и не реализует `oiWindow`/`liqWindow`/funding*/taker* — если тонкая поверхность когда-нибудь всё же
+// протечёт на доверенный путь, `ctx.market.oiWindow(...)` там упадёт TypeError, а не молча посчитает
+// неверный результат (рассогласование обязано падать явно, а не считаться).
+
+/** Включатель худой песочничной поверхности T1 (см. блок выше). Читается один раз на модуль. */
+export const THIN_SURFACE_ENABLED = process.env.PROFILE_THIN_SURFACE === 'true';
+
+/**
+ * T1-спайк: худая песочничная поверхность. Ровно те четыре члена, что читают все известные
+ * песочничные потребители. Запасная ветка потребителей (`oiWindow(1).length > 0`) существует для
+ * поверхностей, собранных НЕ этой функцией (ручные в тестах, чужие реализации контракта) — здесь она
+ * недостижима по построению: булевы поля есть всегда, а `oiWindow`/`liqWindow` на объекте нет вовсе.
+ * Ленивые геттеры не вариант (геттер в литерале объекта аллоцируется при каждом вычислении литерала
+ * ровно как обычное замыкание) — поэтому это простые функции-члены, а не геттеры, и их ровно два.
+ */
+export interface ThinMarketApi {
+  readonly hasOiAtBar: boolean;
+  readonly hasLiqAtBar: boolean;
+  readonly oiAsOf: () => OiPoint | undefined;
+  readonly liqAsOf: () => LiqPoint | undefined;
+}
+
+/**
+ * Построить худую PIT-рыночную поверхность (T1). Зеркалит только ту часть `pointInTimeMarketApi`,
+ * что нужна `hasOiAtBar`/`hasLiqAtBar`/`oiAsOf`/`liqAsOf` — funding/taker колонки не читаются вовсе
+ * (`dataset.funding()`/`dataset.taker()` не вызываются), `oiWindow`/`liqWindow` не строятся.
+ */
+export function thinPointInTimeMarketApi(
+  dataset: MarketTapeDataset,
+  symbol: string,
+  t: number,
+  precomputed?: { readonly gridTs: readonly number[]; readonly idx: number },
+): ThinMarketApi {
+  const gridTs = precomputed?.gridTs ?? dataset.candles(symbol).map((b) => b.ts);
+  const idx = precomputed?.idx ?? gridTs.indexOf(t);
+  const oiCol = dataset.openInterest(symbol);
+  const liqCol = dataset.liquidations(symbol);
+  return Object.freeze({
+    hasOiAtBar: oiCol !== undefined && idx >= 0,
+    hasLiqAtBar: liqCol !== undefined && idx >= 0,
+    oiAsOf: () => (oiCol === undefined || idx < 0 ? undefined : oiPoint(oiCol.at(t))),
+    liqAsOf: () => (liqCol === undefined || idx < 0 ? undefined : liqPoint(liqCol.at(t))),
+  });
+}
