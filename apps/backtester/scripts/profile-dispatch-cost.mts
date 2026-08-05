@@ -33,20 +33,54 @@ const context = isolate.createContextSync();
 context.evalSync('globalThis.__n = 0; globalThis.__d = (j) => { const e = JSON.parse(j); __n += e.seq === -1 ? 0 : 1; return 0; };');
 const dispatch = context.global.getSync('__d', { reference: true });
 
-/** Один замер: N конвертов одного класса через applySync. */
-function measure(make: (i: number) => unknown): number {
+// --- Вторая ось: цена ВОЗВРАТА батча команд -------------------------------------------------------
+// Пять классов выше меряют только доставку конверта ВНУТРЬ (изолятная функция разбирает JSON и
+// возвращает 0 — константу). Но в акторной модели каждое событие возвращает наружу батч команд, и
+// эту цену никто ещё не мерил: commandValidationCost из интерфейса задачи без неё не сходится.
+// Вход тот же, что у класса `order` (событие, которое и порождает батч команд), различается только
+// то, что делает изолятная функция на выходе — пустой батч либо батч из одной `place`-команды той
+// же формы, что уже описана для класса `order`.
+context.evalSync(
+  "globalThis.__re = (j) => { const e = JSON.parse(j); __n += e.seq === -1 ? 0 : 1; return e.seq === -1 ? '[0]' : '[]'; };" +
+    "globalThis.__ro = (j) => { const e = JSON.parse(j); __n += e.seq === -1 ? 0 : 1;" +
+    " const cmd = { kind: 'place', clientOrderId: e.event.clientOrderId };" +
+    " return e.seq === -1 ? '[0]' : JSON.stringify([cmd]); };",
+);
+const dispatchReturnEmpty = context.global.getSync('__re', { reference: true });
+const dispatchReturnOne = context.global.getSync('__ro', { reference: true });
+
+/** Ссылка изолята на класс события — пять исходных зовут `__d` (не тронуты), новые две — свои. */
+const REFS: Record<string, ivm.Reference> = {
+  bar: dispatch,
+  market_point: dispatch,
+  order: dispatch,
+  fill: dispatch,
+  timer: dispatch,
+  return_empty: dispatchReturnEmpty,
+  return_one: dispatchReturnOne,
+};
+
+/** Конверты новой оси — тот же вход, что у `order`: событие, порождающее батч команд. */
+const RETURN_CLASSES: Record<string, (i: number) => unknown> = {
+  return_empty: CLASSES.order!,
+  return_one: CLASSES.order!,
+};
+
+/** Один замер: N конвертов одного класса через applySync прекомпилированной ссылки класса. */
+function measure(make: (i: number) => unknown, ref: ivm.Reference): number {
   const payloads = Array.from({ length: N }, (_, i) => JSON.stringify(make(i)));
   const t0 = process.hrtime.bigint();
-  for (let i = 0; i < N; i += 1) dispatch.applySync(undefined, [payloads[i]!]);
+  for (let i = 0; i < N; i += 1) ref.applySync(undefined, [payloads[i]!]);
   return Number(process.hrtime.bigint() - t0) / 1e6;
 }
 
-const names = Object.keys(CLASSES);
+const ALL_CLASSES: Record<string, (i: number) => unknown> = { ...CLASSES, ...RETURN_CLASSES };
+const names = [...Object.keys(CLASSES), ...Object.keys(RETURN_CLASSES)];
 const samples = new Map<string, number[]>(names.map((n) => [n, []]));
 
 // Чередование round-robin, не фазами: фазовый порядок оставляет следующую арму неоптимизированной.
 for (let r = 0; r < REPEATS; r += 1) {
-  for (const name of names) samples.get(name)!.push(measure(CLASSES[name]!));
+  for (const name of names) samples.get(name)!.push(measure(ALL_CLASSES[name]!, REFS[name]!));
 }
 
 console.log(`[profile-dispatch-cost] N=${N} повторов=${REPEATS}`);
