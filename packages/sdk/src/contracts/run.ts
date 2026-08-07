@@ -2,8 +2,8 @@ import type { ContentHash } from '../internal/shared-types';
 import type { ArtifactReference } from '../artifacts/types';
 import type { BacktestEngine, ModuleBundle, ModuleKind, ModuleManifest } from './module';
 // 017 primitives are re-sourced from the kernel @trdlabs/sdk — single source of truth, no drift.
-// They are structurally identical to the prior local declarations; the hermetic api-extractor dts
-// rollup inlines them, so the published type surface is unchanged.
+// The api-extractor rollup re-exports them by import (NOT inlined — see run-api-extractor.mjs),
+// so a consumer's `Ref` and ours are the same declaration, not two structurally equal copies.
 import type { Ref, RunPeriod } from '@trdlabs/sdk/research-contract';
 
 export type { ModuleKind, ModuleManifest, ModuleBundle, BacktestEngine };
@@ -215,9 +215,10 @@ export type Novelty =
 /**
  * Backtester run request. The base fields (`runId`..`artifacts`) MIRROR the kernel's 017
  * `BacktestRunRequest` (`@trdlabs/sdk/research-contract`) — keep them in sync when the 017 contract
- * changes. Kept as a standalone flat interface rather than `extends`-ing the kernel type on purpose:
- * an `extends Omit<Kernel, 'params'>` makes the hermetic api-extractor rollup inline the kernel
- * interface as a helper (and leak its comments) instead of a single clean declaration. `params` is
+ * changes. Kept as a standalone flat interface rather than `extends`-ing the kernel type: back when
+ * the rollup inlined @trdlabs/sdk, an `extends Omit<Kernel, 'params'>` emitted the kernel interface
+ * as a helper declaration (leaking its comments) instead of one clean shape. The rollup no longer
+ * inlines, so that constraint is gone — the flat form is kept for now, not required. `params` is
  * `Record<string, unknown>` here (the kernel types it as the wider `object`); the four trailing
  * fields are backtester-only and never reach the 017 validator.
  */
