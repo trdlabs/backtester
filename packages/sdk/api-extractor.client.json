@@ -1,7 +1,6 @@
 {
   "$schema": "https://developer.microsoft.com/json-schemas/api-extractor/v7/api-extractor.schema.json",
   "mainEntryPointFilePath": "<projectFolder>/dist-types/client/index.d.ts",
-  "bundledPackages": ["@trdlabs/sdk"],
   "compiler": { "tsconfigFilePath": "<projectFolder>/tsconfig.dts.json" },
   "dtsRollup": {
     "enabled": true,

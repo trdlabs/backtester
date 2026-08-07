@@ -36,8 +36,8 @@ importers:
         specifier: 0.3.0
         version: 0.3.0
       '@trdlabs/sdk':
-        specifier: ^0.13.0
-        version: 0.13.0
+        specifier: ^0.14.0
+        version: 0.14.0
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -71,11 +71,14 @@ importers:
         specifier: workspace:*
         version: link:../sdk
       '@trdlabs/sdk':
-        specifier: ^0.13.0
-        version: 0.13.0
+        specifier: ^0.14.0
+        version: 0.14.0
 
   packages/sdk:
     dependencies:
+      '@trdlabs/sdk':
+        specifier: ^0.14.0
+        version: 0.14.0
       decimal.js:
         specifier: ^10.4.3
         version: 10.6.0
@@ -83,9 +86,6 @@ importers:
       '@microsoft/api-extractor':
         specifier: ^7.58.9
         version: 7.58.9(@types/node@22.19.21)
-      '@trdlabs/sdk':
-        specifier: ^0.13.0
-        version: 0.13.0
       rimraf:
         specifier: ^6.1.3
         version: 6.1.3
@@ -911,6 +911,9 @@ packages:
 
   '@trdlabs/sdk@0.13.0':
     resolution: {integrity: sha512-DUCBdkvTRRp/xBEmFAJpqqDFhCzXDsln1xW6fIZQjX2RFm0O/ibaBoTl1w5BrKytFpzwSchS6Qvx1OybeApWuw==}
+
+  '@trdlabs/sdk@0.14.0':
+    resolution: {integrity: sha512-WCjlu4Bi6whVrWPF5JVjgEpgnFowRXmu8rcmkV7ioquOyQWkilnYVqDwmptHdIrJaQ8Ng6Ipp3D4wNuKlKsULA==}
 
   '@types/argparse@1.0.38':
     resolution: {integrity: sha512-ebDJ9b0e702Yr7pWgB0jzm+CX4Srzz8RcXtLJDJB+BSccqMa36uyH/zUsSYao5+BD1ytv3k3rPYCq4mAE1hsXA==}
@@ -2396,6 +2399,11 @@ snapshots:
       decimal.js: 10.4.3
 
   '@trdlabs/sdk@0.13.0':
+    dependencies:
+      ajv: 8.20.0
+      decimal.js: 10.6.0
+
+  '@trdlabs/sdk@0.14.0':
     dependencies:
       ajv: 8.20.0
       decimal.js: 10.6.0
