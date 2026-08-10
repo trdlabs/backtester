@@ -3,10 +3,21 @@ export * from './comparison.js';
 export * from './historical.js';
 
 /** 017 run/module contract version. Must stay in lockstep with the kernel for byte parity — the
- *  `contract-merge-guard` test asserts it equals PLATFORM_CONTRACT_VERSION. 083 E1 moved it to
- *  '017.3', ratified platform-side by verify_083_e1_contract_anchor; 017.1/017.2 manifests stay
- *  valid (append-only SUPPORTED_CONTRACT_VERSIONS). */
-export const CONTRACT_VERSION = '017.3';
+ *  `contract-merge-guard` test asserts it equals PLATFORM_CONTRACT_VERSION.
+ *
+ *  Что такое «анкер». `PLATFORM_CONTRACT_VERSION` ниже реэкспортируется из `./research/catalogs.js`,
+ *  а тот — прямо из `@trdlabs/sdk/research-contract`. То есть анкер и есть константа ядра, и подъём
+ *  зависимости двигает его сам; эта строка обязана за ним поспевать. Отдельного гейта в другом
+ *  репозитории тут нет — `verify_083_e1_contract_anchor` был разовой ратификацией 017.3 на стороне
+ *  платформы, а не звеном этой цепочки.
+ *
+ *  083 E1 перевёл на '017.3'; 083 S1 — на '017.4' (актор-контракт). 017.1/017.2/017.3 манифесты
+ *  остаются валидными (append-only SUPPORTED_CONTRACT_VERSIONS).
+ *
+ *  Смена этой строки перебазирует КАЖДЫЙ committed result-голден: `runner.ts` кладёт её в
+ *  `RunEvidence`, а evidence входит в канонический payload прогона. Двигать её в отрыве от
+ *  доказательства миграции (`contract-017-4-migration.test.ts`) нельзя. */
+export const CONTRACT_VERSION = '017.4';
 
 /** The platform's lifted 017 contract version (parity anchor). Root CONTRACT_VERSION must equal it. */
 export { CONTRACT_VERSION as PLATFORM_CONTRACT_VERSION } from './research/catalogs.js';
