@@ -169,7 +169,14 @@ to bound memory usage. For large artifacts, use the paginated
 
 - **Node >= 22** (uses native `crypto.subtle` for SHA-256)
 - **ESM only** — all entry points are `"type": "module"`; set `"moduleResolution": "NodeNext"` or `"Bundler"` in `tsconfig.json`
-- `decimal.js` is the only declared runtime dependency; the kernel `@trdlabs/sdk` (types, runtime, and 017 schemas) is inlined at build time, so the published package is hermetic
+- Declared dependencies: `decimal.js` and the kernel `@trdlabs/sdk`. The kernel's **runtime** and its
+  017 schemas are still inlined at build time — nothing resolves `@trdlabs/sdk` when the code runs.
+  The kernel's **types** are not inlined: the published `.d.ts` files import them from
+  `@trdlabs/sdk`, so `@trdlabs/sdk` must be resolvable to typecheck against this package (a plain
+  `npm install @trdlabs/backtester-sdk` pulls it in automatically). This is deliberate — the kernel's
+  branded types (`DurationUs` and friends) are nominal, so inlining them per subpath export would
+  make `@trdlabs/backtester-sdk/contracts`'s `DurationUs` a *different* type from
+  `@trdlabs/backtester-sdk/builder`'s, and from your own `@trdlabs/sdk`'s.
 
 ---
 
