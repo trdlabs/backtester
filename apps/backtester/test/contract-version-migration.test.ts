@@ -46,6 +46,14 @@ const f3HashMap = JSON.parse(
   ),
 ) as { goldens: Record<string, HashMapEntry> };
 
+/** Карта головы цепи: 083 S1, бамп контракта 017.3 → 017.4. Её `active` и лежит на диске. */
+const s1HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, HashMapEntry> };
+
 const hashMap = JSON.parse(
   readFileSync(resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-migration/hash-map.json'), 'utf8'),
 ) as { contract: { from: string; to: string }; goldens: Record<string, HashMapEntry> };
@@ -79,11 +87,16 @@ describe('017.2 → 017.3 golden migration proof', () => {
         expect(proof.activeHash).toBe(recorded.active);
         // Ф3 (переезд на `@trdlabs/engine`) перебазировала committed-голдены ещё раз, поэтому файл
         // на диске больше НЕ равен 017.3-хешу. Чтобы это доказательство не протухло, а осталось
-        // звеном цепи, оно сцепляется с Ф3-картой: `active` 017-миграции обязан быть `legacy`
-        // Ф3-миграции, а на диске лежит `active` Ф3. Разрыв цепи — падение здесь, а не тихий дрейф.
+        // звеном цепи, оно сцепляется со следующими звеньями. Разрыв в любом месте — падение
+        // здесь, а не тихий дрейф.
+        //
+        // 083 S1 добавил четвёртое звено, и файл на диске уехал ещё раз: теперь там 017.4-хеш.
+        // Цепь проверяется ЦЕЛИКОМ, а не только до ближайшего соседа: иначе её середина могла бы
+        // разъехаться незамеченной, пока концы сходятся.
         expect(recorded.active).toBe(f3HashMap.goldens[scenario.id].legacy);
+        expect(f3HashMap.goldens[scenario.id].active).toBe(s1HashMap.goldens[scenario.id].legacy);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          f3HashMap.goldens[scenario.id].active,
+          s1HashMap.goldens[scenario.id].active,
         );
       });
     });

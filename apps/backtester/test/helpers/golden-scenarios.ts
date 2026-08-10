@@ -190,6 +190,18 @@ export function projectToLegacyContractVersion(payload: unknown): unknown {
   return projectContractVersion(payload, ACTIVE_CONTRACT_VERSION, LEGACY_CONTRACT_VERSION);
 }
 
+/**
+ * Нормализация свежего прогона к эпохе 017.3 — общий вход обоих ИСТОРИЧЕСКИХ доказательств.
+ *
+ * Их якоря заморожены тогда, когда в evidence стояла 017.3. Свежий прогон эмитит 017.4, и без
+ * нормализации каждый такой якорь уезжал бы вместе с версией при каждом следующем бампе — то есть
+ * звенья цепи протухали бы молча, продолжая «проходить». Идемпотентна: payload, уже стоящий на
+ * 017.3, не меняется (сопоставление идёт по `from`).
+ */
+export function atPreS1Contract(payload: unknown): unknown {
+  return projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
+}
+
 /** Все JSON-pointer пути, по которым два canonical payload'а различаются. */
 export function structuralDiffPaths(a: unknown, b: unknown, base = ''): readonly string[] {
   if (Array.isArray(a) && Array.isArray(b)) {
@@ -224,7 +236,13 @@ export interface MigrationProof {
 export function proveContractVersionMigration(payload: unknown): MigrationProof & { id: string } {
   // Ф3: доказательство ведётся на ДО-Ф3 проекции evidence. Иначе бамп идентичности прогона
   // (решение (A)) утащил бы за собой исторический 017-пруф, и тот перестал бы что-либо утверждать.
-  const activePayload = projectToPreF3Shape(payload);
+  //
+  // 083 S1: и на нормализованной к 017.3 версии — по той же причине. Оба якоря этого звена
+  // (`legacy` = 017.2, `active` = 017.3) заморожены в эпохе, где в evidence стояла 017.3; свежий
+  // прогон эмитит 017.4, и без нормализации оба хеша уехали бы вместе с версией, а звено молча
+  // перестало бы что-либо доказывать. Нормализация стоит ЗДЕСЬ, а не у вызывающих: так её нельзя
+  // забыть ни в тесте, ни в дериваторе.
+  const activePayload = projectToPreF3Shape(atPreS1Contract(payload));
   const legacyPayload = projectToLegacyContractVersion(activePayload);
   return {
     id: '',
@@ -277,11 +295,17 @@ export interface ExtractionProof {
  * байт-в-байт прежний: извлечённое ядро эквивалентно донорскому на этих фикстурах.
  */
 export function proveEngineExtraction(payload: unknown): ExtractionProof {
-  const preF3Payload = projectToPreF3Shape(payload);
+  // 083 S1: оба якоря Ф3-звена (`legacy` = до-Ф3, `active` = после-Ф3) заморожены в эпохе 017.3.
+  // Свежий прогон эмитит 017.4, поэтому вход нормализуется — иначе сдвинулись бы ОБА, включая
+  // `legacy`, то есть исторический якорь донорского значения, и доказательство эквивалентности
+  // извлечения превратилось бы в самоссылку. Нормализация внутри функции по той же причине, что
+  // и у соседа: вызывающий не должен иметь возможности её пропустить.
+  const at0173 = atPreS1Contract(payload);
+  const preF3Payload = projectToPreF3Shape(at0173);
   return {
-    activeHash: contentRef(payload),
+    activeHash: contentRef(at0173),
     preF3Hash: contentRef(preF3Payload),
-    diffPaths: structuralDiffPaths(preF3Payload, payload),
+    diffPaths: structuralDiffPaths(preF3Payload, at0173),
   };
 }
 

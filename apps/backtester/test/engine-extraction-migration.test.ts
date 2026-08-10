@@ -65,6 +65,14 @@ const hashMap = JSON.parse(
   goldens: Record<string, Entry>;
 };
 
+/** Карта следующего звена цепи: 083 S1, бамп контракта 017.3 → 017.4. Её `active` лежит на диске. */
+const s1HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, Entry> };
+
 /**
  * Только эти пути имеют право разойтись. Список закрыт и привязан к КОНТЕЙНЕРУ: `synthetic`
  * разрешён исключительно у элемента `trades`, а не по имени ключа где угодно. Новый ключ формы —
@@ -113,11 +121,17 @@ describe('Ф3 extraction-equivalence: backtester on @trdlabs/engine', () => {
         );
       });
 
-      it('the committed golden IS the post-Ф3 hash recorded in the mapping', async () => {
+      it('the post-Ф3 hash is where the next link of the chain starts', async () => {
         const proof = proveEngineExtraction(await scenario.run());
         expect(proof.activeHash).toBe(hashMap.goldens[scenario.id].active);
+        // 083 S1 перебазировал committed-голдены под 017.4, поэтому файл на диске больше НЕ равен
+        // пост-Ф3 хешу: это доказательство ведётся на нормализованном к 017.3 payload'е, а на
+        // диске лежит хеш прогона под 017.4. Сравнивать их напрямую — сравнивать величины разной
+        // природы. Вместо этого сцепка: пост-Ф3 хеш обязан быть `legacy` следующего звена, и уже
+        // его `active` лежит на диске.
+        expect(hashMap.goldens[scenario.id].active).toBe(s1HashMap.goldens[scenario.id].legacy);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          hashMap.goldens[scenario.id].active,
+          s1HashMap.goldens[scenario.id].active,
         );
       });
     });
