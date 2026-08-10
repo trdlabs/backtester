@@ -22,10 +22,10 @@ import {
   type FundingReading,
   type FundingSnapshot,
   type KindCoverage,
+  type LegacyMarketDataKind,
   type LiquidationSnapshot,
   type MarketDataCoverageState,
   type MarketDataGap,
-  type MarketDataKind,
   type MarketTape,
   type MarketTapeDataset,
   type MarketTapeEvent,
@@ -95,7 +95,7 @@ const FORBIDDEN_SOURCE_KEYS = [
 const ALLOWED_SYMBOL_KEYS: ReadonlySet<string> = new Set(['bars', 'oi', 'liq', 'funding', 'taker']);
 
 /** Детерминированный порядок kind'ов в `CoverageModel` (§4). 030: +funding/taker (append). */
-const COVERAGE_KIND_ORDER: readonly MarketDataKind[] = ['openInterest', 'liquidations', 'funding', 'taker'];
+const COVERAGE_KIND_ORDER: readonly LegacyMarketDataKind[] = ['openInterest', 'liquidations', 'funding', 'taker'];
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
@@ -208,7 +208,7 @@ function buildFundingColumn(
 }
 
 /** Предикат покрытия минуты для kind (undefined ⇔ лента НЕ несёт kind для символа). */
-function coveredPredicate(kind: MarketDataKind, cols: SymbolColumns): ((ts: number) => boolean) | undefined {
+function coveredPredicate(kind: LegacyMarketDataKind, cols: SymbolColumns): ((ts: number) => boolean) | undefined {
   if (kind === 'openInterest') {
     const oi = cols.oi;
     return oi ? (ts) => oi.has(ts) : undefined;
@@ -237,7 +237,7 @@ function coveredPredicate(kind: MarketDataKind, cols: SymbolColumns): ((ts: numb
  * финализированным каноном не возникает → present|missing.
  */
 function coverageStateAtEnd(
-  kind: MarketDataKind,
+  kind: LegacyMarketDataKind,
   gridTs: readonly number[],
   covered: (ts: number) => boolean,
   coveredMinutes: number,
@@ -254,7 +254,7 @@ function coverageStateAtEnd(
   return 'missing';
 }
 
-function kindCoverage(symbol: string, kind: MarketDataKind, cols: SymbolColumns): KindCoverage {
+function kindCoverage(symbol: string, kind: LegacyMarketDataKind, cols: SymbolColumns): KindCoverage {
   const gridTs = cols.bars.map((b) => b.ts);
   const isFundingOrTaker = kind === 'funding' || kind === 'taker';
   // unsupported = kind не в platform supported-наборе (FR-018: из supported-набора, НЕ per-source).

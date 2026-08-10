@@ -3,7 +3,15 @@
 
 import type { Severity, ValidationCode } from '@trading/research-contracts/research';
 
-/** code → severity. Error блокирует приём; warning — нет (data-model §13.2). */
+/**
+ * code → severity. Error блокирует приём; warning — нет (data-model §13.2).
+ *
+ * Значения — зеркало авторитетной карты ядра (`CODE_SEVERITY` из `@trdlabs/sdk/validation`),
+ * а не независимое суждение: расхождение здесь означало бы, что один и тот же отказ блокирует
+ * приём в ядре и не блокирует у нас. Ручная копия держится ради `Record<ValidationCode, …>` —
+ * новый код в таксономии ядра ломает сборку и заставляет посмотреть на него, а не молча
+ * унаследовать. Сверять при каждом подъёме `@trdlabs/sdk`.
+ */
 export const CODE_SEVERITY: Readonly<Record<ValidationCode, Severity>> = {
   schema_invalid: 'error',
   params_schema_invalid: 'error',
@@ -29,6 +37,29 @@ export const CODE_SEVERITY: Readonly<Record<ValidationCode, Severity>> = {
   unsupported_reality_model_kind: 'error',
   // sdk 0.13.0 (083 E1): соответствие набора хуков объявленной форме стратегии.
   lifecycle_form_invalid: 'error',
+  // sdk 0.14.0 (083 S1): закрытый пятивидовой каталог `MarketDataRequirement` + revision/funding-form.
+  missing_market_data_requirement: 'error',
+  unsupported_market_data_scope: 'error',
+  unsupported_revision_policy: 'error',
+  unsupported_funding_form: 'error',
+  // `error`, а не `warning`, хотя код пока ниоткуда не эмитится: он размечает НЕобъявленный
+  // переход через границу `datasetId`. Агрегат восьми бирж и агрегат внешнего провайдера — разные
+  // величины, и окно поперёк такого перехода даёт число, которого нет ни на одном источнике
+  // по отдельности; пропускать это предупреждением значит принимать выдуманный результат.
+  // Отсутствие эмиттера — не долг ядра: проверку исполняет run plan (host), и хост здесь мы.
+  dataset_boundary_violation: 'error',
+  invalid_market_data_requirement: 'error',
+  duplicate_market_data_requirement_id: 'error',
+  // sdk 0.14.0 (083 S1): версионирование наблюдений (observation revisions).
+  observation_revision_conflict: 'error',
+  observation_revision_finalized: 'error',
+  observation_revision_skipped: 'error',
+  observation_revision_regressed: 'error',
+  observation_revision_invalid: 'error',
+  observation_revision_key_mismatch: 'error',
+  observation_revision_start_invalid: 'error',
+  observation_finality_demoted: 'error',
+  observation_archive_row_corrupt: 'error',
   empty_baseline_variant_diff: 'warning',
 };
 

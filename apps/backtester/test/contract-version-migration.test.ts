@@ -21,6 +21,8 @@ import {
   ACTIVE_CONTRACT_VERSION,
   GOLDEN_SCENARIOS,
   LEGACY_CONTRACT_VERSION,
+  projectContractVersion,
+  projectToLegacyContractVersion,
   proveContractVersionMigration,
   readCommittedGolden,
   structuralDiffPaths,
@@ -40,6 +42,14 @@ interface HashMapEntry {
 const f3HashMap = JSON.parse(
   readFileSync(
     resolve(REPO_ROOT, 'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, HashMapEntry> };
+
+/** Карта головы цепи: 083 S1, бамп контракта 017.3 → 017.4. Её `active` и лежит на диске. */
+const s1HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json'),
     'utf8',
   ),
 ) as { goldens: Record<string, HashMapEntry> };
@@ -77,11 +87,16 @@ describe('017.2 → 017.3 golden migration proof', () => {
         expect(proof.activeHash).toBe(recorded.active);
         // Ф3 (переезд на `@trdlabs/engine`) перебазировала committed-голдены ещё раз, поэтому файл
         // на диске больше НЕ равен 017.3-хешу. Чтобы это доказательство не протухло, а осталось
-        // звеном цепи, оно сцепляется с Ф3-картой: `active` 017-миграции обязан быть `legacy`
-        // Ф3-миграции, а на диске лежит `active` Ф3. Разрыв цепи — падение здесь, а не тихий дрейф.
+        // звеном цепи, оно сцепляется со следующими звеньями. Разрыв в любом месте — падение
+        // здесь, а не тихий дрейф.
+        //
+        // 083 S1 добавил четвёртое звено, и файл на диске уехал ещё раз: теперь там 017.4-хеш.
+        // Цепь проверяется ЦЕЛИКОМ, а не только до ближайшего соседа: иначе её середина могла бы
+        // разъехаться незамеченной, пока концы сходятся.
         expect(recorded.active).toBe(f3HashMap.goldens[scenario.id].legacy);
+        expect(f3HashMap.goldens[scenario.id].active).toBe(s1HashMap.goldens[scenario.id].legacy);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          f3HashMap.goldens[scenario.id].active,
+          s1HashMap.goldens[scenario.id].active,
         );
       });
     });
@@ -101,5 +116,49 @@ describe('017.2 → 017.3 golden migration proof', () => {
     // ни о чём.
     expect(structuralDiffPaths({ a: { b: 1 } }, { a: { b: 2 } })).toEqual(['/a/b']);
     expect(structuralDiffPaths({ a: 1 }, { a: 1 })).toEqual([]);
+  });
+});
+
+// Проекция версии стала параметрической: цепь миграций растёт, и следующему звену нужна та же
+// операция для другой пары версий, а историческим пруфам — нормализация входа к своей эпохе.
+// Пара 017.2→017.3 остаётся обёрткой над ней, поэтому смысл существующих вызовов не меняется.
+describe('projectContractVersion', () => {
+  it('заменяет версию только там, где она равна `from`', () => {
+    const payload = {
+      baseline: { evidence: { contractVersion: '017.3', seed: 1 } },
+      variant: { evidence: { contractVersion: '017.2', seed: 2 } },
+    };
+    expect(projectContractVersion(payload, '017.3', '017.4')).toEqual({
+      baseline: { evidence: { contractVersion: '017.4', seed: 1 } },
+      variant: { evidence: { contractVersion: '017.2', seed: 2 } },
+    });
+  });
+
+  it('обходит вложенные evidence рекурсивно (у overlay-прогона их два)', () => {
+    const payload = { a: { b: { evidence: { contractVersion: '017.3' } } } };
+    expect(projectContractVersion(payload, '017.3', '017.4')).toEqual({
+      a: { b: { evidence: { contractVersion: '017.4' } } },
+    });
+  });
+
+  it('проходит сквозь массивы', () => {
+    const payload = { runs: [{ evidence: { contractVersion: '017.3' } }] };
+    expect(projectContractVersion(payload, '017.3', '017.4')).toEqual({
+      runs: [{ evidence: { contractVersion: '017.4' } }],
+    });
+  });
+
+  it('не тождество: сопоставление по `from` действительно проверяется', () => {
+    // Безусловная запись выровняла бы узел, стоящий на чужой версии, и стёрла бы сигнал о том,
+    // что payload собран из разных источников. Здесь такой узел обязан остаться нетронутым.
+    const payload = { evidence: { contractVersion: '017.9' } };
+    expect(projectContractVersion(payload, '017.3', '017.4')).toEqual(payload);
+  });
+
+  it('историческая обёртка выражена через неё и даёт прежний результат', () => {
+    const payload = { evidence: { contractVersion: ACTIVE_CONTRACT_VERSION } };
+    expect(projectToLegacyContractVersion(payload)).toEqual(
+      projectContractVersion(payload, ACTIVE_CONTRACT_VERSION, LEGACY_CONTRACT_VERSION),
+    );
   });
 });

@@ -106,9 +106,22 @@ for (const scenario of GOLDEN_SCENARIOS) {
   // Гейт extraction-equivalence на одном сценарии: всё, кроме двух полей идентичности, обязано
   // остаться байт-в-байт прежним.
   const recorded = priorMap.goldens?.[scenario.id];
-  const alreadyRebased = recorded !== undefined && committed === recorded.active;
-  // После перебазировки на диске лежит пост-Ф3 хеш, поэтому якорь эквивалентности — `legacy` карты.
-  const anchor = alreadyRebased ? recorded.legacy : committed;
+  // Якорь эквивалентности — пре-Ф3 голден. До первой перебазировки он лежит в файле; после неё
+  // файл принадлежит уже следующим звеньям цепи, и единственная запись пре-Ф3 значения — карта.
+  //
+  // Раньше признак «уже перебазировано» выводился сравнением файла с `active` ЭТОЙ карты. Это
+  // держалось ровно пока Ф3 была головой цепи. 083 S1 добавил четвёртое звено и перебазировал
+  // файл под 017.4 — теперь он не равен ни `active`, ни `legacy`, признак давал false, якорем
+  // становился 017.4-хеш, и скрипт сравнивал пре-Ф3 проекцию с полным payload'ом: величины разной
+  // природы, сойтись не могут ни при каких значениях. Читалось это как `DRIFTED` и толкало к
+  // `--reanchor`, который молча сдвинул бы исторический якорь — то есть ровно к той подделке, от
+  // которой гейт защищает.
+  //
+  // Карта — источник истины для своего якоря, и она не зависит от того, что с файлом сделали
+  // звенья ниже по цепи. `committed` остаётся запасным вариантом лишь для самого первого прогона,
+  // когда записи ещё нет.
+  const alreadyRebased = recorded !== undefined && committed !== recorded.legacy;
+  const anchor = recorded?.legacy ?? committed;
   const equivalent = proof.preF3Hash === anchor;
   const onlyShape = proof.diffPaths.every((p) =>
     /\/evidence\/(evidenceFormatVersion|engineVersion)$|\/trades\/\d+\/synthetic$/.test(p),

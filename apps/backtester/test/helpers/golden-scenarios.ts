@@ -26,6 +26,16 @@ export const LEGACY_CONTRACT_VERSION = '017.2';
 /** Версия, ратифицированная платформой (`verify_083_e1_contract_anchor`). */
 export const ACTIVE_CONTRACT_VERSION = '017.3';
 
+/**
+ * Версия, под которой голдены лежали на диске до 083 S1, — то есть голова цепи до этой миграции.
+ * Численно равна `ACTIVE_CONTRACT_VERSION`, но это РАЗНЫЕ утверждения, и сливать их в одну
+ * константу нельзя: та обозначает «куда пришло звено 017.2 → 017.3», эта — «откуда уходит звено
+ * 017.3 → 017.4». Следующая миграция сдвинет вторую и не тронет первую.
+ */
+export const PRE_S1_CONTRACT_VERSION = '017.3';
+/** Версия, введённая 083 S1 вместе с актор-контрактом. Её эмитит свежий прогон. */
+export const S1_CONTRACT_VERSION = '017.4';
+
 /** Один воспроизводимый сценарий, чей canonical payload заморожен как golden. */
 export interface GoldenScenario {
   /** Стабильный ключ в mapping-фикстуре. */
@@ -146,22 +156,50 @@ export function projectToPreF3Shape(payload: unknown): unknown {
 }
 
 /**
- * Клон payload'а с откатом ТОЛЬКО `evidence.contractVersion` к legacy-значению. Обход рекурсивный:
- * у overlay-прогона evidence лежит и в `baseline`, и в `variant`, и оба обязаны откатиться —
- * иначе доказательство было бы частичным.
+ * Клон payload'а, в котором `evidence.contractVersion === from` заменён на `to`. Обход рекурсивный:
+ * у overlay-прогона evidence лежит и в `baseline`, и в `variant`, и оба обязаны пройти — иначе
+ * доказательство было бы частичным.
+ *
+ * Параметрическая, а не зашитая на одну пару: цепь миграций растёт (017.2 → 017.3 → Ф3 → 017.4),
+ * и каждому звену нужна та же операция для своей пары, а историческим пруфам — нормализация входа
+ * к своей эпохе, иначе их якоря уезжают вместе с версией и перестают что-либо утверждать.
+ *
+ * Сопоставление по `from`, а не безусловная запись: узел, стоящий на другой версии, — это не то,
+ * что мигрируют, а сигнал, что payload собран из разных источников. Молча выровнять его значило бы
+ * стереть ровно тот сигнал, ради которого доказательство существует.
  */
-export function projectToLegacyContractVersion(payload: unknown): unknown {
-  if (Array.isArray(payload)) return payload.map(projectToLegacyContractVersion);
+export function projectContractVersion(payload: unknown, from: string, to: string): unknown {
+  if (Array.isArray(payload)) return payload.map((item) => projectContractVersion(item, from, to));
   if (!isRecord(payload)) return payload;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(payload)) {
-    if (k === 'evidence' && isRecord(v) && v.contractVersion === ACTIVE_CONTRACT_VERSION) {
-      out[k] = { ...v, contractVersion: LEGACY_CONTRACT_VERSION };
+    if (k === 'evidence' && isRecord(v) && v.contractVersion === from) {
+      out[k] = { ...v, contractVersion: to };
       continue;
     }
-    out[k] = projectToLegacyContractVersion(v);
+    out[k] = projectContractVersion(v, from, to);
   }
   return out;
+}
+
+/**
+ * Историческое звено 017.2 → 017.3. Сохранено обёрткой, чтобы смысл существующих вызовов и их
+ * читаемость не поменялись от того, что операция стала параметрической.
+ */
+export function projectToLegacyContractVersion(payload: unknown): unknown {
+  return projectContractVersion(payload, ACTIVE_CONTRACT_VERSION, LEGACY_CONTRACT_VERSION);
+}
+
+/**
+ * Нормализация свежего прогона к эпохе 017.3 — общий вход обоих ИСТОРИЧЕСКИХ доказательств.
+ *
+ * Их якоря заморожены тогда, когда в evidence стояла 017.3. Свежий прогон эмитит 017.4, и без
+ * нормализации каждый такой якорь уезжал бы вместе с версией при каждом следующем бампе — то есть
+ * звенья цепи протухали бы молча, продолжая «проходить». Идемпотентна: payload, уже стоящий на
+ * 017.3, не меняется (сопоставление идёт по `from`).
+ */
+export function atPreS1Contract(payload: unknown): unknown {
+  return projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
 }
 
 /** Все JSON-pointer пути, по которым два canonical payload'а различаются. */
@@ -198,13 +236,43 @@ export interface MigrationProof {
 export function proveContractVersionMigration(payload: unknown): MigrationProof & { id: string } {
   // Ф3: доказательство ведётся на ДО-Ф3 проекции evidence. Иначе бамп идентичности прогона
   // (решение (A)) утащил бы за собой исторический 017-пруф, и тот перестал бы что-либо утверждать.
-  const activePayload = projectToPreF3Shape(payload);
+  //
+  // 083 S1: и на нормализованной к 017.3 версии — по той же причине. Оба якоря этого звена
+  // (`legacy` = 017.2, `active` = 017.3) заморожены в эпохе, где в evidence стояла 017.3; свежий
+  // прогон эмитит 017.4, и без нормализации оба хеша уехали бы вместе с версией, а звено молча
+  // перестало бы что-либо доказывать. Нормализация стоит ЗДЕСЬ, а не у вызывающих: так её нельзя
+  // забыть ни в тесте, ни в дериваторе.
+  const activePayload = projectToPreF3Shape(atPreS1Contract(payload));
   const legacyPayload = projectToLegacyContractVersion(activePayload);
   return {
     id: '',
     activeHash: contentRef(activePayload),
     legacyHash: contentRef(legacyPayload),
     diffPaths: structuralDiffPaths(legacyPayload, activePayload),
+  };
+}
+
+/**
+ * Доказать, что сдвиг committed-голдена вызван РОВНО бампом 017.3 → 017.4 (083 S1), а не дрейфом
+ * движка. Голова цепи миграций.
+ *
+ * Отличие от двух звеньев выше принципиальное: те ведутся на ПРОЕКЦИЯХ (017-пруф — на до-Ф3 форме,
+ * Ф3-пруф — на ней же), потому что их якоря заморожены в тех эпохах. Это звено ведётся на ПОЛНОМ
+ * payload'е без проекций: на диске лежит хеш полного payload'а, и сравнивать надо величину той же
+ * природы. Сверять проекцию с файлом голдена нельзя — ровно эту ошибку уже ловили в
+ * `derive_goldens.mjs` (см. «ПОПРАВКА ПОСЛЕ Ф3» в его шапке): такая проверка не могла пройти ни
+ * при каких значениях.
+ *
+ * `legacyHash` обязан совпасть с тем, что лежит на диске СЕЙЧАС, то есть с `active` Ф3-карты.
+ * Совпал — значит весь payload, кроме одной строки версии, байт-в-байт прежний.
+ */
+export function proveS1ContractMigration(payload: unknown): MigrationProof {
+  const legacyPayload = projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
+  return {
+    id: '',
+    activeHash: contentRef(payload),
+    legacyHash: contentRef(legacyPayload),
+    diffPaths: structuralDiffPaths(legacyPayload, payload),
   };
 }
 
@@ -227,11 +295,17 @@ export interface ExtractionProof {
  * байт-в-байт прежний: извлечённое ядро эквивалентно донорскому на этих фикстурах.
  */
 export function proveEngineExtraction(payload: unknown): ExtractionProof {
-  const preF3Payload = projectToPreF3Shape(payload);
+  // 083 S1: оба якоря Ф3-звена (`legacy` = до-Ф3, `active` = после-Ф3) заморожены в эпохе 017.3.
+  // Свежий прогон эмитит 017.4, поэтому вход нормализуется — иначе сдвинулись бы ОБА, включая
+  // `legacy`, то есть исторический якорь донорского значения, и доказательство эквивалентности
+  // извлечения превратилось бы в самоссылку. Нормализация внутри функции по той же причине, что
+  // и у соседа: вызывающий не должен иметь возможности её пропустить.
+  const at0173 = atPreS1Contract(payload);
+  const preF3Payload = projectToPreF3Shape(at0173);
   return {
-    activeHash: contentRef(payload),
+    activeHash: contentRef(at0173),
     preF3Hash: contentRef(preF3Payload),
-    diffPaths: structuralDiffPaths(preF3Payload, payload),
+    diffPaths: structuralDiffPaths(preF3Payload, at0173),
   };
 }
 
