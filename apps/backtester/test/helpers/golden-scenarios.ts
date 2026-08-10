@@ -146,22 +146,38 @@ export function projectToPreF3Shape(payload: unknown): unknown {
 }
 
 /**
- * Клон payload'а с откатом ТОЛЬКО `evidence.contractVersion` к legacy-значению. Обход рекурсивный:
- * у overlay-прогона evidence лежит и в `baseline`, и в `variant`, и оба обязаны откатиться —
- * иначе доказательство было бы частичным.
+ * Клон payload'а, в котором `evidence.contractVersion === from` заменён на `to`. Обход рекурсивный:
+ * у overlay-прогона evidence лежит и в `baseline`, и в `variant`, и оба обязаны пройти — иначе
+ * доказательство было бы частичным.
+ *
+ * Параметрическая, а не зашитая на одну пару: цепь миграций растёт (017.2 → 017.3 → Ф3 → 017.4),
+ * и каждому звену нужна та же операция для своей пары, а историческим пруфам — нормализация входа
+ * к своей эпохе, иначе их якоря уезжают вместе с версией и перестают что-либо утверждать.
+ *
+ * Сопоставление по `from`, а не безусловная запись: узел, стоящий на другой версии, — это не то,
+ * что мигрируют, а сигнал, что payload собран из разных источников. Молча выровнять его значило бы
+ * стереть ровно тот сигнал, ради которого доказательство существует.
  */
-export function projectToLegacyContractVersion(payload: unknown): unknown {
-  if (Array.isArray(payload)) return payload.map(projectToLegacyContractVersion);
+export function projectContractVersion(payload: unknown, from: string, to: string): unknown {
+  if (Array.isArray(payload)) return payload.map((item) => projectContractVersion(item, from, to));
   if (!isRecord(payload)) return payload;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(payload)) {
-    if (k === 'evidence' && isRecord(v) && v.contractVersion === ACTIVE_CONTRACT_VERSION) {
-      out[k] = { ...v, contractVersion: LEGACY_CONTRACT_VERSION };
+    if (k === 'evidence' && isRecord(v) && v.contractVersion === from) {
+      out[k] = { ...v, contractVersion: to };
       continue;
     }
-    out[k] = projectToLegacyContractVersion(v);
+    out[k] = projectContractVersion(v, from, to);
   }
   return out;
+}
+
+/**
+ * Историческое звено 017.2 → 017.3. Сохранено обёрткой, чтобы смысл существующих вызовов и их
+ * читаемость не поменялись от того, что операция стала параметрической.
+ */
+export function projectToLegacyContractVersion(payload: unknown): unknown {
+  return projectContractVersion(payload, ACTIVE_CONTRACT_VERSION, LEGACY_CONTRACT_VERSION);
 }
 
 /** Все JSON-pointer пути, по которым два canonical payload'а различаются. */
