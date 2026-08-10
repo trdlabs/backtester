@@ -26,6 +26,16 @@ export const LEGACY_CONTRACT_VERSION = '017.2';
 /** Версия, ратифицированная платформой (`verify_083_e1_contract_anchor`). */
 export const ACTIVE_CONTRACT_VERSION = '017.3';
 
+/**
+ * Версия, под которой голдены лежали на диске до 083 S1, — то есть голова цепи до этой миграции.
+ * Численно равна `ACTIVE_CONTRACT_VERSION`, но это РАЗНЫЕ утверждения, и сливать их в одну
+ * константу нельзя: та обозначает «куда пришло звено 017.2 → 017.3», эта — «откуда уходит звено
+ * 017.3 → 017.4». Следующая миграция сдвинет вторую и не тронет первую.
+ */
+export const PRE_S1_CONTRACT_VERSION = '017.3';
+/** Версия, введённая 083 S1 вместе с актор-контрактом. Её эмитит свежий прогон. */
+export const S1_CONTRACT_VERSION = '017.4';
+
 /** Один воспроизводимый сценарий, чей canonical payload заморожен как golden. */
 export interface GoldenScenario {
   /** Стабильный ключ в mapping-фикстуре. */
@@ -221,6 +231,30 @@ export function proveContractVersionMigration(payload: unknown): MigrationProof 
     activeHash: contentRef(activePayload),
     legacyHash: contentRef(legacyPayload),
     diffPaths: structuralDiffPaths(legacyPayload, activePayload),
+  };
+}
+
+/**
+ * Доказать, что сдвиг committed-голдена вызван РОВНО бампом 017.3 → 017.4 (083 S1), а не дрейфом
+ * движка. Голова цепи миграций.
+ *
+ * Отличие от двух звеньев выше принципиальное: те ведутся на ПРОЕКЦИЯХ (017-пруф — на до-Ф3 форме,
+ * Ф3-пруф — на ней же), потому что их якоря заморожены в тех эпохах. Это звено ведётся на ПОЛНОМ
+ * payload'е без проекций: на диске лежит хеш полного payload'а, и сравнивать надо величину той же
+ * природы. Сверять проекцию с файлом голдена нельзя — ровно эту ошибку уже ловили в
+ * `derive_goldens.mjs` (см. «ПОПРАВКА ПОСЛЕ Ф3» в его шапке): такая проверка не могла пройти ни
+ * при каких значениях.
+ *
+ * `legacyHash` обязан совпасть с тем, что лежит на диске СЕЙЧАС, то есть с `active` Ф3-карты.
+ * Совпал — значит весь payload, кроме одной строки версии, байт-в-байт прежний.
+ */
+export function proveS1ContractMigration(payload: unknown): MigrationProof {
+  const legacyPayload = projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
+  return {
+    id: '',
+    activeHash: contentRef(payload),
+    legacyHash: contentRef(legacyPayload),
+    diffPaths: structuralDiffPaths(legacyPayload, payload),
   };
 }
 
