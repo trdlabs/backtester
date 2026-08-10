@@ -36,6 +36,7 @@ import {
   proveEngineExtraction,
   readCommittedGolden,
 } from '../test/helpers/golden-scenarios.js';
+import { assertOwnsGoldenFiles } from '../test/helpers/migration-chain.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const MAP_PATH = resolve(REPO_ROOT, 'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json');
@@ -190,6 +191,11 @@ if (!WRITE) {
   console.log(JSON.stringify(mapping, null, 2));
   process.exit(0);
 }
+
+// Файлы голденов общие на всю цепь, поэтому владеет ими только её голова. Проверка стоит ДО
+// записи карты: отказ должен быть полным, а не «карту переписал, файлы нет» — половинчатая запись
+// оставила бы карту и диск рассогласованными, и следующий прогон объявил бы дрейф там, где его нет.
+assertOwnsGoldenFiles('f3-engine-migration');
 
 mkdirSync(dirname(MAP_PATH), { recursive: true });
 writeFileSync(MAP_PATH, `${JSON.stringify(mapping, null, 2)}\n`, 'utf8');

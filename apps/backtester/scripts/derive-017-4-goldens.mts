@@ -35,6 +35,7 @@ import {
   proveS1ContractMigration,
   readCommittedGolden,
 } from '../test/helpers/golden-scenarios.js';
+import { assertOwnsGoldenFiles } from '../test/helpers/migration-chain.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const MAP_PATH = resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json');
@@ -158,6 +159,12 @@ if (!WRITE) {
   console.log(JSON.stringify(mapping, null, 2));
   process.exit(0);
 }
+
+// Сегодня это звено — голова, и проверка проходит. Она стоит здесь не «на всякий случай»: когда
+// цепь вырастет ещё раз, достаточно будет дописать строку в MIGRATION_CHAIN, и этот скрипт начнёт
+// отказываться от записи файлов САМ, без правки своего кода. Ровно того механизма не хватало
+// derive-f3-goldens, и он молча откатывал голдены на эпоху назад.
+assertOwnsGoldenFiles('017-4-migration');
 
 mkdirSync(dirname(MAP_PATH), { recursive: true });
 writeFileSync(MAP_PATH, `${JSON.stringify(mapping, null, 2)}\n`, 'utf8');
