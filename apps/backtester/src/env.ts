@@ -142,6 +142,7 @@ export const ENV_VARS: readonly EnvVarSpec[] = [
   ),
   flagVar('BACKTESTER_BAR_MAJOR', '17d: bar-major исполнение — один бар по всем символам до продвижения (dark launch). Взаимоисключим с BACKTESTER_BAR_BATCHING (fail-fast).'),
   flagVar('BACKTESTER_BAR_MAJOR_BATCH', 'Slice B: 3-фазный батч-транспорт per-bar IPC bar-major; чистый суб-режим BACKTESTER_BAR_MAJOR (инертен без него).'),
+  flagVar('BACKTESTER_EVENT_DRIVEN_ENABLED', '083 S3: РАЗРЕШЕНИЕ раскатки lifecycle: event_driven, а не выбор семантики (её выбирает только manifest.lifecycle). Выключен ⇒ event_driven-манифест ОТВЕРГАЕТСЯ кодом unsupported_lifecycle, а не исполняется по legacy-пути. Для single_position инертен, поэтому НЕ взаимоисключим с другими флагами на уровне конфига.'),
   envVar('BACKTESTER_BATCH_BARS', 'int', '64', '17b: максимум баров на hookBatch (клампится к >= 2; мусор → 64).'),
   envVar('BACKTESTER_BUNDLES_DIR', 'string', null, 'Корень content-addressed реестра модулей-бандлов; дефолт вычисляется: apps/backtester/.data/bundles.'),
   flagVar('BACKTESTER_COALESCE_ENABLED', 'In-flight коалесцирование запросов (leader/follower); эффективен только вместе с BACKTESTER_DEDUP_ENABLED.'),

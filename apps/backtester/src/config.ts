@@ -167,6 +167,16 @@ export interface AppConfig {
   readonly barMajor: boolean;
   /** Slice B: collapse bar-major per-bar IPC into 3-phase batched transport. Pure sub-mode of barMajor — inert unless barMajor is also on. Default off (dark launch). */
   readonly barMajorBatch: boolean;
+  /**
+   * 083 S3: РАЗРЕШЕНИЕ раскатки `lifecycle: 'event_driven'`, а не выбор семантики — её выбирает
+   * только `manifest.lifecycle`. Default off.
+   *
+   * Выключен ⇒ `event_driven`-манифест отвергается кодом `unsupported_lifecycle` БЕЗ legacy
+   * fallback. Для `single_position` инертен — поэтому сочетание «включён + legacy-стратегия»
+   * законно, и взаимоисключений на уровне `loadConfig` у него нет: несовместимость проверяется
+   * ПОСЛЕ того, как известен lifecycle.
+   */
+  readonly eventDrivenEnabled: boolean;
   /** 17b: max bars per hookBatch (clamped >= 2). */
   readonly batchBars: number;
   /** 17c: run all symbols of a bundle in ONE container (N per-symbol instances). Default off (dark launch). */
@@ -487,6 +497,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = processEnv()): AppConfig {
     contextFreeze: env.BACKTESTER_CONTEXT_FREEZE_DISABLED !== 'true',
     barMajor: env.BACKTESTER_BAR_MAJOR === 'true',
     barMajorBatch: env.BACKTESTER_BAR_MAJOR_BATCH === 'true',
+    // Взаимоисключения с BAR_BATCHING/BAR_MAJOR_BATCH здесь НЕТ намеренно: этот флаг разрешает
+    // раскатку, а несовместимость касается только event_driven-стратегий. Хост с включённым флагом
+    // и legacy-стратегией — законная конфигурация, и падать на старте он не должен.
+    eventDrivenEnabled: env.BACKTESTER_EVENT_DRIVEN_ENABLED === 'true',
     // `|| 64` OUTSIDE the max: garbage → NaN → 64, while '0'/'1' clamp to the floor 2 (a falsy-zero
     // inside would silently resolve '0' to 64 — the master flag, not batchBars, is the off switch).
     batchBars: Math.max(2, Math.floor(Number(env.BACKTESTER_BATCH_BARS ?? 64))) || 64,

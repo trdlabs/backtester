@@ -51,6 +51,8 @@ import { createSeededRng } from '../determinism/rng.js';
 // changes»). `ENGINE_VERSION` is the shared core's own version, not a host constant.
 import { ENGINE_VERSION } from '@trdlabs/engine';
 import { mergeAccumulators } from './bar-major-aggregate.js';
+import { admitActorRun } from './actor/admission.js';
+import type { ActorLifecycleExecutor } from './actor/execution-handle.js';
 
 /** Зависимости прогона (contracts/runner-api.md §RunDeps; 019 additive — всё опционально). */
 export interface RunDeps {
@@ -71,6 +73,15 @@ export interface RunDeps {
   readonly barMajor?: boolean;
   /** Slice B: collapse the bar-major inner loop into a 3-phase batched form (one executeStrategyHookBarMajor call per union-ts instead of per-symbol onBarClose calls). Absent/false ⇒ Slice A interleave (default, byte-identical). Only meaningful when barMajor is on. */
   readonly barMajorBatch?: boolean;
+  /**
+   * 083 S3 (`BACKTESTER_EVENT_DRIVEN_ENABLED`): РАЗРЕШЕНИЕ РАСКАТКИ event-driven, а не выбор
+   * семантики. Семантику выбирает только `manifest.lifecycle`.
+   *
+   * Absent/false ⇒ `event_driven`-манифест ОТВЕРГАЕТСЯ кодом `unsupported_lifecycle`, а не
+   * исполняется по legacy-пути. Для `single_position` флаг не значит ничего — поэтому сочетание
+   * «флаг включён + legacy-стратегия» законно и в `loadConfig` не запрещается.
+   */
+  readonly eventDrivenEnabled?: boolean;
   /**
    * Морозить ли контекст на каждом баре (`BACKTESTER_CONTEXT_FREEZE`). Absent ⇒ `true` —
    * прежнее поведение. `false` снимает 82% стоимости постройки контекста и НЕ меняет ни одного
@@ -1148,6 +1159,29 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
   }
 
   const router = deps.router ?? createTrustedRouter(deps.executor);
+
+  // 083 S3 — ДОПУСК НА ACTOR-ПУТЬ, до создания env, до `initStrategy`, до первого вызова стратегии.
+  //
+  // Router построен выше только затем, чтобы спросить способность ВЫБРАННОГО исполнителя: она часть
+  // условия допуска, и узнать о её отсутствии надо здесь, а не на первом событии посреди прогона.
+  // Ни одна ветка ниже не порождает сессий и не трогает модуль.
+  //
+  // Отказ здесь НЕ имеет альтернативы в виде legacy-пути: `event_driven`, который нельзя исполнить,
+  // — это отказ. Подмена объявленной семантики молча дала бы завершившийся прогон с
+  // правдоподобными числами, и никто бы не узнал, что исполнялось не то.
+  {
+    const refusal = admitActorRun({
+      strategy,
+      eventDrivenEnabled: deps.eventDrivenEnabled === true,
+      barBatching: deps.barBatching !== undefined,
+      barMajorBatch: deps.barMajorBatch === true,
+      executor: router.forStrategy(strategy) as Partial<ActorLifecycleExecutor>,
+    });
+    if (refusal !== null) {
+      return rejected(refusal.code, refusal.message, refusal.path);
+    }
+  }
+
   const composer = new OverlayComposer();
   const engine: SimEngine = {
     router,
