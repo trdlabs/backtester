@@ -15,10 +15,36 @@
 // снаружи и не читается: у раннера нет способа ни собрать дескриптор самому, ни заглянуть внутрь.
 // Комментарий «пожалуйста, не трогайте поля» держался бы ровно до первого, кому что-то понадобится.
 
-import type { ActorCommand, ActorContext, ActorInputEvent } from '@trdlabs/sdk/research-contract';
-import type { ResolvedStrategy } from '../artifacts.js';
+import type {
+  ActorCommand,
+  ActorContext,
+  ActorInit,
+  ActorInputEvent,
+  ModuleManifest,
+} from '@trdlabs/sdk/research-contract';
 
 declare const ACTOR_EXECUTION_HANDLE: unique symbol;
+
+/**
+ * Источник актора для исполнителя — СВОЙ тип, а не legacy `ResolvedStrategy`.
+ *
+ * `ResolvedStrategy` несёт `module: StrategyModule` — интерфейс формы `single_position` с
+ * `onBarClose`/`onPositionBar`. Передавать его в actor-seam значило бы объявить, что исполнитель
+ * получает legacy-модуль и сам догадывается, что тот на самом деле `EventDrivenModule`. Догадка
+ * поселилась бы в каждой реализации отдельно и разошлась бы между trusted и sandbox.
+ *
+ * Здесь ровно то, что нужно для создания актора: манифест (по нему исполнитель знает форму и
+ * требования) и способ добраться до кода — `module` для доверенного пути, `bundleDir` для
+ * песочницы. Ни одного legacy-хука.
+ */
+export interface ActorSource {
+  readonly manifest: ModuleManifest;
+  /** Доверенный путь: `EventDrivenModule` уже в этом процессе. Типизирован как `unknown` — форму
+   *  проверяет исполнитель, а не раннер: раннер по контракту в модуль не заглядывает. */
+  readonly module?: unknown;
+  /** Путь песочницы: каталог бандла, из которого исполнитель поднимет модуль за своей границей. */
+  readonly bundleDir?: string;
+}
 
 /**
  * Дескриптор созданного актора. Значение принадлежит ИСПОЛНИТЕЛЮ: у trusted это может быть сам
@@ -40,8 +66,16 @@ export interface ActorExecutionHandle {
  * другой — ровно то, что запрещает `unsupported_lifecycle`.
  */
 export interface ActorLifecycleExecutor {
-  /** Создать актора ВНУТРИ своей execution boundary и вернуть непрозрачный дескриптор. */
-  createActor(strategy: ResolvedStrategy, ctx: ActorContext): Promise<ActorExecutionHandle>;
+  /**
+   * Создать актора ВНУТРИ своей execution boundary и вернуть непрозрачный дескриптор.
+   *
+   * Принимает `ActorInit`, а не `ActorContext`, и это не вкусовщина. `ActorInit` — вход СОЗДАНИЯ:
+   * params, seed, symbol, подписки, начальное состояние, бюджеты. `ActorContext` — вход ДОСТАВКИ
+   * события: он несёт то, что верно на конкретный момент времени. Передать контекст в создание
+   * значило бы дать актору момент времени, которого при создании ещё нет, — и тем самым завести
+   * вопрос «какой именно момент», у которого нет правильного ответа.
+   */
+  createActor(source: ActorSource, init: ActorInit): Promise<ActorExecutionHandle>;
   /** Доставить событие актору; вернуть команды. Порядок команд — причинный, как вернул автор. */
   executeActorEvent(
     handle: ActorExecutionHandle,

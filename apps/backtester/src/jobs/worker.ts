@@ -157,6 +157,15 @@ export interface WorkerDeps extends CompletionDeps {
    * молча игнорировалась. Замер: 68.8 → 56.9 мкс/бар (−17%) при совпадающем `result_hash`.
    */
   contextFreeze?: boolean;
+  /**
+   * 083 S3 (`BACKTESTER_EVENT_DRIVEN_ENABLED`): разрешение раскатки `lifecycle: 'event_driven'`.
+   * Отсутствие ⇒ `false`.
+   *
+   * Заведено сразу вместе с проводкой до раннера — тот же дефект, что был у `contextFreeze` выше,
+   * повторять во второй раз незачем: флаг, живущий в конфиге и не доезжающий до прогона, читается
+   * как работающий и не работает.
+   */
+  eventDrivenEnabled?: boolean;
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap, no scaled policy (byte-identical). */
   universe?: { enabled: boolean; maxN: number; memBaseMb: number; memPerSymbolMb: number };
   /** E2: per-hypothesis-family trial ledger. Absent ⇒ trial ledger + DSR OFF (kill-switch). */
@@ -1031,6 +1040,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
         ...(deps.universe ? { universe: deps.universe } : {}),
         ...(deps.contextFreeze !== undefined ? { contextFreeze: deps.contextFreeze } : {}),
+        ...(deps.eventDrivenEnabled !== undefined ? { eventDrivenEnabled: deps.eventDrivenEnabled } : {}),
       };
       let outcome: RunOutcome;
       if (deps.barLoopThread === true) {

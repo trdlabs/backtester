@@ -2,8 +2,8 @@
 //
 // ГЛАВНОЕ УТВЕРЖДЕНИЕ НАБОРА, и оно одно: НИ ОДИН набор условий не проваливается в legacy. Включая
 // тот, где всё совместимо — флаг включён, режимы не мешают, у исполнителя есть полный lifecycle
-// актора, `marketData` не объявлен. Даже там отказ, потому что проекция ledger → артефакты ещё не
-// подключена, и успешный прогон вернул бы пустые артефакты.
+// актора, `marketData` объявлен как того требует контракт. Даже там отказ, потому что проекция
+// ledger → артефакты ещё не подключена, и успешный прогон вернул бы пустые артефакты.
 //
 // Пустой успех ХУЖЕ отказа: у отказа есть код, причина и адресат, у пустого успеха нет ничего, а
 // обнаруживается он у того, кто сравнивает результаты двух lifecycle и видит правдоподобные числа.
@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { admitActorRun, isEventDriven } from '../src/engine/actor/admission.js';
+import { admitActorExecutor, admitActorRun, isEventDriven } from '../src/engine/actor/admission.js';
 import { supportsActorLifecycle } from '../src/engine/actor/execution-handle.js';
 import type { ActorLifecycleExecutor } from '../src/engine/actor/execution-handle.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
@@ -31,6 +31,16 @@ const strategyWith = (over: Record<string, unknown> = {}): ResolvedStrategy =>
     },
     module: {},
   }) as unknown as ResolvedStrategy;
+
+/**
+ * ПОЛНЫЙ допуск — обе части подряд, в том же порядке, что и раннер.
+ *
+ * Допуск разделён надвое не по вкусу: конфигурационная часть исполняется ДО построения router'а
+ * (иначе созданный router утекал бы на пути отказа, минуя `finally`), исполнительская — внутри
+ * `try`. Тесты обязаны ходить тем же порядком, иначе они проверяют не то, что исполняется.
+ */
+const admit = (input: ReturnType<typeof allCompatible>) =>
+  admitActorRun(input) ?? admitActorExecutor(input.strategy, input.executor);
 
 /** Исполнитель с ПОЛНЫМ lifecycle актора — способность есть. */
 const capableExecutor = (): Partial<ActorLifecycleExecutor> => ({
@@ -59,20 +69,20 @@ const allCompatible = () => ({
 describe('S3: семантику выбирает только manifest.lifecycle', () => {
   it('single_position не трогается допуском вовсе', () => {
     // Legacy-путь обязан остаться нетронутым: `null` означает «это не наша забота».
-    expect(admitActorRun({ ...allCompatible(), strategy: strategyWith({ lifecycle: 'single_position' }) })).toBeNull();
+    expect(admit({ ...allCompatible(), strategy: strategyWith({ lifecycle: 'single_position' }) })).toBeNull();
   });
 
   it('отсутствующий lifecycle — тоже legacy (манифесты 017.1–017.2)', () => {
     const legacy = strategyWith();
     delete (legacy.manifest as unknown as Record<string, unknown>).lifecycle;
-    expect(admitActorRun({ ...allCompatible(), strategy: legacy })).toBeNull();
+    expect(admit({ ...allCompatible(), strategy: legacy })).toBeNull();
   });
 
   it('флаг НЕ выбирает семантику: с выключенным флагом legacy по-прежнему проходит', () => {
     // Если бы флаг был осью семантики, его выключение меняло бы поведение legacy-стратегии. Не
     // меняет — и это ровно то, ради чего оси разведены.
     expect(
-      admitActorRun({
+      admit({
         ...allCompatible(),
         eventDrivenEnabled: false,
         strategy: strategyWith({ lifecycle: 'single_position' }),
@@ -100,7 +110,7 @@ describe('S3: НИ ОДИН набор условий не проваливае�
     },
     { name: 'ВСЁ совместимо', input: allCompatible() },
     {
-      name: 'marketData пуст (контрактом не бывает, но допуск не обязан на это полагаться)',
+      name: 'marketData пуст — допуск его НЕ читает, отказ тот же',
       input: { ...allCompatible(), strategy: strategyWith({ marketData: [] }) },
     },
     {
@@ -120,7 +130,7 @@ describe('S3: НИ ОДИН набор условий не проваливае�
   ];
 
   it.each(cases)('$name → unsupported_lifecycle, а не legacy', ({ input }) => {
-    const refusal = admitActorRun(input);
+    const refusal = admit(input);
     expect(refusal).not.toBeNull();
     expect(refusal!.code).toBe('unsupported_lifecycle');
   });
@@ -128,12 +138,12 @@ describe('S3: НИ ОДИН набор условий не проваливае�
   it.each(cases)('$name → path пустой', ({ input }) => {
     // Нарушающего узла нет: запрос корректен, манифест безупречен, не совпадает окружение.
     // `/moduleRef` обвинил бы валидный узел.
-    expect(admitActorRun(input)!.path).toBe('');
+    expect(admit(input)!.path).toBe('');
   });
 
   it.each(cases)('$name → причина названа, а не «отказано»', ({ input }) => {
     // Отказ без причины отправляет оператора выяснять заново то, что допуск уже знал.
-    expect(admitActorRun(input)!.message.length).toBeGreaterThan(60);
+    expect(admit(input)!.message.length).toBeGreaterThan(60);
   });
 });
 
@@ -141,14 +151,14 @@ describe('S3: ПОЛНОСТЬЮ совместимый набор всё рав
   // Отдельно от перебора, потому что это утверждение среза, а не одна из его строк: пока нет
   // проекции ledger → артефакты, успешного actor-прогона не существует.
   it('отказ называет именно отсутствие проекции, а не что-то другое', () => {
-    const refusal = admitActorRun(allCompatible());
+    const refusal = admit(allCompatible());
     expect(refusal!.message).toMatch(/проекц/);
   });
 
   it('и это ЕДИНСТВЕННОЕ, что мешает: остальные причины к нему не относятся', () => {
     // Проверка проверки. Если бы совместимый набор отвергался, скажем, по способности исполнителя,
     // снятие последнего отказа не открыло бы путь — и мы бы этого не заметили.
-    const refusal = admitActorRun(allCompatible());
+    const refusal = admit(allCompatible());
     expect(refusal!.message).not.toMatch(/BACKTESTER_EVENT_DRIVEN_ENABLED|BAR_BATCHING|BAR_MAJOR_BATCH/);
   });
 
@@ -157,7 +167,7 @@ describe('S3: ПОЛНОСТЬЮ совместимый набор всё рав
     // непустой marketData, и модульная валидация идёт ДО допуска — значит проверка marketData,
     // стоящая выше, срабатывала бы ВСЕГДА, а отказ по проекции не срабатывал бы никогда. Оператор
     // получал бы «объявлен marketData» и шёл править манифест, которого нечем исполнить вовсе.
-    const withMany = admitActorRun({
+    const withMany = admit({
       ...allCompatible(),
       strategy: strategyWith({ marketData: [{ id: 'oi' }, { id: 'liq' }, { id: 'funding' }] }),
     });
@@ -200,7 +210,7 @@ describe('S3: допуск не трогает модуль', () => {
         calls.push('disposeActor');
       },
     };
-    admitActorRun({ ...allCompatible(), executor: spy });
+    admit({ ...allCompatible(), executor: spy });
     expect(calls).toEqual([]);
   });
 });

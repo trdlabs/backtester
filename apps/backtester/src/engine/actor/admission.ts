@@ -38,8 +38,6 @@ export interface ActorAdmissionInput {
   readonly barBatching: boolean;
   /** `BACKTESTER_BAR_MAJOR_BATCH`: k СИМВОЛОВ одной метки, то есть k акторов. */
   readonly barMajorBatch: boolean;
-  /** Исполнитель, которым пошёл бы прогон. Способность проверяется ДО создания env и init. */
-  readonly executor: Partial<ActorLifecycleExecutor>;
 }
 
 /** Объявляет ли манифест event-driven форму. Единственный источник выбора семантики. */
@@ -53,19 +51,27 @@ const refuse = (message: string): ActorAdmissionRefusal => ({
   message,
 });
 
+/** Ярлык стратегии для сообщений об отказе. */
+const label = (strategy: ResolvedStrategy): string =>
+  `${strategy.manifest.id}@${strategy.manifest.version}`;
+
 /**
- * Решить, допускается ли прогон на actor-путь.
+ * ЧИСТАЯ часть допуска: всё, для чего не нужен исполнитель.
  *
- * Возвращает `null` ТОЛЬКО для не-event-driven стратегий (их ведёт legacy-путь без изменений).
- * Для `event_driven` в этом срезе всегда возвращается отказ — см. последний пункт.
+ * Вызывается ДО построения router'а — намеренно. Первая редакция строила router только затем, чтобы
+ * спросить у него способность, и на пути отказа выходила из функции `return`ом, минуя
+ * `finally { router.closeAll() }`. Созданный router оставался незакрытым: на trusted это безвредно,
+ * на sandbox-роутере — оставленные сессии на каждый отклонённый прогон. Дефект внесён мной и найден
+ * ревью владельца.
  *
- * Порядок проверок — от самой конкретной причины к самой общей: оператор должен получить ту,
- * которую может исправить, а не первую попавшуюся.
+ * Возвращает `null` для не-event-driven стратегий (их ведёт legacy-путь без изменений) и для
+ * `event_driven`, прошедшего конфигурационные условия — тогда решение продолжается
+ * `admitActorExecutor` уже ВНУТРИ try/finally.
  */
 export function admitActorRun(input: ActorAdmissionInput): ActorAdmissionRefusal | null {
   if (!isEventDriven(input.strategy)) return null; // legacy single_position — не наша забота
 
-  const id = `${input.strategy.manifest.id}@${input.strategy.manifest.version}`;
+  const id = label(input.strategy);
 
   if (!input.eventDrivenEnabled) {
     return refuse(
@@ -93,7 +99,25 @@ export function admitActorRun(input: ActorAdmissionInput): ActorAdmissionRefusal
     );
   }
 
-  if (!supportsActorLifecycle(input.executor)) {
+  return null; // конфигурация допускает — дальше решает `admitActorExecutor`, уже под finally
+}
+
+/**
+ * ЧАСТЬ ДОПУСКА, ТРЕБУЮЩАЯ ИСПОЛНИТЕЛЯ. Вызывается ВНУТРИ `try`, чтобы созданный router закрылся
+ * `finally` при любом исходе.
+ *
+ * Порядок внутри сохранён: способность исполнителя конкретнее и исправимее, чем отсутствие
+ * проекции, поэтому проверяется первой.
+ */
+export function admitActorExecutor(
+  strategy: ResolvedStrategy,
+  executor: Partial<ActorLifecycleExecutor>,
+): ActorAdmissionRefusal | null {
+  if (!isEventDriven(strategy)) return null;
+
+  const id = label(strategy);
+
+  if (!supportsActorLifecycle(executor)) {
     return refuse(
       `исполнитель, выбранный для ${id}, не умеет lifecycle актора (create → execute → dispose). ` +
         'Деградация в onBarClose НЕ применяется: это другая семантика.',

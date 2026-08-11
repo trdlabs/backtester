@@ -51,7 +51,7 @@ import { createSeededRng } from '../determinism/rng.js';
 // changes»). `ENGINE_VERSION` is the shared core's own version, not a host constant.
 import { ENGINE_VERSION } from '@trdlabs/engine';
 import { mergeAccumulators } from './bar-major-aggregate.js';
-import { admitActorRun } from './actor/admission.js';
+import { admitActorExecutor, admitActorRun } from './actor/admission.js';
 import type { ActorLifecycleExecutor } from './actor/execution-handle.js';
 
 /** Зависимости прогона (contracts/runner-api.md §RunDeps; 019 additive — всё опционально). */
@@ -1158,30 +1158,29 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
     );
   }
 
-  const router = deps.router ?? createTrustedRouter(deps.executor);
-
-  // 083 S3 — ДОПУСК НА ACTOR-ПУТЬ, до создания env, до `initStrategy`, до первого вызова стратегии.
+  // 083 S3 — ДОПУСК НА ACTOR-ПУТЬ, часть 1: всё, для чего не нужен исполнитель.
   //
-  // Router построен выше только затем, чтобы спросить способность ВЫБРАННОГО исполнителя: она часть
-  // условия допуска, и узнать о её отсутствии надо здесь, а не на первом событии посреди прогона.
-  // Ни одна ветка ниже не порождает сессий и не трогает модуль.
+  // Стоит ДО построения router'а намеренно. Первая редакция строила router и только потом
+  // отказывала `return`ом — минуя `finally { router.closeAll() }` ниже. Созданный router оставался
+  // незакрытым: на trusted безвредно, на sandbox-роутере — оставленная сессия на каждый отклонённый
+  // прогон. Дешёвые отказы обязаны случаться там, где закрывать ещё нечего.
   //
-  // Отказ здесь НЕ имеет альтернативы в виде legacy-пути: `event_driven`, который нельзя исполнить,
-  // — это отказ. Подмена объявленной семантики молча дала бы завершившийся прогон с
-  // правдоподобными числами, и никто бы не узнал, что исполнялось не то.
+  // Отказ НЕ имеет альтернативы в виде legacy-пути: `event_driven`, который нельзя исполнить, — это
+  // отказ. Подмена объявленной семантики молча дала бы завершившийся прогон с правдоподобными
+  // числами, и никто бы не узнал, что исполнялось не то.
   {
     const refusal = admitActorRun({
       strategy,
       eventDrivenEnabled: deps.eventDrivenEnabled === true,
       barBatching: deps.barBatching !== undefined,
       barMajorBatch: deps.barMajorBatch === true,
-      executor: router.forStrategy(strategy) as Partial<ActorLifecycleExecutor>,
     });
     if (refusal !== null) {
       return rejected(refusal.code, refusal.message, refusal.path);
     }
   }
 
+  const router = deps.router ?? createTrustedRouter(deps.executor);
   const composer = new OverlayComposer();
   const engine: SimEngine = {
     router,
@@ -1191,6 +1190,20 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
   };
 
   try {
+    // 083 S3 — ДОПУСК, часть 2: то, для чего нужен исполнитель. ВНУТРИ `try`, поэтому созданный
+    // router закрывается `finally` и на этом отказе тоже. Спрашивается способность ВЫБРАННОГО
+    // исполнителя — узнать о её отсутствии надо здесь, а не на первом событии посреди прогона.
+    // Ни одна ветка не порождает сессий и не трогает модуль: `forStrategy` только выбирает.
+    {
+      const refusal = admitActorExecutor(
+        strategy,
+        router.forStrategy(strategy) as Partial<ActorLifecycleExecutor>,
+      );
+      if (refusal !== null) {
+        return rejected(refusal.code, refusal.message, refusal.path);
+      }
+    }
+
     const baseline = await simulateTarget(
       { kind: 'baseline', runId: request.runId, strategy, overlays: [] },
       request,
