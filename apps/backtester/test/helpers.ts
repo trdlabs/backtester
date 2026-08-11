@@ -59,6 +59,9 @@ export function testConfig(over: Partial<AppConfig> = {}): AppConfig {
     barMajor: false,
     contextFreeze: true,
     barMajorBatch: false,
+    // 083 S3: dark-launch по умолчанию, как и остальные флаги здесь. Выключенный он означает, что
+    // event_driven-манифест отвергается, а не исполняется по legacy-пути.
+    eventDrivenEnabled: false,
     trialLedger: false,
     trialEmpiricalMinN: 5,
     holdout: false,

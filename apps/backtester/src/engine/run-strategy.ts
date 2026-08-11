@@ -27,6 +27,15 @@ export interface StrategyRunDeps {
    * совпадающем `result_hash`.
    */
   readonly contextFreeze?: boolean;
+  /**
+   * 083 S3: разрешение раскатки `lifecycle: 'event_driven'`. Absent ⇒ `false`.
+   *
+   * Поле заведено здесь ПО ТОЙ ЖЕ причине, что и `contextFreeze` выше, и это не совпадение: без
+   * него флаг считался бы в `config.ts` и терялся ровно тут. Прод просил бы раскатку, а
+   * `event_driven`-манифест молча отвергался бы как при выключенном флаге — расхождение, которое
+   * ни один гейт на значения не ловит, потому что значения-то верны.
+   */
+  readonly eventDrivenEnabled?: boolean;
 }
 
 /**
@@ -51,5 +60,6 @@ export async function runStrategyBacktest(
     // Передаётся ТОЛЬКО когда задан явно: `RunDeps` трактует отсутствие как `true`, и подстановка
     // значения по умолчанию здесь сделала бы поле неотличимым от «вызывающий ничего не просил».
     ...(deps.contextFreeze !== undefined ? { contextFreeze: deps.contextFreeze } : {}),
+    ...(deps.eventDrivenEnabled !== undefined ? { eventDrivenEnabled: deps.eventDrivenEnabled } : {}),
   });
 }

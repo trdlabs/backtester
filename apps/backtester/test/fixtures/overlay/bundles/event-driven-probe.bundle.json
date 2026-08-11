@@ -1,0 +1,51 @@
+{
+  "manifest": {
+    "id": "event_driven_probe",
+    "version": "1.0.0",
+    "kind": "strategy",
+    "name": "event-driven wiring probe",
+    "summary": "минимальный event_driven бандл для гейта проводки флага раскатки",
+    "rationale": "доказать, что решение о допуске одинаково на прямой и потоковой дорогах",
+    "author": "agent",
+    "contractVersion": "017.4",
+    "status": "research_only",
+    "paramsSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "params": {},
+    "capabilities": {
+      "platformSdk": true
+    },
+    "dataNeeds": {
+      "closedCandlesUpToCurrent": true,
+      "asOfIndicators": false
+    },
+    "hooks": [
+      "onEvent"
+    ],
+    "lifecycle": "event_driven",
+    "marketData": [
+      {
+        "kind": "candles",
+        "id": "req-candles",
+        "instrument": {
+          "venue": "binance",
+          "symbol": "BTCUSDT"
+        },
+        "interval": 60000000,
+        "lookback": 5,
+        "revisionPolicy": {
+          "mode": "final_only"
+        },
+        "priceType": "trade"
+      }
+    ],
+    "bundleContractVersion": "019.1"
+  },
+  "entry": "module/index.js",
+  "files": {
+    "module/index.js": "// МИНИМАЛЬНЫЙ event-driven бандл — фикстура ГЕЙТА ПРОВОДКИ, а не рабочая стратегия.\n//\n// Тело здесь никогда не исполняется: допуск отвергает event_driven до создания актора и до init.\n// Модуль всё равно написан по контракту (`createActor` -> актор с `onEvent`), а не заглушкой из\n// пустого объекта: фикстура, не соответствующая объявленной форме, доказывала бы отказ на манифесте,\n// которого в проде не бывает, и перестала бы годиться в тот день, когда допуск начнёт пропускать.\n\nexport const manifest = {\n  \"id\": \"event_driven_probe\",\n  \"version\": \"1.0.0\",\n  \"kind\": \"strategy\",\n  \"name\": \"event-driven wiring probe\",\n  \"summary\": \"минимальный event_driven бандл для гейта проводки флага раскатки\",\n  \"rationale\": \"доказать, что решение о допуске одинаково на прямой и потоковой дорогах\",\n  \"author\": \"agent\",\n  \"contractVersion\": \"017.4\",\n  \"status\": \"research_only\",\n  \"paramsSchema\": {\n    \"type\": \"object\",\n    \"additionalProperties\": false,\n    \"properties\": {}\n  },\n  \"params\": {},\n  \"capabilities\": {\n    \"platformSdk\": true\n  },\n  \"dataNeeds\": {\n    \"closedCandlesUpToCurrent\": true,\n    \"asOfIndicators\": false\n  },\n  \"hooks\": [\n    \"onEvent\"\n  ],\n  \"lifecycle\": \"event_driven\",\n  \"marketData\": [\n    {\n      \"kind\": \"candles\",\n      \"id\": \"req-candles\",\n      \"instrument\": {\n        \"venue\": \"binance\",\n        \"symbol\": \"BTCUSDT\"\n      },\n      \"interval\": 60000000,\n      \"lookback\": 5,\n      \"revisionPolicy\": {\n        \"mode\": \"final_only\"\n      },\n      \"priceType\": \"trade\"\n    }\n  ],\n  \"bundleContractVersion\": \"019.1\"\n};\n\nexport function createActor(init) {\n  let seen = 0;\n  return {\n    onEvent(_event, _ctx) {\n      seen += 1;\n      // Ни одной команды: гейт проводки смотрит на ОТКАЗ, а не на поведение стратегии.\n      return [];\n    },\n    snapshot() {\n      return { seen };\n    },\n  };\n}\n"
+  }
+}

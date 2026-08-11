@@ -157,6 +157,15 @@ export interface WorkerDeps extends CompletionDeps {
    * молча игнорировалась. Замер: 68.8 → 56.9 мкс/бар (−17%) при совпадающем `result_hash`.
    */
   contextFreeze?: boolean;
+  /**
+   * 083 S3 (`BACKTESTER_EVENT_DRIVEN_ENABLED`): разрешение раскатки `lifecycle: 'event_driven'`.
+   * Отсутствие ⇒ `false`.
+   *
+   * Заведено сразу вместе с проводкой до раннера — тот же дефект, что был у `contextFreeze` выше,
+   * повторять во второй раз незачем: флаг, живущий в конфиге и не доезжающий до прогона, читается
+   * как работающий и не работает.
+   */
+  eventDrivenEnabled?: boolean;
   /** 17c: universe-session cap + scaled-policy memory knobs. Absent/disabled ⇒ no cap, no scaled policy (byte-identical). */
   universe?: { enabled: boolean; maxN: number; memBaseMb: number; memPerSymbolMb: number };
   /** E2: per-hypothesis-family trial ledger. Absent ⇒ trial ledger + DSR OFF (kill-switch). */
@@ -284,6 +293,35 @@ function mapRunnerCode(code: string): WalkForwardFailureCode {
  * into normalized codes. Registry is built once from the OUTER bundle (pure, reused); the outer bundle's
  * cleanup stays with the worker (no reload here). engineRequest is the outer one — only `period` changes.
  */
+/**
+ * Флаги прогона стратегии — ОДНО место сборки на все вызовы.
+ *
+ * Раньше их было два: очередь собирала свой объект, walk-forward — свой, руками, теми же строками.
+ * Списки разошлись ровно так, как расходятся все ручные зеркала: `eventDrivenEnabled` появился в
+ * очереди и не появился в walk-forward, и прогон по фолдам молча отвергал бы event-driven стратегию
+ * при включённой раскатке — при том что обычный прогон той же стратегии её допускал бы. Расхождение
+ * не в числах, а в том, ЧТО исполнялось, и ни один гейт на значения его не ловит.
+ *
+ * Теперь добавленный флаг попадает в обе дороги по построению, а не по внимательности.
+ */
+export function strategyRunFlags(deps: WorkerDeps): {
+  readonly barBatching?: { readonly maxBars: number };
+  readonly barMajor?: boolean;
+  readonly barMajorBatch?: boolean;
+  readonly universe?: { enabled: boolean; maxN: number; memBaseMb: number; memPerSymbolMb: number };
+  readonly contextFreeze?: boolean;
+  readonly eventDrivenEnabled?: boolean;
+} {
+  return {
+    ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
+    ...(deps.barMajor === true ? { barMajor: true } : {}),
+    ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
+    ...(deps.universe ? { universe: deps.universe } : {}),
+    ...(deps.contextFreeze !== undefined ? { contextFreeze: deps.contextFreeze } : {}),
+    ...(deps.eventDrivenEnabled !== undefined ? { eventDrivenEnabled: deps.eventDrivenEnabled } : {}),
+  };
+}
+
 function makeWalkForwardRunFold(
   deps: WorkerDeps,
   engine: Engine,
@@ -310,14 +348,7 @@ function makeWalkForwardRunFold(
     makeRouter: () => workerInternals.overlayRouterFor(deps, r.symbols.length),
     runEngine: (request, tape, router) =>
       engine === 'strategy'
-        ? runStrategyBacktest(request, {
-            registry, marketTape: tape, router,
-            ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
-            ...(deps.barMajor === true ? { barMajor: true } : {}),
-            ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
-            ...(deps.universe ? { universe: deps.universe } : {}),
-            ...(deps.contextFreeze !== undefined ? { contextFreeze: deps.contextFreeze } : {}),
-          })
+        ? runStrategyBacktest(request, { registry, marketTape: tape, router, ...strategyRunFlags(deps) })
         : runOverlayBacktest(request, { registry, marketTape: tape, router, ...(deps.universe ? { universe: deps.universe } : {}) }),
   };
   const foldIo = io ?? realIo;
@@ -1025,13 +1056,8 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       await chargeEngineAttempt(); // INV-5: engine-commit charge (strategy path)
       // Один объект на обе ветки — потоковую и прямую: разъехавшиеся флаги дали бы одинаковый
       // результат при разной стоимости, а это ровно тот класс расхождений, который гейты не ловят.
-      const runFlags = {
-        ...(deps.barBatching === true ? { barBatching: { maxBars: deps.batchBars ?? 64 } } : {}),
-        ...(deps.barMajor === true ? { barMajor: true } : {}),
-        ...(deps.barMajorBatch === true ? { barMajorBatch: true } : {}),
-        ...(deps.universe ? { universe: deps.universe } : {}),
-        ...(deps.contextFreeze !== undefined ? { contextFreeze: deps.contextFreeze } : {}),
-      };
+      // Собирается ТОЙ ЖЕ функцией, что и для walk-forward: третье зеркало здесь заводить нечем.
+      const runFlags = strategyRunFlags(deps);
       let outcome: RunOutcome;
       if (deps.barLoopThread === true) {
         // ПУТЬ ПОТОКА. Главный поток остаётся свободным на всё время счёта: таймеры тикают, хартбит

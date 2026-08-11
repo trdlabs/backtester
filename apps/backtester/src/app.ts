@@ -233,6 +233,9 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     barBatching: config.barBatching,
     barLoopThread: config.barLoopThread,
     contextFreeze: config.contextFreeze,
+    // 083 S3: без этой строки флаг считался бы в конфиге и не доезжал до прогона — прод просил бы
+    // раскатку, а event_driven-манифест молча отвергался. Ровно так уже жил `contextFreeze`.
+    eventDrivenEnabled: config.eventDrivenEnabled,
     ...(barLoopPool !== undefined ? { barLoopPool } : {}),
     barMajor: config.barMajor,
     barMajorBatch: config.barMajorBatch,
