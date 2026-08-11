@@ -60,6 +60,14 @@ export const CODE_SEVERITY: Readonly<Record<ValidationCode, Severity>> = {
   observation_revision_start_invalid: 'error',
   observation_finality_demoted: 'error',
   observation_archive_row_corrupt: 'error',
+  // 083 S3 (`@trdlabs/sdk@0.15.0`): хост не может исполнить ОБЪЯВЛЕННУЮ форму стратегии — раскатка
+  // не разрешена, режим исполнения несовместим с формой, у исполнителя нет способности. Не путать
+  // с `lifecycle_form_invalid`: тот про манифест, противоречащий сам себе (чинит автор), этот про
+  // окружение при безупречном манифесте (чинит владелец хоста).
+  //
+  // Эта строка появилась не по внимательности, а потому что ручная копия карты сломала сборку при
+  // подъёме sdk — ровно то, ради чего она здесь и держится.
+  unsupported_lifecycle: 'error',
   empty_baseline_variant_diff: 'warning',
 };
 
