@@ -27,11 +27,14 @@ interface FixtureFile {
   readonly datasetRef: string;
   readonly timeframe: string;
   /**
-   * Венью, которое фикстура объявляет о своих данных (083 S3). Заявление лежит РЯДОМ с данными и
-   * версионируется вместе с ними — боковая карта по имени датасета разошлась бы с файлом молча.
-   * Фикстура без этого поля читается как «происхождение неизвестно» (см. `proveTapeVenue`).
+   * Венью, с которого записаны СВЕЧИ фикстуры (083 S3). Названо по ряду: у смешанного датасета
+   * общего венью нет — агрегированные ряды его не имеют по построению.
+   *
+   * Заявление лежит РЯДОМ с данными и версионируется вместе с ними — боковая карта по имени
+   * датасета разошлась бы с файлом молча. Фикстура без этого поля читается как «происхождение
+   * неизвестно» (см. `proveCandleVenue`).
    */
-  readonly venue?: string;
+  readonly candleVenue?: string;
   readonly rows: ReaderRow[];
 }
 
@@ -93,9 +96,9 @@ export class FixtureDataPort implements BacktesterDataPort {
         datasetRef: fixture.datasetRef,
         symbols,
         timeframe: fixture.timeframe,
-        // Пробрасывается ТОЛЬКО когда объявлено: `venue: undefined` и отсутствие ключа читаются
-        // одинаково, но отсутствие нельзя перепутать с пустой строкой при сериализации.
-        ...(fixture.venue !== undefined ? { venue: fixture.venue } : {}),
+        // Пробрасывается ТОЛЬКО когда объявлено: `candleVenue: undefined` и отсутствие ключа
+        // читаются одинаково, но отсутствие нельзя перепутать с пустой строкой при сериализации.
+        ...(fixture.candleVenue !== undefined ? { candleVenue: fixture.candleVenue } : {}),
         period: {
           from: new Date(Math.min(...tss)).toISOString(),
           to: new Date(Math.max(...tss) + 60_000).toISOString(),

@@ -183,57 +183,69 @@ const SUPPORTED_KIND = 'candles';
 const SUPPORTED_PRICE_TYPE = 'trade';
 
 /**
- * Венью ленты — ДОКАЗАННОЕ либо никакое. Union, а не строка: у «не доказано» поля `venue` нет
- * вовсе, поэтому недоказанное происхождение нельзя случайно сравнить с требованием и получить
+ * Происхождение СВЕЧЕЙ — доказанное либо никакое. Union, а не строка: у «не доказано» поля `venue`
+ * нет вовсе, поэтому недоказанное происхождение нельзя случайно сравнить с требованием и получить
  * совпадение.
  *
- * ПОЧЕМУ ЭТО НЕ ФОРМАЛЬНОСТЬ, А ЕДИНСТВЕННЫЙ ЧЕСТНЫЙ ВАРИАНТ. Строка, которую кладёт вызывающий,
- * доказывает лишь то, что вызывающий её написал. Проверка «требование == объявление хоста» при
- * этом выглядит работающей и зеленеет, а данные за ней могут быть чьи угодно.
+ * ИМЯ НАЗЫВАЕТ СВЕЧИ, А НЕ ЛЕНТУ, И ЭТО СУЩЕСТВЕННО. У смешанного датасета общего венью НЕ
+ * СУЩЕСТВУЕТ: свечи venue-specific (их пишет один адаптер), а OI, funding и ликвидации агрегированы
+ * по нескольким венью. Название `venue` обещало бы происхождение всей ленты — то есть больше, чем
+ * доказывается, и ровно в том месте, где следующий вид данных будет молча накрыт чужим
+ * доказательством.
+ *
+ * ПОЧЕМУ ВООБЩЕ ДОКАЗАТЕЛЬСТВО, А НЕ СТРОКА. Строка, которую кладёт вызывающий, доказывает лишь то,
+ * что вызывающий её написал. Проверка «требование == объявление хоста» при этом выглядит работающей
+ * и зеленеет, а данные за ней могут быть чьи угодно.
  */
-export type ActorTapeVenue =
+export type ActorCandleVenue =
   | { readonly proven: true; readonly venue: string; readonly source: string }
   | { readonly proven: false; readonly venue?: undefined; readonly reason: string };
 
 /**
- * Единственный прувер венью. Источник — метаданные датасета, версионированные ВМЕСТЕ с данными:
- * заявление, лежащее рядом с лентой, переживает её копирование, а боковая карта по имени — нет
- * (она молча начинает отвечать по старой мерке).
+ * Единственный прувер происхождения свечей. Источник — метаданные датасета, версионированные ВМЕСТЕ
+ * с данными: заявление, лежащее рядом с лентой, переживает её копирование, а боковая карта по имени
+ * — нет (она молча начинает отвечать по старой мерке).
  *
- * ЧТО СЕЙЧАС ОТВЕЧАЕТ `proven: false` И ПОЧЕМУ ЭТО НЕ ЛЕНЬ. У реальных данных венью НЕ СУЩЕСТВУЕТ
- * ни в одном доступном месте, и это не пробел в бэктестере, а свойство записи:
+ * ЧТО СЕЙЧАС ОТВЕЧАЕТ `proven: false` И ПОЧЕМУ ЭТО НЕ ЛЕНЬ. У реальных данных происхождение свечей
+ * НЕ СУЩЕСТВУЕТ ни в одном доступном месте, и это свойство записи, а не пробел бэктестера:
  *
  *   • свечи пишет ОДИН адаптер биржи, выбранный на деплое рекордера переменной окружения
  *     `MARKET_SOURCE_EXCHANGE` (legacy-дефолт `bybit`, `platform/src/config/market_layer.ts`).
  *     В сам ряд этот выбор не попадает: `CanonicalRow` несёт `symbol`, OHLCV и флаги покрытия —
  *     и ни одного поля источника;
  *   • OI, funding и ликвидации, наоборот, АГРЕГИРОВАНЫ по нескольким венью (`oi_total_usd` —
- *     «Aggregated OI», `funding_rate` — «Aggregated funding»), то есть у одной строки ленты нет
- *     одного венью даже в принципе;
- *   • `DatasetDescriptor` (и у бэктестера, и у mock-platform) поля венью не имеет, а `datasetRef` —
- *     свободная строка (`smoke-btc-1m`, `evidence-fixture-1m`), в которой венью не закодировано.
+ *     «Aggregated OI», `funding_rate` — «Aggregated funding»). Поэтому доказывать «венью датасета»
+ *     нечего: у этих рядов его нет по построению, и вопрос осмыслен только про свечи;
+ *   • `DatasetDescriptor` (и у бэктестера, и у mock-platform) поля происхождения не имеет, а
+ *     `datasetRef` — свободная строка (`smoke-btc-1m`), в которой оно не закодировано.
  *
- * То есть рекордер знал венью в момент записи и выбросил его. Пока канал не восстановлен, ЛЮБАЯ
- * реальная лента отвечает `proven: false`, и actor-путь на ней отказывает — это и есть требуемое
- * поведение, а не временная заглушка.
+ * То есть рекордер знал венью свечей в момент записи и выбросил его. Пока канал не восстановлен,
+ * ЛЮБАЯ реальная лента отвечает `proven: false`, и actor-путь на ней отказывает — это и есть
+ * требуемое поведение, а не временная заглушка.
  */
-export function proveTapeVenue(dataset: { readonly datasetRef: string; readonly venue?: string }): ActorTapeVenue {
-  if (dataset.venue !== undefined && dataset.venue !== '') {
-    return { proven: true, venue: dataset.venue, source: `dataset_metadata:${dataset.datasetRef}` };
+export function proveCandleVenue(dataset: {
+  readonly datasetRef: string;
+  readonly candleVenue?: string;
+}): ActorCandleVenue {
+  if (dataset.candleVenue !== undefined && dataset.candleVenue !== '') {
+    return { proven: true, venue: dataset.candleVenue, source: `dataset_metadata:${dataset.datasetRef}` };
   }
   return {
     proven: false,
     reason:
-      `датасет «${dataset.datasetRef}» не объявляет венью в своих метаданных. Восстановить его по ` +
-      'данным нечем: свечи пишет один адаптер, выбранный переменной окружения рекордера и в строку ' +
-      'не попадающий, а OI/funding/ликвидации агрегированы по нескольким венью',
+      `датасет «${dataset.datasetRef}» не объявляет происхождение свечей в своих метаданных. ` +
+      'Восстановить его по данным нечем: свечи пишет один адаптер, выбранный переменной окружения ' +
+      'рекордера и в строку не попадающий, а OI/funding/ликвидации агрегированы по нескольким венью',
   };
 }
 
 /** Что хост может доставить: параметры ленты, против которых сверяется подписка. */
 export interface ActorTapeCapabilities {
-  /** Происхождение венью — только доказанное принимается (см. `proveTapeVenue`). */
-  readonly venue: ActorTapeVenue;
+  /**
+   * Доказанное происхождение СВЕЧЕЙ. Названо по ряду, а не по датасету: у смешанного датасета
+   * общего венью нет (см. `ActorCandleVenue`).
+   */
+  readonly candleVenue: ActorCandleVenue;
   readonly symbol: string;
   /** Интервал бара ленты в микросекундах. */
   readonly barIntervalUs: number;
@@ -294,6 +306,16 @@ export interface ActorMarketDataAdmitted {
   readonly refusal: null;
   readonly bindings: readonly ActorSubscriptionBinding[];
   /**
+   * ТОТ САМЫЙ массив, который уедет в `ActorInit.subscriptions` и в execution record — один
+   * экземпляр, замороженный, с теми же объектами дескрипторов, что лежат в `bindings`.
+   *
+   * ПОЧЕМУ ЭКЗЕМПЛЯР, А НЕ ФУНКЦИЯ-ПРОЕКЦИЯ. Функция отдавала бы КАЖДОМУ вызывающему свой массив:
+   * заморозка одного ничего не говорила бы про остальные, а `ActorInit` и запись прогона держали бы
+   * разные объекты с одинаковым сейчас содержимым — то есть расхождение стало бы вопросом времени,
+   * а не запрещённым состоянием. Заморожен и сам массив: `readonly` в типе не мешает `push`.
+   */
+  readonly subscriptions: readonly ActorSubscriptionDescriptor[];
+  /**
    * Индекс первого ТОРГОВОГО бара — граница готовности (§3.3, требование 6).
    *
    * СЕМАНТИКА `lookback`, И ОНА НЕ «ПРОПУСТИТЬ»: бары `0 … lookback-1` актору ДОСТАВЛЯЮТСЯ, просто
@@ -324,16 +346,6 @@ export function subscriptionIdFor(requirementId: string): string {
 }
 
 /**
- * Проекция разрешённых подписок в `ActorInit.subscriptions`. Единственная — чтобы список,
- * который проверен, и список, который доставлен, были одним списком.
- */
-export function subscriptionsOf(
-  bindings: readonly ActorSubscriptionBinding[],
-): readonly ActorSubscriptionDescriptor[] {
-  return bindings.map((b) => b.descriptor);
-}
-
-/**
  * Готовность на баре с индексом `barIndex`. Живёт рядом с тем, кто вычислил порог: сравнение,
  * оставленное раннеру, — это приглашение перепутать `<` и `<=` и сдвинуть торговлю на бар.
  */
@@ -355,13 +367,13 @@ export function admitActorMarketData(
     .marketData;
   const no = (message: string): ActorMarketDataRefused => ({ refusal: refuse(message) });
 
-  // Происхождение венью — свойство ЛЕНТЫ, а не требования, поэтому проверяется один раз и до
-  // разбора требований: недоказанное венью не спасает совпадение строк ни в одном из них.
-  if (!tape.venue.proven) {
+  // Происхождение свечей — свойство РЯДА, а не отдельного требования, поэтому проверяется один раз
+  // и до их разбора: недоказанное происхождение не спасает совпадение строк ни в одном из них.
+  if (!tape.candleVenue.proven) {
     return no(
-      `${label(strategy)}: венью ленты не доказано, а требования его называют. ${tape.venue.reason}. ` +
-        'Сверять объявленное венью не с чем, а запустить прогон, сделав вид, что совпало, значит ' +
-        'отдать стратегии данные неизвестного происхождения',
+      `${label(strategy)}: происхождение свечей не доказано, а требования называют венью. ` +
+        `${tape.candleVenue.reason}. Сверять объявленное венью не с чем, а запустить прогон, сделав ` +
+        'вид, что совпало, значит отдать стратегии данные неизвестного происхождения',
     );
   }
 
@@ -374,6 +386,7 @@ export function admitActorMarketData(
 
   const seen = new Set<string>();
   const bindings: ActorSubscriptionBinding[] = [];
+  const subscriptions: ActorSubscriptionDescriptor[] = [];
 
   for (const req of requirements) {
     if (req.kind !== SUPPORTED_KIND) {
@@ -395,11 +408,11 @@ export function admitActorMarketData(
     }
     seen.add(req.id);
 
-    if (req.instrument.venue !== tape.venue.venue) {
+    if (req.instrument.venue !== tape.candleVenue.venue) {
       return no(
-        `${label(strategy)}: требование «${req.id}» просит венью ${req.instrument.venue}, а прогон идёт ` +
-          `по ${tape.venue.venue} (${tape.venue.source}). Подставить одно вместо другого нельзя: у ` +
-          'разных венью различаются и цены, и комиссии, и funding',
+        `${label(strategy)}: требование «${req.id}» просит венью ${req.instrument.venue}, а свечи прогона ` +
+          `с ${tape.candleVenue.venue} (${tape.candleVenue.source}). Подставить одно вместо другого ` +
+          'нельзя: у разных венью различаются и цены, и комиссии, и funding',
       );
     }
     if (req.instrument.symbol !== tape.symbol) {
@@ -433,15 +446,20 @@ export function admitActorMarketData(
       );
     }
 
+    // Дескриптор создаётся ЗДЕСЬ ОДИН РАЗ и кладётся и в binding, и в `subscriptions` — один и тот
+    // же объект в обоих местах, а не два одинаковых.
+    const descriptor: ActorSubscriptionDescriptor = Object.freeze({
+      subscriptionId: subscriptionIdFor(req.id),
+      kind: req.kind,
+      requirementId: req.id,
+    });
+    subscriptions.push(descriptor);
+
     // Заморозка ПОУРОВНЕВАЯ и явная: `Object.freeze` поверхностна, а `Object.isFrozen` истинен и для
     // поверхностно замороженного — то есть проверка на родителе ничего не говорит о детях.
     bindings.push(
       Object.freeze({
-        descriptor: Object.freeze({
-          subscriptionId: subscriptionIdFor(req.id),
-          kind: req.kind,
-          requirementId: req.id,
-        }),
+        descriptor,
         requirement: Object.freeze({
           id: req.id,
           kind: SUPPORTED_KIND,
@@ -461,7 +479,7 @@ export function admitActorMarketData(
   // резолвер ОБЯЗАН гарантировать её fail-closed при сборке `ActorInit`. То, что `subscriptionIdFor`
   // инъективен, а дубли `req.id` отвергнуты выше, — это рассуждение, а не проверка; рассуждение
   // переживёт правку идентификатора молча, а вызов — нет.
-  const duplicates = findDuplicateSubscriptionIds(subscriptionsOf(bindings));
+  const duplicates = findDuplicateSubscriptionIds(subscriptions);
   if (duplicates.length > 0) {
     return no(
       `${label(strategy)}: подписки получили неуникальные subscriptionId (${duplicates.join(', ')}) — ` +
@@ -472,5 +490,12 @@ export function admitActorMarketData(
   // Максимум, а не сумма и не первый: готовность у актора одна, и наступает она, когда набрана
   // история КАЖДОГО требования. Пустым `bindings` быть не может — пустой `marketData` отвергнут выше.
   const tradingFromBarIndex = Math.max(...bindings.map((b) => b.lookback));
-  return Object.freeze({ refusal: null, bindings: Object.freeze(bindings), tradingFromBarIndex });
+  // Замораживаются САМИ массивы, а не только их элементы: `readonly` в типе — обещание компилятору,
+  // и `push`/`splice` через любое приведение проходят мимо него беспрепятственно.
+  return Object.freeze({
+    refusal: null,
+    bindings: Object.freeze(bindings),
+    subscriptions: Object.freeze(subscriptions),
+    tradingFromBarIndex,
+  });
 }

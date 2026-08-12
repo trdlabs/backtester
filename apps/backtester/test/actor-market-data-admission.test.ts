@@ -15,23 +15,28 @@
 
 import { describe, expect, it } from 'vitest';
 import { CONTRACT_VERSION } from '@trading/research-contracts/research';
-import type { MarketDataRequirement } from '@trdlabs/sdk/research-contract';
+import type {
+  ActorSubscriptionDescriptor,
+  MarketDataRequirement,
+} from '@trdlabs/sdk/research-contract';
 
 import {
   admitActorMarketData,
-  proveTapeVenue,
+  proveCandleVenue,
   readinessAtBar,
   subscriptionIdFor,
-  subscriptionsOf,
 } from '../src/engine/actor/admission.js';
-import type { ActorTapeCapabilities } from '../src/engine/actor/admission.js';
+import type {
+  ActorSubscriptionBinding,
+  ActorTapeCapabilities,
+} from '../src/engine/actor/admission.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
 
 const MINUTE_US = 60_000_000;
 /** Венью берётся ТОЛЬКО у прувера — тест не вправе объявить его сам, иначе гейт проверялся бы мимо. */
-const PROVEN_BINANCE = proveTapeVenue({ datasetRef: 'probe-fixture-1m', venue: 'binance' });
+const PROVEN_BINANCE = proveCandleVenue({ datasetRef: 'probe-fixture-1m', candleVenue: 'binance' });
 const TAPE: ActorTapeCapabilities = {
-  venue: PROVEN_BINANCE,
+  candleVenue: PROVEN_BINANCE,
   symbol: 'BTCUSDT',
   barIntervalUs: MINUTE_US,
   barCount: 100,
@@ -79,14 +84,14 @@ describe('поддерживаемая форма проходит и НАЗЫВ
     // `subscriptionId` обязан быть канонической ссылкой на элемент этого же списка (контракт).
     // Назначать его в двух местах значило бы дать им разойтись: «проверено» относилось бы к одному
     // списку, «доставлено» — к другому.
-    expect(subscriptionsOf(admitted([supported()]).bindings)).toEqual([
+    expect(admitted([supported()]).subscriptions).toEqual([
       { subscriptionId: subscriptionIdFor('req-candles'), kind: 'candles', requirementId: 'req-candles' },
     ]);
   });
 
   it('несколько свечных требований — каждое со своим идентификатором', () => {
     const out = admitted([supported(), supported({ id: 'req-second' })]);
-    expect(subscriptionsOf(out.bindings).map((s) => s.subscriptionId)).toEqual([
+    expect(out.subscriptions.map((s) => s.subscriptionId)).toEqual([
       subscriptionIdFor('req-candles'),
       subscriptionIdFor('req-second'),
     ]);
@@ -123,7 +128,7 @@ describe('допуск отдаёт РАЗРЕШЁННЫЙ вход, а не с�
     const out = admitted([req]);
     const before = structuredClone({
       bindings: out.bindings,
-      subscriptions: subscriptionsOf(out.bindings),
+      subscriptions: out.subscriptions,
       tradingFromBarIndex: out.tradingFromBarIndex,
     });
 
@@ -141,7 +146,7 @@ describe('допуск отдаёт РАЗРЕШЁННЫЙ вход, а не с�
     mutable.interval = 5 * MINUTE_US;
 
     expect(out.bindings).toEqual(before.bindings);
-    expect(subscriptionsOf(out.bindings)).toEqual(before.subscriptions);
+    expect(out.subscriptions).toEqual(before.subscriptions);
     expect(out.tradingFromBarIndex).toBe(before.tradingFromBarIndex);
   });
 
@@ -160,6 +165,34 @@ describe('допуск отдаёт РАЗРЕШЁННЫЙ вход, а не с�
   it('порядок bindings повторяет порядок требований манифеста', () => {
     const out = admitted([supported({ id: 'a' }), supported({ id: 'b' }), supported({ id: 'c' })]);
     expect(out.bindings.map((b) => b.requirement.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('subscriptions и bindings держат ОДНИ И ТЕ ЖЕ объекты дескрипторов', () => {
+    // Не «равные», а те же самые. Равенство содержимого сегодня ничего не обещает про завтра:
+    // два одинаковых объекта — это два места, где значение может разойтись.
+    const out = admitted([supported({ id: 'a' }), supported({ id: 'b' })]);
+    expect(out.subscriptions).toHaveLength(2);
+    out.subscriptions.forEach((s, i) => expect(s).toBe(out.bindings[i]!.descriptor));
+  });
+
+  it('САМ массив подписок заморожен: push и splice не проходят', () => {
+    // `readonly` в типе — обещание компилятору, и любое приведение проходит мимо него. Массив,
+    // уезжающий в `ActorInit` и в запись прогона, обязан быть неизменяемым в рантайме: дописанная
+    // подписка означала бы, что актор объявил один состав, а получил другой.
+    const out = admitted([supported()]);
+    const mutable = out.subscriptions as ActorSubscriptionDescriptor[];
+    expect(Object.isFrozen(out.subscriptions)).toBe(true);
+    expect(() =>
+      mutable.push({ subscriptionId: 'sub-подложенная', kind: 'candles', requirementId: 'x' }),
+    ).toThrow(TypeError);
+    expect(() => mutable.splice(0, 1)).toThrow(TypeError);
+    expect(out.subscriptions).toHaveLength(1);
+  });
+
+  it('массив bindings заморожен тоже', () => {
+    const out = admitted([supported()]);
+    expect(Object.isFrozen(out.bindings)).toBe(true);
+    expect(() => (out.bindings as ActorSubscriptionBinding[]).pop()).toThrow(TypeError);
   });
 });
 
@@ -187,7 +220,7 @@ describe('всё, что не поддержано, отвергается — �
   it('чужое венью — подставить одно вместо другого нельзя', () => {
     refuses(
       [supported({ instrument: { venue: 'bybit', symbol: 'BTCUSDT' } } as Partial<MarketDataRequirement>)],
-      /просит венью bybit, а прогон идёт по binance/,
+      /просит венью bybit, а свечи прогона с binance/,
     );
   });
 
@@ -237,18 +270,18 @@ describe('венью обязано быть ДОКАЗАНО, а не объя�
   it('датасет без метаданных венью — происхождение неизвестно', () => {
     // Ровно случай реальной ленты: рекордер знал венью в момент записи (переменная окружения
     // адаптера) и не положил его ни в строку, ни в дескриптор.
-    const proof = proveTapeVenue({ datasetRef: 'smoke-btc-1m' });
+    const proof = proveCandleVenue({ datasetRef: 'smoke-btc-1m' });
     expect(proof.proven).toBe(false);
     // Поля `venue` у недоказанного НЕТ — его нельзя случайно сравнить с требованием.
     expect(proof.venue).toBeUndefined();
   });
 
   it('пустая строка — это не объявление', () => {
-    expect(proveTapeVenue({ datasetRef: 'ds', venue: '' }).proven).toBe(false);
+    expect(proveCandleVenue({ datasetRef: 'ds', candleVenue: '' }).proven).toBe(false);
   });
 
   it('датасет с объявленным венью доказывает его и НАЗЫВАЕТ источник', () => {
-    const proof = proveTapeVenue({ datasetRef: 'smoke-btc-1m', venue: 'bybit' });
+    const proof = proveCandleVenue({ datasetRef: 'smoke-btc-1m', candleVenue: 'bybit' });
     expect(proof).toEqual({
       proven: true,
       venue: 'bybit',
@@ -261,10 +294,10 @@ describe('венью обязано быть ДОКАЗАНО, а не объя�
     // зеленела. Доказательства нет — значит сверять не с чем, и совпадение строк ничего не значит.
     const out = admitActorMarketData(strategyWith([supported()]), {
       ...TAPE,
-      venue: proveTapeVenue({ datasetRef: 'smoke-btc-1m' }),
+      candleVenue: proveCandleVenue({ datasetRef: 'smoke-btc-1m' }),
     });
     expect(out.refusal?.code).toBe('unsupported_lifecycle');
-    expect(out.refusal?.message).toMatch(/венью ленты не доказано/);
+    expect(out.refusal?.message).toMatch(/происхождение свечей не доказано/);
     expect(out.bindings).toBeUndefined();
   });
 });
@@ -322,10 +355,10 @@ describe('ПРОВЕРКА ПРОВЕРКИ: границы допуска', () 
   it('своё венью допускается — иначе проверка венью зеленела бы, отвергая любое', () => {
     const bybitTape: ActorTapeCapabilities = {
       ...TAPE,
-      venue: proveTapeVenue({ datasetRef: 'probe-fixture-1m', venue: 'bybit' }),
+      candleVenue: proveCandleVenue({ datasetRef: 'probe-fixture-1m', candleVenue: 'bybit' }),
     };
     expect(admitActorMarketData(strategyWith([supported()]), bybitTape).refusal?.message).toMatch(
-      /просит венью binance, а прогон идёт по bybit/,
+      /просит венью binance, а свечи прогона с bybit/,
     );
     // …и ровно та же стратегия на своей ленте проходит.
     expect(
