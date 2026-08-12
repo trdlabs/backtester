@@ -138,6 +138,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // this leaves the process, same as toStatusView.
       status: publicStatus(job.status),
       ...(job.terminalCode !== undefined ? { terminalCode: job.terminalCode } : {}),
+      ...(job.terminalIssues !== undefined ? { terminalIssues: job.terminalIssues } : {}),
       message: isTerminal(job.status) ? 'run produced no result summary' : 'run not complete',
     });
   });

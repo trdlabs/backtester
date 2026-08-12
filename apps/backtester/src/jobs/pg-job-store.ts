@@ -9,6 +9,7 @@
 //    run_id PK when no token) — idempotency survives process restart over the same DB.
 
 import type { Pool } from 'pg';
+import type { ValidationIssue } from '@trading/research-contracts/research';
 import type {
   ArtifactManifest,
   ContentHash,
@@ -57,6 +58,7 @@ interface JobDbRow {
   result_hash: string | null;
   artifact_manifest_json: ArtifactManifest | null;
   terminal_code: string | null;
+  terminal_issues_json: readonly ValidationIssue[] | null;
   deduped_from: string | null;
   compute_wait_attempts: string | number;
   compute_identity: string | null;
@@ -99,6 +101,7 @@ function rowToJob(r: JobDbRow): JobRow {
     resultHash: (r.result_hash as ContentHash | null) ?? undefined,
     artifactManifest: r.artifact_manifest_json ?? undefined,
     terminalCode: str(r.terminal_code),
+    terminalIssues: r.terminal_issues_json ?? undefined,
     dedupedFrom: str(r.deduped_from),
     computeWaitAttempts: Number(r.compute_wait_attempts ?? 0),
     computeIdentity: str(r.compute_identity),
@@ -242,6 +245,7 @@ export class PgJobStore implements JobStore {
          compute_wake_reason    = COALESCE($20, compute_wake_reason),
          engine_attempt_charged = COALESCE($21, engine_attempt_charged),
          attempts               = COALESCE($22, attempts),
+         terminal_issues_json   = COALESCE($23::jsonb, terminal_issues_json),
          timeline_json          = timeline_json || $14::jsonb
        WHERE run_id = $2 AND status = $3
          AND ($15::text IS NULL OR leased_by = $15)`,
@@ -268,6 +272,9 @@ export class PgJobStore implements JobStore {
         patch.computeWakeReason ?? null,
         patch.engineAttemptCharged ?? null,
         patch.attempts ?? null,
+        // Сериализуем ЯВНО и только при наличии: `undefined` здесь означает «не трогать колонку»,
+        // а пустой массив — «отказ без подробностей», и склеивать их в один null нельзя.
+        patch.terminalIssues !== undefined ? JSON.stringify(patch.terminalIssues) : null,
       ],
     );
     if (to === 'queued' && r.rowCount === 1) await this.notifyQueued();

@@ -1043,6 +1043,8 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         throw new RunnerError(
           'validation_error',
           `overlay run rejected: ${JSON.stringify(outcome.validation.issues)}`,
+          'failed',
+          outcome.validation.issues,
         );
       }
       assertSandboxClean(sandboxRouter); // P0-1: crashed sandbox must fail, never finalize completed
@@ -1109,6 +1111,8 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         throw new RunnerError(
           'validation_error',
           `strategy run rejected: ${JSON.stringify(outcome.validation.issues)}`,
+          'failed',
+          outcome.validation.issues,
         );
       }
       assertSandboxClean(sandboxRouter); // P0-1: a crashed candidate must fail here, before evidence/finalize
@@ -1295,10 +1299,14 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     }));
     const terminalStatus = err instanceof RunnerError ? err.terminalStatus : 'failed';
     const now = deps.clock();
+    // Причина едет СТРУКТУРОЙ рядом с кодом. Прежде она жила только в сообщении броска и в
+    // `console.error` — то есть в свободном логе, который к строке задания не привязан ничем.
+    const terminalIssues = err instanceof RunnerError ? err.issues : undefined;
     ownTerminalTransition = await deps.store.transition(runId, 'running', terminalStatus, {
       atMs: now,
       terminalAtMs: now,
       terminalCode: code,
+      ...(terminalIssues !== undefined ? { terminalIssues } : {}),
     }, deps.lease?.workerId);
     // INV-4: this run OWNS the compute lock (won the election, registered as leader) and then
     // failed/timed out → proactively expire it so a waiting follower wakes promptly (leader_failed)
