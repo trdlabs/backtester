@@ -12,14 +12,17 @@
 // филл, отдаёт внутренне НЕПРОТИВОРЕЧИВЫЕ списки: ордера на месте, кривая equity непрерывна, сделки
 // закрыты. Разойдётся только позиция, и разойдётся тихо.
 //
-// Поэтому проекция сворачивает записанные филлы ДВИЖКОВЫМ `applyFill` и требует совпадения с
-// записанным `finalLedger`. Это не «дополнительная проверка на всякий случай», а единственный
-// момент, когда две половины записи можно сличить: дальше по конвейеру якоря уже нет.
+// Поэтому здесь два якоря, и оба сравнивают ДВЕ НЕЗАВИСИМО ПОСЧИТАННЫЕ величины:
 //
-// Сворачивается движковой функцией, а не своей копией арифметики, намеренно. Собственный счёт был
-// бы вторым интерпретатором бухгалтерии — ровно тем, ради прекращения чего существует
-// `@trdlabs/engine`. Сверка своей копией доказывала бы лишь то, что две мои копии согласны между
-// собой.
+//   • свёртка журнала движковыми `applyFill`/`applyFunding` обязана дать записанный `finalLedger`
+//     ЦЕЛИКОМ, включая массив филлов поле в поле;
+//   • деривация сделок (`deriveActorTrades`) обязана сойтись с тем же леджером через
+//     `reconcileRealizedPnl` — деривация относит комиссию входа к закрытию, леджер реализует её
+//     сразу, и ошибка в любой из двух бухгалтерий видна ровно на их равенстве.
+//
+// Обе величины считает ДВИЖОК. Собственный счёт здесь был бы вторым интерпретатором бухгалтерии —
+// ровно тем, ради прекращения чего существует `@trdlabs/engine`, — и доказывал бы лишь то, что две
+// мои копии согласны между собой.
 //
 // ═══ ПОРЯДОК АРТЕФАКТОВ ═══
 //
@@ -32,15 +35,24 @@
 // последовательность, что вход, и одинаковый вход даёт побайтово одинаковый выход.
 
 import type { ValidationIssue } from '@trading/research-contracts/research';
-import { EMPTY_LEDGER, applyFill, applyFunding } from '@trdlabs/engine';
-import type { Fill, Ledger, OrderState, RiskDecision, Trade } from '@trdlabs/engine';
-
+import {
+  EMPTY_LEDGER,
+  applyFill,
+  applyFunding,
+  deriveActorTrades,
+  reconcileRealizedPnl,
+} from '@trdlabs/engine';
 import type {
-  DecisionRecord,
-  EquityPoint,
-  SimulatedFill,
-  SimulatedOrder,
-} from '../artifacts.js';
+  AccountingEntry,
+  ActorTrade,
+  Fill,
+  Ledger,
+  OrderState,
+  RiskDecision,
+  Trade,
+} from '@trdlabs/engine';
+
+import type { DecisionRecord, EquityPoint, SimulatedFill, SimulatedOrder } from '../artifacts.js';
 import type { FundingLedgerEntry } from '../runner.js';
 import { ledgerFillOf } from './execution-record.js';
 import type { ActorExecutionRecord, ActorFrontierRecord } from './execution-record.js';
@@ -197,48 +209,6 @@ function assertNonDecreasing(indices: readonly number[], what: string): void {
 }
 
 /**
- * Свернуть записанное движковыми функциями и сличить с записанным якорем.
- *
- * Порядок применения ЗАФИКСИРОВАН: внутри одного frontier'а сперва филлы, затем funding. Порядок
- * не косметический — обе операции копят `realizedPnl` десятичной арифметикой, и перестановка
- * слагаемых способна сдвинуть последний разряд. Раннер обязан применять в том же порядке; равенство
- * ниже это и доказывает.
- */
-function assertLedgerAgrees(record: ActorExecutionRecord): void {
-  let ledger: Ledger = EMPTY_LEDGER;
-  let fillAt = 0;
-  let fundingAt = 0;
-  for (const f of record.frontiers) {
-    while (fillAt < record.fills.length && record.fills[fillAt]!.frontier === f.index) {
-      ledger = applyFill(ledger, ledgerFillOf(record.fills[fillAt]!));
-      fillAt += 1;
-    }
-    while (fundingAt < record.funding.length && record.funding[fundingAt]!.frontier === f.index) {
-      const entry = record.funding[fundingAt]!;
-      ledger = applyFunding(ledger, { tsUs: entry.tsUs, cost: entry.cost });
-      fundingAt += 1;
-    }
-  }
-
-  const anchor = record.finalLedger;
-  const mismatch: string[] = [];
-  if (!Object.is(ledger.qty, anchor.qty)) mismatch.push(`qty ${ledger.qty} против ${anchor.qty}`);
-  if (!Object.is(ledger.avgPrice, anchor.avgPrice)) {
-    mismatch.push(`avgPrice ${ledger.avgPrice} против ${anchor.avgPrice}`);
-  }
-  if (!Object.is(ledger.realizedPnl, anchor.realizedPnl)) {
-    mismatch.push(`realizedPnl ${ledger.realizedPnl} против ${anchor.realizedPnl}`);
-  }
-  if (!Object.is(ledger.openedAtUs, anchor.openedAtUs)) {
-    mismatch.push(`openedAtUs ${ledger.openedAtUs} против ${anchor.openedAtUs}`);
-  }
-  if (mismatch.length > 0) {
-    fail(`свёртка записанных филлов не сходится с finalLedger: ${mismatch.join('; ')}`);
-  }
-  assertFillsIdentical(ledger.fills, anchor.fills);
-}
-
-/**
  * Поля `Fill`, сверяемые побайтово. Список явный и ПОЛНЫЙ по типу — см. утверждение ниже.
  *
  * Перечислять руками пришлось потому, что `Object.keys` работает со значением, а забытое поле надо
@@ -256,21 +226,18 @@ void _fillFieldsCovered;
 /**
  * Сверить филлы якоря со свёрнутыми ПОЛНОСТЬЮ и ПО ПОРЯДКУ.
  *
- * Прежняя редакция сравнивала только длину, и это была настоящая дыра, а не строгость про запас.
- * Арифметика леджера не читает ни `fillId`, ни `causedBy` вовсе: филл, приписанный чужой заявке,
- * не двигает ни экспозицию, ни `avgPrice`, ни `realizedPnl` — то есть проходил все четыре
- * скалярные проверки насквозь. А `causedBy` и есть «fills by causation» (§3.7): по нему
- * `fillsCausedBy` отвечает, чем исполнена конкретная заявка. Подмена делала бы этот ответ ложным
- * при полностью сошедшейся бухгалтерии.
+ * Сравнение по длине было настоящей дырой, а не недостающей строгостью про запас. Арифметика
+ * леджера не читает ни `fillId`, ни `causedBy` вовсе: филл, приписанный чужой заявке, не двигает ни
+ * экспозицию, ни `avgPrice`, ни `realizedPnl` — то есть проходил все скалярные проверки насквозь.
+ * А `causedBy` и есть «fills by causation» (§3.7): по нему `fillsCausedBy` отвечает, чем исполнена
+ * конкретная заявка. Подмена делала бы этот ответ ложным при полностью сошедшейся бухгалтерии.
  *
  * Порядок сверяется позиционно по той же причине: две перестановленные записи дают ту же сумму и
  * ту же позицию, но другую историю, а история — это то, ради чего журнал и ведут.
  */
 function assertFillsIdentical(folded: readonly Fill[], anchor: readonly Fill[]): void {
   if (folded.length !== anchor.length) {
-    fail(
-      `свёртка записанных филлов не сходится с finalLedger: филлов ${folded.length} против ${anchor.length}`,
-    );
+    fail(`свёртка журнала не сходится с finalLedger: филлов ${folded.length} против ${anchor.length}`);
   }
   for (let i = 0; i < folded.length; i += 1) {
     const a = folded[i]!;
@@ -279,11 +246,92 @@ function assertFillsIdentical(folded: readonly Fill[], anchor: readonly Fill[]):
       if (!Object.is(a[field], b[field])) {
         fail(
           `finalLedger.fills[${i}].${field}: записано ${String(b[field])}, ` +
-            `а из записанных филлов следует ${String(a[field])}`,
+            `а из журнала следует ${String(a[field])}`,
         );
       }
     }
   }
+}
+
+/**
+ * Журнал в форме движка — один к одному, порядок сохранён.
+ *
+ * Порядок БЕРЁТСЯ ИЗ ЗАПИСИ и здесь не изобретается. Первая редакция агрегата держала филлы и
+ * funding двумя списками, и проектору приходилось склеивать их правилом «сперва филлы, потом
+ * funding в пределах frontier'а». Правило работало — и было ЛИШНИМ знанием на стороне проектора:
+ * раннер применил в одном порядке, проектор склеил в другом, и апорционирование funding по
+ * закрываемой доле разъехалось бы в последнем разряде, никого не потревожив.
+ */
+function journalEntriesFor(record: ActorExecutionRecord): readonly AccountingEntry[] {
+  return record.journal.map((entry) =>
+    entry.kind === 'fill'
+      ? ({ kind: 'fill', fill: ledgerFillOf(entry) } as const)
+      : ({ kind: 'funding', settlement: { tsUs: entry.tsUs, cost: entry.cost } } as const),
+  );
+}
+
+/** Свернуть журнал движковыми функциями. */
+function foldJournal(entries: readonly AccountingEntry[]): Ledger {
+  let ledger: Ledger = EMPTY_LEDGER;
+  for (const entry of entries) {
+    ledger =
+      entry.kind === 'fill'
+        ? applyFill(ledger, entry.fill)
+        : applyFunding(ledger, entry.settlement);
+  }
+  return ledger;
+}
+
+function assertLedgerAgrees(folded: Ledger, anchor: Ledger): void {
+  const mismatch: string[] = [];
+  if (!Object.is(folded.qty, anchor.qty)) mismatch.push(`qty ${folded.qty} против ${anchor.qty}`);
+  if (!Object.is(folded.avgPrice, anchor.avgPrice)) {
+    mismatch.push(`avgPrice ${folded.avgPrice} против ${anchor.avgPrice}`);
+  }
+  if (!Object.is(folded.realizedPnl, anchor.realizedPnl)) {
+    mismatch.push(`realizedPnl ${folded.realizedPnl} против ${anchor.realizedPnl}`);
+  }
+  if (!Object.is(folded.openedAtUs, anchor.openedAtUs)) {
+    mismatch.push(`openedAtUs ${folded.openedAtUs} против ${anchor.openedAtUs}`);
+  }
+  if (mismatch.length > 0) {
+    fail(`свёртка журнала не сходится с finalLedger: ${mismatch.join('; ')}`);
+  }
+  assertFillsIdentical(folded.fills, anchor.fills);
+}
+
+/**
+ * Тождество «сделки ≡ леджер» — ГЕЙТ РЕПИНА, и это надо назвать точно.
+ *
+ * Он НЕ ловит дефекты раннера: свёртка журнала выше уже сравнила `realizedPnl` с якорем, поэтому к
+ * этому месту обе величины сходятся всегда, ЕСЛИ движок держит собственное тождество. Ловит он
+ * ровно противоположное — момент, когда движок перестаёт его держать: смена разложения комиссии,
+ * funding или границы эры в `deriveActorTrades` без соответствующей смены `applyFill`. Такая правда
+ * приезжает к потребителю подъёмом пина и иначе была бы невидима до расхождения чисел в отчёте.
+ *
+ * Отдельной функцией, потому что вызвать её с расходящимися величинами — единственный способ
+ * проверить саму ветку: изнутри проекции она недостижима по построению, а недостижимую ветку
+ * покрывают либо ложью в фикстуре, либо вот так.
+ */
+export function assertTradesReconcile(reconciled: number, anchorRealizedPnl: number): void {
+  if (!Object.is(reconciled, anchorRealizedPnl)) {
+    fail(
+      `сделки и леджер разошлись: сведённый realizedPnl ${reconciled} против ` +
+        `${anchorRealizedPnl} в finalLedger. Обе величины считает движок — расхождение означает, ` +
+        'что его деривация и его же леджер разъехались, а не что раннер что-то записал не так',
+    );
+  }
+}
+
+/**
+ * Идентификатор сделки — по правилу legacy, чтобы прогоны двух lifecycle читались одной меркой.
+ *
+ * Это НЕ экономика и потому не нарушает запрет на самостоятельный пересчёт в хосте: имя строится из
+ * барных индексов и символа, которых у движка нет по построению. «Богатая» форма (с `-c<seq>`)
+ * включается ровно там же, где у legacy: частичное закрытие, защита либо не первое закрытие.
+ */
+function isRichClose(t: ActorTrade): boolean {
+  return t.partial || t.closeReason === 'stop_hit' || t.closeReason === 'take_hit' || t.closeSeq > 0;
 }
 
 /**
@@ -295,6 +343,7 @@ function assertFillsIdentical(folded: readonly Fill[], anchor: readonly Fill[]):
  */
 export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts {
   const frontiers = frontierAxis(record);
+  const barOfTsUs = new Map(frontiers.map((f) => [Number(f.tsUs), f.index]));
 
   // --- Ордера ---
   const seenOrderId = new Set<string>();
@@ -321,41 +370,56 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
     'ордера',
   );
 
-  // --- Филлы ---
+  // --- Журнал: филлы и funding в ОДНОМ порядке ---
   const seenFillId = new Set<string>();
   const fillsPerOrder = new Map<string, number>();
   const fills: SimulatedFill[] = [];
-  for (const f of record.fills) {
-    if (seenFillId.has(f.fillId)) fail(`филл ${f.fillId} записан дважды`);
-    seenFillId.add(f.fillId);
-    if (!seenOrderId.has(f.orderId)) {
-      fail(`филл ${f.fillId} ссылается на незаписанный ордер ${f.orderId}`);
-    }
-    fillsPerOrder.set(f.orderId, (fillsPerOrder.get(f.orderId) ?? 0) + 1);
-    const frontier = frontierAt(frontiers, f.frontier, `филл ${f.fillId}`);
-    // Один frontier — один business-момент (§3.8). Филл, чья метка не равна метке своего
+  const fundingLedger: FundingLedgerEntry[] = [];
+  for (let i = 0; i < record.journal.length; i += 1) {
+    const entry = record.journal[i]!;
+    const frontier = frontierAt(frontiers, entry.frontier, `журнал[${i}]`);
+    // Один frontier — один business-момент (§3.8). Запись, чья метка не равна метке своего
     // frontier'а, означает, что раннер склеил два момента в один; числа при этом остаются
     // правдоподобными, а порядок событий — уже нет.
-    if (Number(f.tsUs) !== Number(frontier.tsUs)) {
+    if (Number(entry.tsUs) !== Number(frontier.tsUs)) {
       fail(
-        `филл ${f.fillId}: метка ${Number(f.tsUs)} не равна business-времени своего frontier'а ${Number(frontier.tsUs)}`,
+        `журнал[${i}]: метка ${Number(entry.tsUs)} не равна business-времени своего frontier'а ${Number(frontier.tsUs)}`,
       );
     }
+    const ts = msOf(Number(entry.tsUs), `журнал[${i}]`);
+
+    if (entry.kind === 'funding') {
+      fundingLedger.push({
+        barIndex: entry.frontier,
+        ts,
+        rate: entry.rate,
+        covered: entry.covered,
+        cost: entry.cost,
+      });
+      continue;
+    }
+
+    if (seenFillId.has(entry.fillId)) fail(`филл ${entry.fillId} записан дважды`);
+    seenFillId.add(entry.fillId);
+    if (!seenOrderId.has(entry.orderId)) {
+      fail(`филл ${entry.fillId} ссылается на незаписанный ордер ${entry.orderId}`);
+    }
+    fillsPerOrder.set(entry.orderId, (fillsPerOrder.get(entry.orderId) ?? 0) + 1);
     fills.push({
-      orderId: f.orderId,
-      fillBarIndex: f.frontier,
-      fillTs: msOf(Number(f.tsUs), `филл ${f.fillId}`),
-      fillPrice: f.price,
-      baseOpen: f.baseOpen,
-      slippageBps: f.slippageBps,
-      feePaid: f.fee,
-      size: f.qty,
-      ...(f.kind !== undefined ? { kind: f.kind } : {}),
+      orderId: entry.orderId,
+      fillBarIndex: entry.frontier,
+      fillTs: ts,
+      fillPrice: entry.price,
+      baseOpen: entry.baseOpen,
+      slippageBps: entry.slippageBps,
+      feePaid: entry.fee,
+      size: entry.qty,
+      ...(entry.fillKind !== undefined ? { kind: entry.fillKind } : {}),
     });
   }
   assertNonDecreasing(
-    record.fills.map((f) => f.frontier),
-    'филлы',
+    record.journal.map((e) => e.frontier),
+    'журнал',
   );
 
   // Состояние автомата обязано соответствовать наличию исполнений — иначе две половины записи
@@ -368,6 +432,14 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
     }
     if (expected === 'some' && count === 0) {
       fail(`ордер ${o.orderId} в состоянии ${o.terminalState}, но исполнений у него нет`);
+    }
+  }
+
+  // Аннотация, указывающая в пустоту, — тихая потеря причины: движок просто не найдёт её у своего
+  // закрывающего филла и отвергнет запись как неаннотированную, назвав НЕ ТУ причину отказа.
+  for (const c of record.closes) {
+    if (!seenFillId.has(c.exitFillId)) {
+      fail(`аннотация закрытия ссылается на незаписанный филл ${c.exitFillId}`);
     }
   }
 
@@ -389,25 +461,6 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
     };
   });
 
-  // --- Funding ---
-  const fundingLedger: FundingLedgerEntry[] = record.funding.map((entry, i) => {
-    const frontier = frontierAt(frontiers, entry.frontier, `funding[${i}]`);
-    if (Number(entry.tsUs) !== Number(frontier.tsUs)) {
-      fail(`funding[${i}]: метка не равна business-времени своего frontier'а`);
-    }
-    return {
-      barIndex: entry.frontier,
-      ts: msOf(Number(entry.tsUs), `funding[${i}]`),
-      rate: entry.rate,
-      covered: entry.covered,
-      cost: entry.cost,
-    };
-  });
-  assertNonDecreasing(
-    record.funding.map((e) => e.frontier),
-    'funding',
-  );
-
   // --- Вердикты риска: своя форма уже артефактная, проверяется адресация ---
   for (const rd of record.riskDecisions) {
     frontierAt(frontiers, rd.barIndex, `вердикт риска (${rd.decisionKind})`);
@@ -417,45 +470,71 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
     'вердикты риска',
   );
 
-  // --- Сделки ---
-  for (const t of record.trades) {
-    if (t.symbol !== record.symbol) {
-      fail(`сделка ${t.id}: символ ${t.symbol} не совпадает с символом прогона ${record.symbol}`);
-    }
-    const entry = frontierAt(frontiers, t.entryBarIndex, `сделка ${t.id} (вход)`);
-    const exit = frontierAt(frontiers, t.exitBarIndex, `сделка ${t.id} (выход)`);
-    if (t.exitBarIndex < t.entryBarIndex) {
-      fail(`сделка ${t.id}: выход на баре ${t.exitBarIndex} раньше входа на ${t.entryBarIndex}`);
-    }
-    // Сделка несёт И номер бара, И метку времени — два способа сказать одно, а значит и
-    // возможность их рассогласовать. Кривая equity берёт метку у оси и разойтись не может;
-    // сделка приходит собранной, поэтому её пара сверяется здесь.
-    const entryTs = msOf(Number(entry.tsUs), `сделка ${t.id} (вход)`);
-    const exitTs = msOf(Number(exit.tsUs), `сделка ${t.id} (выход)`);
-    if (t.entryTs !== entryTs || t.exitTs !== exitTs) {
-      fail(
-        `сделка ${t.id}: метки (${t.entryTs}, ${t.exitTs}) не совпадают с барами ` +
-          `${t.entryBarIndex}/${t.exitBarIndex} (${entryTs}, ${exitTs})`,
-      );
-    }
-  }
-  assertNonDecreasing(
-    record.trades.map((t) => t.exitBarIndex),
-    'сделки',
-  );
+  // --- Бухгалтерия: два независимых счёта обязаны сойтись ---
+  const entries = journalEntriesFor(record);
+  assertLedgerAgrees(foldJournal(entries), record.finalLedger);
 
-  assertLedgerAgrees(record);
+  // --- Сделки: считает ДВИЖОК, хост принёс только причины ---
+  const forcedExit =
+    record.forcedExit === undefined
+      ? undefined
+      : {
+          tsUs: frontierAt(frontiers, record.forcedExit.frontier, 'forcedExit').tsUs,
+          price: record.forcedExit.price,
+        };
+
+  let derivation;
+  try {
+    derivation = deriveActorTrades(entries, {
+      closes: record.closes,
+      ...(forcedExit !== undefined ? { forcedExit } : {}),
+    });
+  } catch (cause) {
+    // Отказ движка — заявление о записи, и вызывающему он нужен целиком: «нет аннотации причины у
+    // филла X» чинится адресно, «проекция упала» — нет.
+    fail(`деривация сделок отвергла запись: ${(cause as Error).message}`);
+  }
+
+  assertTradesReconcile(reconcileRealizedPnl(derivation), record.finalLedger.realizedPnl);
+
+  const trades: Trade[] = derivation.trades.map((t) => {
+    const entryBarIndex = barOfTsUs.get(Number(t.openedAtUs));
+    const exitBarIndex = barOfTsUs.get(Number(t.closedAtUs));
+    if (entryBarIndex === undefined || exitBarIndex === undefined) {
+      fail(`сделка эры ${t.era}: метка входа либо выхода не попадает ни в один frontier`);
+    }
+    const base = `trade-${record.symbol}-${entryBarIndex}-${exitBarIndex}`;
+    return {
+      id: isRichClose(t) ? `${base}-c${t.closeSeq}` : base,
+      symbol: record.symbol,
+      side: t.side,
+      entryBarIndex,
+      entryTs: msOf(Number(t.openedAtUs), `сделка эры ${t.era} (вход)`),
+      entryFillPrice: t.entryPrice,
+      exitBarIndex,
+      exitTs: msOf(Number(t.closedAtUs), `сделка эры ${t.era} (выход)`),
+      exitFillPrice: t.exitPrice,
+      size: t.size,
+      feePaid: t.feePaid,
+      realizedPnl: t.realizedPnl,
+      closeReason: t.closeReason,
+      // Опциональные ключи опускаются, когда инертны — идиома байт-идентичности артефактов.
+      ...(t.fundingPaid !== 0 ? { fundingPaid: t.fundingPaid } : {}),
+      ...(t.synthetic !== undefined ? { synthetic: t.synthetic } : {}),
+      ...(t.partial ? { closeKind: 'partial' as const } : {}),
+      ...(isRichClose(t) ? { closeSeq: t.closeSeq } : {}),
+    };
+  });
 
   return {
     // Пусто и НЕ по недосмотру: у актора `onEvent → ActorCommand[]`, у legacy
-    // `hook → StrategyDecision` — разные словари. Расширять общую с legacy форму дорого: её видят
-    // голдены и comparison. Развилка записана в спеке 083 и ждёт решения владельца; пофронтирная
-    // запись актора существует в агрегате как `frontiers` и никуда не теряется.
+    // `hook → StrategyDecision` — разные словари. ВРЕМЕННО: до раскатки обязателен отдельный
+    // actor timeline/artifact, потому что `frontiers` дальше этого слоя сегодня не уезжают.
     decisionRecords: [],
     orders,
     fills,
     riskDecisions: record.riskDecisions,
-    trades: record.trades,
+    trades,
     equityCurve,
     fundingLedger,
     // Отказы допуска случаются ДО прогона и до этого слоя не доезжают: спроецированный прогон по

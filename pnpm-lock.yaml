@@ -33,8 +33,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/sdk
       '@trdlabs/engine':
-        specifier: 0.7.0
-        version: 0.7.0
+        specifier: 0.8.0
+        version: 0.8.0
       '@trdlabs/sdk':
         specifier: ^0.15.0
         version: 0.15.0
@@ -905,8 +905,8 @@ packages:
     resolution: {integrity: sha512-R8Rdn8Hy72KKcebgLiv8jQcQkXoLMOGGv5uI1/k0l+snqkOzQ1R0ChUBCxWMlBsFMekWjq0wRudIweFs7sKT5A==}
     engines: {node: '>=14.0.0'}
 
-  '@trdlabs/engine@0.7.0':
-    resolution: {integrity: sha512-QXQCiZ257APX7ywdEzIAtstiZabH4eFtDqZGmOBC3sKWwPr8ladWivY2KP301/YAajgpA1+3BiJxEP/16DQGMA==}
+  '@trdlabs/engine@0.8.0':
+    resolution: {integrity: sha512-NqzYI/4Xpg3P41SSSmbiT4iKE7/6SIQ1gbsJ6vsNRZYpEbbIkljGmVjm7/6JtdMlR51DnT+t6C3Vy2Ph38ntdg==}
     engines: {node: '>=22'}
 
   '@trdlabs/sdk@0.15.0':
@@ -2390,7 +2390,7 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
-  '@trdlabs/engine@0.7.0':
+  '@trdlabs/engine@0.8.0':
     dependencies:
       '@trdlabs/sdk': 0.15.0
       decimal.js: 10.4.3
