@@ -280,6 +280,21 @@ describe('венью обязано быть ДОКАЗАНО, а не объя�
     expect(proveCandleVenue({ datasetRef: 'ds', candleVenue: '' }).proven).toBe(false);
   });
 
+  it.each([' ', '\t', '\n', '   \t\n '])('строка из одних пробелов (%j) — тоже не объявление', (blank) => {
+    // Такое же молчание, как отсутствие поля, но выглядит как заполненное значение. Пройди оно
+    // гейт — дальше сравнивалось бы с venue требования и никогда не совпадало: отказ пришёл бы с
+    // неверной причиной, отправляя читателя чинить манифест вместо метаданных датасета.
+    expect(proveCandleVenue({ datasetRef: 'ds', candleVenue: blank }).proven).toBe(false);
+  });
+
+  it('обрамляющие пробелы срезаются, а не отвергают объявление', () => {
+    // Проверка проверки: без неё «пробелы не объявление» зеленело бы и у прувера, отвергающего
+    // любое значение с пробелом внутри строки.
+    const proof = proveCandleVenue({ datasetRef: 'ds', candleVenue: '  bybit \n' });
+    expect(proof.proven).toBe(true);
+    expect(proof.venue).toBe('bybit');
+  });
+
   it('датасет с объявленным венью доказывает его и НАЗЫВАЕТ источник', () => {
     const proof = proveCandleVenue({ datasetRef: 'smoke-btc-1m', candleVenue: 'bybit' });
     expect(proof).toEqual({

@@ -227,8 +227,13 @@ export function proveCandleVenue(dataset: {
   readonly datasetRef: string;
   readonly candleVenue?: string;
 }): ActorCandleVenue {
-  if (dataset.candleVenue !== undefined && dataset.candleVenue !== '') {
-    return { proven: true, venue: dataset.candleVenue, source: `dataset_metadata:${dataset.datasetRef}` };
+  // `trim`, а не сравнение с пустой строкой: `' '` и `'\t'` — такое же молчание, как отсутствие
+  // поля, но выглядят как заполненное значение. Доказательством объявляется ЗНАЧЕНИЕ, а не факт,
+  // что в ключе что-то лежит; иначе пробел прошёл бы гейт и дальше сравнивался бы с venue
+  // требования, никогда не совпадая, — то есть отказ пришёл бы с неверной причиной.
+  const declared = dataset.candleVenue?.trim();
+  if (declared !== undefined && declared !== '') {
+    return { proven: true, venue: declared, source: `dataset_metadata:${dataset.datasetRef}` };
   }
   return {
     proven: false,
@@ -313,6 +318,12 @@ export interface ActorMarketDataAdmitted {
    * заморозка одного ничего не говорила бы про остальные, а `ActorInit` и запись прогона держали бы
    * разные объекты с одинаковым сейчас содержимым — то есть расхождение стало бы вопросом времени,
    * а не запрещённым состоянием. Заморожен и сам массив: `readonly` в типе не мешает `push`.
+   *
+   * ГРАНИЦА ЭТОЙ ГАРАНТИИ — ПРОЦЕСС ХОСТА. За сериализацией (sandbox/transport) идентичности
+   * объектов не существует по построению: десериализация всегда порождает новые. Требовать её там
+   * значило бы написать гейт, который не может пройти, — и он либо был бы отключён, либо доказывал
+   * бы не то, что заявлено. За границей проверяется другое: каноническое содержимое, ПОРЯДОК и
+   * неизменяемость восстановленного `ActorInit` в рантайме.
    */
   readonly subscriptions: readonly ActorSubscriptionDescriptor[];
   /**
