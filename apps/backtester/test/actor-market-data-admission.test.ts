@@ -8,17 +8,31 @@
 // Отказ обязан случиться ДО `createActor` и init. Актору, которому нечего доставлять, незачем
 // существовать: созданный актор — это уже ресурс, который надо закрывать, и отказ посреди прогона
 // стоит дороже отказа до него.
+//
+// ВТОРАЯ ТЕМА НАБОРА — `lookback`. Он НЕ означает «пропустить первые бары»: события прогрева
+// доставляются, отклоняется только `place` до готовности (§3.3, требование 6). Не доставлять их
+// значило бы сделать первый торговый бар недетерминированным.
 
 import { describe, expect, it } from 'vitest';
 import { CONTRACT_VERSION } from '@trading/research-contracts/research';
 import type { MarketDataRequirement } from '@trdlabs/sdk/research-contract';
 
-import { admitActorMarketData, subscriptionIdFor } from '../src/engine/actor/admission.js';
+import {
+  admitActorMarketData,
+  readinessAtBar,
+  subscriptionIdFor,
+  subscriptionsOf,
+} from '../src/engine/actor/admission.js';
 import type { ActorTapeCapabilities } from '../src/engine/actor/admission.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
 
 const MINUTE_US = 60_000_000;
-const TAPE: ActorTapeCapabilities = { symbol: 'BTCUSDT', barIntervalUs: MINUTE_US, barCount: 100 };
+const TAPE: ActorTapeCapabilities = {
+  venue: 'binance',
+  symbol: 'BTCUSDT',
+  barIntervalUs: MINUTE_US,
+  barCount: 100,
+};
 
 /** Требование ровно поддерживаемой формы — от него и отличаются все пробы ниже. */
 const supported = (over: Partial<MarketDataRequirement> = {}): MarketDataRequirement =>
@@ -46,45 +60,66 @@ const strategyWith = (marketData: readonly MarketDataRequirement[]): ResolvedStr
     module: {},
   }) as unknown as ResolvedStrategy;
 
+/** Допуск, о котором утверждается, что он РАЗРЕШИЛ: сузить здесь, а не в каждом ожидании. */
+const admitted = (marketData: readonly MarketDataRequirement[], tape: ActorTapeCapabilities = TAPE) => {
+  const out = admitActorMarketData(strategyWith(marketData), tape);
+  if (out.refusal !== null) throw new Error(`ожидался допуск, получен отказ: ${out.refusal.message}`);
+  return out;
+};
+
 describe('поддерживаемая форма проходит и НАЗЫВАЕТ подписки', () => {
   it('candle-only требование допускается', () => {
-    const out = admitActorMarketData(strategyWith([supported()]), TAPE);
-    expect(out.refusal).toBeNull();
+    expect(admitActorMarketData(strategyWith([supported()]), TAPE).refusal).toBeNull();
   });
 
   it('дескрипторы строит ДОПУСК, а не раннер', () => {
     // `subscriptionId` обязан быть канонической ссылкой на элемент этого же списка (контракт).
     // Назначать его в двух местах значило бы дать им разойтись: «проверено» относилось бы к одному
     // списку, «доставлено» — к другому.
-    const out = admitActorMarketData(strategyWith([supported()]), TAPE);
-    expect(out.subscriptions).toEqual([
+    expect(subscriptionsOf(admitted([supported()]).bindings)).toEqual([
       { subscriptionId: subscriptionIdFor('req-candles'), kind: 'candles', requirementId: 'req-candles' },
     ]);
   });
 
   it('несколько свечных требований — каждое со своим идентификатором', () => {
-    const out = admitActorMarketData(
-      strategyWith([supported(), supported({ id: 'req-second' })]),
-      TAPE,
-    );
-    expect(out.refusal).toBeNull();
-    expect(out.subscriptions.map((s) => s.subscriptionId)).toEqual([
+    const out = admitted([supported(), supported({ id: 'req-second' })]);
+    expect(subscriptionsOf(out.bindings).map((s) => s.subscriptionId)).toEqual([
       subscriptionIdFor('req-candles'),
       subscriptionIdFor('req-second'),
     ]);
   });
 });
 
-describe('всё, что не поддержано, отвергается — и отказ ничего не отдаёт', () => {
+describe('допуск отдаёт РАЗРЕШЁННЫЙ вход, а не сырьё для повторного резолва', () => {
+  it('binding несёт то самое требование и его lookback', () => {
+    // Раннеру нечего перечитывать в манифесте: всё проверенное лежит здесь. Второе чтение того же
+    // поля в другом месте рано или поздно разойдётся с первым — и разойдётся молча.
+    const req = supported({ lookback: 7 });
+    const [binding, ...rest] = admitted([req]).bindings;
+    expect(rest).toEqual([]);
+    expect(binding!.requirement).toBe(req);
+    expect(binding!.lookback).toBe(7);
+    expect(binding!.descriptor.requirementId).toBe('req-candles');
+  });
+
+  it('порядок bindings повторяет порядок требований манифеста', () => {
+    const out = admitted([supported({ id: 'a' }), supported({ id: 'b' }), supported({ id: 'c' })]);
+    expect(out.bindings.map((b) => b.requirement.id)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('всё, что не поддержано, отвергается — и отказ НЕ ОТДАЁТ ничего пригодного', () => {
   const refuses = (marketData: readonly MarketDataRequirement[], match: RegExp): void => {
     const out = admitActorMarketData(strategyWith(marketData), TAPE);
     expect(out.refusal?.code).toBe('unsupported_lifecycle');
     // Пустой Pointer: нарушен не узел запроса, а возможности хоста.
     expect(out.refusal?.path).toBe('');
     expect(out.refusal?.message).toMatch(match);
-    // Отказ НЕ отдаёт подписок: половина результата хуже отсутствия — вызывающий, забывший
-    // проверить отказ, построил бы актора на пустом списке.
-    expect(out.subscriptions).toEqual([]);
+    // На отказе полей результата НЕТ ВОВСЕ — ни пустого списка, ни нулевого порога. Пустой список и
+    // ноль читаются как разрешающие значения тем, кто забыл проверить отказ; отсутствие поля не
+    // читается никак.
+    expect(out.bindings).toBeUndefined();
+    expect(out.tradingFromBarIndex).toBeUndefined();
   };
 
   it.each(['open_interest', 'liquidations', 'taker_volume', 'funding'])(
@@ -94,10 +129,26 @@ describe('всё, что не поддержано, отвергается — �
     },
   );
 
+  it('чужое венью — подставить одно вместо другого нельзя', () => {
+    refuses(
+      [supported({ instrument: { venue: 'bybit', symbol: 'BTCUSDT' } } as Partial<MarketDataRequirement>)],
+      /просит венью bybit, а прогон идёт по binance/,
+    );
+  });
+
   it('чужой инструмент этой лентой не обслужить', () => {
     refuses(
       [supported({ instrument: { venue: 'binance', symbol: 'ETHUSDT' } } as Partial<MarketDataRequirement>)],
       /а прогон идёт по BTCUSDT/,
+    );
+  });
+
+  it('priceType вне контракта — типом это НЕ проверено ни разу', () => {
+    // Манифест приезжает из JSON недоверенного модуля. Тип замыкает `priceType` на `'trade'`, но
+    // проверять его обязан рантайм: приведение ниже воспроизводит ровно то, что придёт по проводу.
+    refuses(
+      [supported({ priceType: 'mark' } as unknown as Partial<MarketDataRequirement>)],
+      /просит priceType «mark»/,
     );
   });
 
@@ -112,8 +163,8 @@ describe('всё, что не поддержано, отвергается — �
     );
   });
 
-  it('lookback длиннее ленты не набрать', () => {
-    refuses([supported({ lookback: 101 } as Partial<MarketDataRequirement>)], /барах в ленте/);
+  it('lookback длиннее ленты: готовность не наступит никогда', () => {
+    refuses([supported({ lookback: 101 } as Partial<MarketDataRequirement>)], /готовность не наступит/);
   });
 
   it('дубликат требования', () => {
@@ -124,6 +175,44 @@ describe('всё, что не поддержано, отвергается — �
     // Контракт 017.4 отвергает такой манифест раньше, но допуск не вправе на это рассчитывать:
     // проверка, опирающаяся на «кто-то до меня уже посмотрел», исчезает вместе с тем, кто смотрел.
     refuses([], /не объявляет marketData/);
+  });
+});
+
+describe('lookback — это ПРОГРЕВ, а не пропуск: граница торговых прав', () => {
+  it('порог равен объявленному lookback', () => {
+    expect(admitted([supported({ lookback: 5 })]).tradingFromBarIndex).toBe(5);
+  });
+
+  it('lookback: 0 — торговля с первого же события', () => {
+    const out = admitted([supported({ lookback: 0 })]);
+    expect(out.tradingFromBarIndex).toBe(0);
+    expect(readinessAtBar(0, out.tradingFromBarIndex)).toBe('ready');
+  });
+
+  it('lookback === barCount — вся лента доставляется, торговых баров ноль', () => {
+    // Это НЕ отказ: прогрев выполним и выполнен, торговать после него просто не на чем.
+    const out = admitted([supported({ lookback: TAPE.barCount })]);
+    expect(out.tradingFromBarIndex).toBe(TAPE.barCount);
+    // Последний бар ленты — всё ещё прогрев, значит торговых баров действительно нет ни одного.
+    expect(readinessAtBar(TAPE.barCount - 1, out.tradingFromBarIndex)).toBe('warming_up');
+  });
+
+  it('порог — МАКСИМУМ по требованиям, а не первый и не сумма', () => {
+    // `readiness` у актора одна на всех; актор готов, когда набрана история КАЖДОГО требования.
+    // Первый дал бы права раньше времени, сумма — позже, и оба молча.
+    const out = admitted([
+      supported({ id: 'short', lookback: 3 }),
+      supported({ id: 'long', lookback: 20 }),
+      supported({ id: 'mid', lookback: 8 }),
+    ]);
+    expect(out.tradingFromBarIndex).toBe(20);
+  });
+
+  it('граница readiness проходит РОВНО по индексу порога', () => {
+    // Сдвиг на единицу здесь стоит одного торгового бара и не виден ни в одном числе результата.
+    expect(readinessAtBar(4, 5)).toBe('warming_up');
+    expect(readinessAtBar(5, 5)).toBe('ready');
+    expect(readinessAtBar(6, 5)).toBe('ready');
   });
 });
 
@@ -139,10 +228,21 @@ describe('ПРОВЕРКА ПРОВЕРКИ: границы допуска', () 
     expect(admitActorMarketData(strategyWith([req]), TAPE).refusal).toBeNull();
   });
 
+  it('своё венью допускается — иначе проверка венью зеленела бы, отвергая любое', () => {
+    const out = admitActorMarketData(strategyWith([supported()]), { ...TAPE, venue: 'bybit' });
+    expect(out.refusal?.message).toMatch(/просит венью binance, а прогон идёт по bybit/);
+    // …и ровно та же стратегия на своей ленте проходит.
+    expect(
+      admitActorMarketData(strategyWith([supported({ instrument: { venue: 'bybit', symbol: 'BTCUSDT' } } as Partial<MarketDataRequirement>)]), {
+        ...TAPE,
+        venue: 'bybit',
+      }).refusal,
+    ).toBeNull();
+  });
+
   it('не-event-driven манифест сюда не попадает — решает вызывающий, а не эта функция', () => {
     // Функция намеренно НЕ спрашивает про lifecycle: её вызывают уже после `admitActorRun`, и
     // вторая проверка того же условия рано или поздно разойдётся с первой.
-    const out = admitActorMarketData(strategyWith([supported()]), TAPE);
-    expect(out.refusal).toBeNull();
+    expect(admitActorMarketData(strategyWith([supported()]), TAPE).refusal).toBeNull();
   });
 });

@@ -13,8 +13,11 @@
 // single_position-пути значит подменить объявленную семантику молча: прогон завершится, числа
 // получатся, и ничто не скажет, что исполнялось не то, что объявлено.
 
+import { findDuplicateSubscriptionIds } from '@trdlabs/sdk/research-contract';
 import type {
+  ActorReadiness,
   ActorSubscriptionDescriptor,
+  CandlesMarketDataRequirement,
   MarketDataRequirement,
 } from '@trdlabs/sdk/research-contract';
 
@@ -172,8 +175,29 @@ export function admitActorExecutor(
 /** Точный поддерживаемый вид требования в этом срезе. */
 const SUPPORTED_KIND = 'candles';
 
+/**
+ * Единственный ценовой ряд свечей в контракте. Тип замыкает `priceType` на `'trade'`, но манифест
+ * приезжает из JSON недоверенного модуля: типом это НЕ проверено ни разу. Сравнение ниже намеренно
+ * идёт через `String(...)`, иначе TypeScript сузил бы обе стороны к литералу и выкинул проверку как
+ * заведомо истинную — то есть гейта не осталось бы ровно там, где он единственный.
+ */
+const SUPPORTED_PRICE_TYPE = 'trade';
+
 /** Что хост может доставить: параметры ленты, против которых сверяется подписка. */
 export interface ActorTapeCapabilities {
+  /**
+   * Венью, которое хост ОБЪЯВЛЯЕТ для этой ленты.
+   *
+   * ЧЕСТНАЯ ОГОВОРКА: в бэктестере нет оси венью — ни у датасета, ни у ленты, ни у запроса (проверено
+   * поиском по `src`: слова `venue` там нет вовсе). Поэтому значение сюда КЛАДЁТ вызывающий, и
+   * проверка ниже ловит ровно один класс ошибки: стратегия просит ДРУГОЕ венью, чем то, на котором
+   * хост считает себя работающим. Она не может поймать неверно размеченные данные — для этого венью
+   * должно приехать вместе с ними, а этого канала пока не существует.
+   *
+   * Поле обязательное, а не опциональное с дефолтом, намеренно: дефолт означал бы «совпадает с чем
+   * угодно» у вызывающего, который просто забыл его заполнить.
+   */
+  readonly venue: string;
   readonly symbol: string;
   /** Интервал бара ленты в микросекундах. */
   readonly barIntervalUs: number;
@@ -181,21 +205,79 @@ export interface ActorTapeCapabilities {
   readonly barCount: number;
 }
 
-export interface ActorMarketDataAdmission {
-  readonly refusal: ActorAdmissionRefusal | null;
-  /**
-   * ФАКТИЧЕСКИЕ дескрипторы подписок, которые уедут в `ActorInit.subscriptions`.
-   *
-   * Строятся здесь, а не в раннере: `subscriptionId` обязан быть канонической и стабильной ссылкой
-   * на элемент этого же списка (контракт, doc у `ActorEnvelope`), и назначать его в двух местах
-   * значило бы дать им разойтись.
-   */
-  readonly subscriptions: readonly ActorSubscriptionDescriptor[];
+/**
+ * Одна РАЗРЕШЁННАЯ подписка: дескриптор плюс требование, которым она разрешена.
+ *
+ * Раннер обязан работать с этим, а не перечитывать манифест: манифест — сырьё, здесь же лежит уже
+ * проверенное. Второе чтение того же поля в другом месте рано или поздно разойдётся с первым, и
+ * разойдётся молча — «проверено» будет относиться к одному значению, «доставлено» к другому.
+ */
+export interface ActorSubscriptionBinding {
+  /** Ровно то, что уедет в `ActorInit.subscriptions`. */
+  readonly descriptor: ActorSubscriptionDescriptor;
+  /** Требование манифеста, сужённое до поддержанного вида ПРОВЕРКОЙ, а не приведением типа. */
+  readonly requirement: CandlesMarketDataRequirement;
+  /** Проверенный `lookback` этого требования — в барах ленты. */
+  readonly lookback: number;
 }
+
+/** Допуск отказал: ничего пригодного к употреблению НЕ отдаётся — этого требует тип, а не дисциплина. */
+export interface ActorMarketDataRefused {
+  readonly refusal: ActorAdmissionRefusal;
+  readonly bindings?: undefined;
+  readonly tradingFromBarIndex?: undefined;
+}
+
+/** Допуск разрешил: полный разрешённый вход раннера. */
+export interface ActorMarketDataAdmitted {
+  readonly refusal: null;
+  readonly bindings: readonly ActorSubscriptionBinding[];
+  /**
+   * Индекс первого ТОРГОВОГО бара — граница готовности (§3.3, требование 6).
+   *
+   * СЕМАНТИКА `lookback`, И ОНА НЕ «ПРОПУСТИТЬ»: бары `0 … lookback-1` актору ДОСТАВЛЯЮТСЯ, просто
+   * при `readiness: 'warming_up'`, и команды `place` в этот период отклоняются. Не доставлять их
+   * значило бы сделать первый торговый бар недетерминированным: его решение зависело бы от того,
+   * сколько истории актор случайно успел увидеть.
+   *
+   * Порог — МАКСИМУМ по требованиям: `readiness` у актора одна на всех (`ActorContext.readiness`),
+   * и актор готов лишь тогда, когда набрана история КАЖДОГО объявленного требования.
+   *
+   * Края: `lookback: 0` — торговля с первого же события; `lookback === barCount` — вся лента
+   * доставлена, торговых баров ноль.
+   */
+  readonly tradingFromBarIndex: number;
+}
+
+/**
+ * Результат допуска подписок. Union, а не запись с обнулёнными полями: на пути отказа полей
+ * `bindings`/`tradingFromBarIndex` НЕ СУЩЕСТВУЕТ, и вызывающий, забывший проверить отказ, не
+ * скомпилируется. Прежняя редакция отдавала на отказе пустой список и нулевой порог — то есть
+ * молча разрешающие значения тому, кто не посмотрел.
+ */
+export type ActorMarketDataAdmission = ActorMarketDataRefused | ActorMarketDataAdmitted;
 
 /** Идентификатор подписки выводится из требования — хост его не выбирает произвольно. */
 export function subscriptionIdFor(requirementId: string): string {
   return `sub-${requirementId}`;
+}
+
+/**
+ * Проекция разрешённых подписок в `ActorInit.subscriptions`. Единственная — чтобы список,
+ * который проверен, и список, который доставлен, были одним списком.
+ */
+export function subscriptionsOf(
+  bindings: readonly ActorSubscriptionBinding[],
+): readonly ActorSubscriptionDescriptor[] {
+  return bindings.map((b) => b.descriptor);
+}
+
+/**
+ * Готовность на баре с индексом `barIndex`. Живёт рядом с тем, кто вычислил порог: сравнение,
+ * оставленное раннеру, — это приглашение перепутать `<` и `<=` и сдвинуть торговлю на бар.
+ */
+export function readinessAtBar(barIndex: number, tradingFromBarIndex: number): ActorReadiness {
+  return barIndex < tradingFromBarIndex ? 'warming_up' : 'ready';
 }
 
 /**
@@ -210,77 +292,97 @@ export function admitActorMarketData(
 ): ActorMarketDataAdmission {
   const requirements = (strategy.manifest as { marketData?: readonly MarketDataRequirement[] })
     .marketData;
-  const none: { readonly subscriptions: readonly ActorSubscriptionDescriptor[] } = { subscriptions: [] };
+  const no = (message: string): ActorMarketDataRefused => ({ refusal: refuse(message) });
 
   if (requirements === undefined || requirements.length === 0) {
     // Контракт 017.4 требует непустой `marketData` у event-driven манифеста и отвергает такой
     // манифест раньше допуска. Ветка оставлена потому, что допуск обязан быть самостоятельным: он
     // не вправе полагаться на то, что кто-то раньше уже проверил.
-    return { ...none, refusal: refuse(`${label(strategy)} не объявляет marketData`) };
+    return no(`${label(strategy)} не объявляет marketData`);
   }
 
   const seen = new Set<string>();
-  const subscriptions: ActorSubscriptionDescriptor[] = [];
+  const bindings: ActorSubscriptionBinding[] = [];
 
   for (const req of requirements) {
     if (req.kind !== SUPPORTED_KIND) {
-      return {
-        ...none,
-        refusal: refuse(
-          `${label(strategy)} требует market data вида «${req.kind}»; в этом срезе поддержаны только ` +
-            `«${SUPPORTED_KIND}». Запустить прогон, не доставляя объявленного, значит соврать молча`,
-        ),
-      };
+      return no(
+        `${label(strategy)} требует market data вида «${req.kind}»; в этом срезе поддержаны только ` +
+          `«${SUPPORTED_KIND}». Запустить прогон, не доставляя объявленного, значит соврать молча`,
+      );
+    }
+    // `String(...)` — не украшение: без него TypeScript сузил бы обе стороны к `'trade'` и счёл
+    // сравнение заведомо истинным. Значение приезжает из JSON и типом здесь не подтверждено ничем.
+    if (String(req.priceType) !== SUPPORTED_PRICE_TYPE) {
+      return no(
+        `${label(strategy)}: требование «${req.id}» просит priceType «${String(req.priceType)}»; лента ` +
+          `несёт только «${SUPPORTED_PRICE_TYPE}» (сделки), и другого ценового ряда у неё нет`,
+      );
     }
     if (seen.has(req.id)) {
-      return { ...none, refusal: refuse(`${label(strategy)}: требование «${req.id}» объявлено дважды`) };
+      return no(`${label(strategy)}: требование «${req.id}» объявлено дважды`);
     }
     seen.add(req.id);
 
+    if (req.instrument.venue !== tape.venue) {
+      return no(
+        `${label(strategy)}: требование «${req.id}» просит венью ${req.instrument.venue}, а прогон идёт ` +
+          `по ${tape.venue}. Подставить одно вместо другого нельзя: у разных венью различаются и цены, ` +
+          'и комиссии, и funding',
+      );
+    }
     if (req.instrument.symbol !== tape.symbol) {
-      return {
-        ...none,
-        refusal: refuse(
-          `${label(strategy)}: требование «${req.id}» просит ${req.instrument.symbol}, а прогон идёт по ` +
-            `${tape.symbol} — этой лентой его не обслужить`,
-        ),
-      };
+      return no(
+        `${label(strategy)}: требование «${req.id}» просит ${req.instrument.symbol}, а прогон идёт по ` +
+          `${tape.symbol} — этой лентой его не обслужить`,
+      );
     }
     if (Number(req.interval) !== tape.barIntervalUs) {
-      return {
-        ...none,
-        refusal: refuse(
-          `${label(strategy)}: требование «${req.id}» просит интервал ${Number(req.interval)} мкс, а ` +
-            `лента идёт с шагом ${tape.barIntervalUs} мкс. Агрегация интервалов в этом срезе не делается`,
-        ),
-      };
+      return no(
+        `${label(strategy)}: требование «${req.id}» просит интервал ${Number(req.interval)} мкс, а ` +
+          `лента идёт с шагом ${tape.barIntervalUs} мкс. Агрегация интервалов в этом срезе не делается`,
+      );
     }
     const revisionMode = req.revisionPolicy?.mode;
     if (revisionMode !== undefined && revisionMode !== 'final_only') {
-      return {
-        ...none,
-        refusal: refuse(
-          `${label(strategy)}: требование «${req.id}» просит revisionPolicy «${revisionMode}»; лента ` +
-            'ревизий не несёт, и обещать их нечем',
-        ),
-      };
+      return no(
+        `${label(strategy)}: требование «${req.id}» просит revisionPolicy «${revisionMode}»; лента ` +
+          'ревизий не несёт, и обещать их нечем',
+      );
     }
+    // Граница ровно на `barCount`, и стороны от неё разные по смыслу, а не по строгости знака:
+    // `lookback === barCount` — прогрев ВЫПОЛНИМ и выполнен, торговых баров после него просто не
+    // осталось (допускаем); `lookback > barCount` — объявленная история недостижима в принципе,
+    // готовность не наступит никогда. Второе — ошибка конфигурации, и прогон, который структурно
+    // не может торговать, лучше назвать отказом, чем отдать как пустой успех.
     if (!Number.isInteger(req.lookback) || req.lookback < 0 || req.lookback > tape.barCount) {
-      return {
-        ...none,
-        refusal: refuse(
-          `${label(strategy)}: требование «${req.id}» просит lookback ${req.lookback} при ${tape.barCount} ` +
-            'барах в ленте — столько истории до первого события не набрать',
-        ),
-      };
+      return no(
+        `${label(strategy)}: требование «${req.id}» просит lookback ${req.lookback} при ${tape.barCount} ` +
+          'барах в ленте — такой прогрев недостижим, готовность не наступит никогда',
+      );
     }
 
-    subscriptions.push({
-      subscriptionId: subscriptionIdFor(req.id),
-      kind: req.kind,
-      requirementId: req.id,
+    bindings.push({
+      descriptor: { subscriptionId: subscriptionIdFor(req.id), kind: req.kind, requirementId: req.id },
+      requirement: req,
+      lookback: req.lookback,
     });
   }
 
-  return { refusal: null, subscriptions };
+  // Контрактный гейт уникальности (`findDuplicateSubscriptionIds`, doc у `ActorSubscriptionDescriptor`):
+  // резолвер ОБЯЗАН гарантировать её fail-closed при сборке `ActorInit`. То, что `subscriptionIdFor`
+  // инъективен, а дубли `req.id` отвергнуты выше, — это рассуждение, а не проверка; рассуждение
+  // переживёт правку идентификатора молча, а вызов — нет.
+  const duplicates = findDuplicateSubscriptionIds(subscriptionsOf(bindings));
+  if (duplicates.length > 0) {
+    return no(
+      `${label(strategy)}: подписки получили неуникальные subscriptionId (${duplicates.join(', ')}) — ` +
+        'порядок обработки событий стал бы невоспроизводимым',
+    );
+  }
+
+  // Максимум, а не сумма и не первый: готовность у актора одна, и наступает она, когда набрана
+  // история КАЖДОГО требования. Пустым `bindings` быть не может — пустой `marketData` отвергнут выше.
+  const tradingFromBarIndex = Math.max(...bindings.map((b) => b.lookback));
+  return { refusal: null, bindings, tradingFromBarIndex };
 }
