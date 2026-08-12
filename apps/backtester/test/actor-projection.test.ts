@@ -33,7 +33,7 @@ import type {
   ActorJournalEntry,
 } from '../src/engine/actor/execution-record.js';
 import type { ActorTimeline, ActorTimelineArtifact } from '../src/engine/actor/timeline.js';
-import type { ActorCommand } from '@trdlabs/sdk/research-contract';
+import type { ActorCommand, ActorInputEvent } from '@trdlabs/sdk/research-contract';
 import { ActorTimelineError } from '../src/engine/actor/timeline.js';
 import {
   ActorProjectionError,
@@ -118,16 +118,32 @@ const PLACE: ActorCommand = {
   qtyUsd: 100,
 };
 
+const candleEvent = (i: number): ActorInputEvent => ({
+  kind: 'market.candle.closed',
+  candle: {
+    value: { open: 100, high: 101, low: 99, close: 100.5, volume: 10 },
+    eventTsUs: FRONTIERS[i]!.tsUs,
+  } as never,
+});
+
+const delivery = (i: number) => ({
+  subscriptionId: 'sub-btc-1m',
+  row: { symbol: SYMBOL, tsUs: FRONTIERS[i]!.tsUs },
+});
+
+const timelineEntry = (i: number, commands: ActorTimeline[number]['commands'] = []) => ({
+  seq: i,
+  frontier: i,
+  tsUs: FRONTIERS[i]!.tsUs,
+  event: candleEvent(i),
+  delivery: delivery(i),
+  commands,
+});
+
 const TIMELINE: ActorTimeline = [
-  {
-    seq: 0,
-    frontier: 0,
-    tsUs: FRONTIERS[0]!.tsUs,
-    event: { kind: 'market.candle.closed' },
-    commands: [{ command: PLACE, outcome: { status: 'applied' } }],
-  },
-  { seq: 1, frontier: 1, tsUs: FRONTIERS[1]!.tsUs, event: { kind: 'market.candle.closed' }, commands: [] },
-  { seq: 2, frontier: 2, tsUs: FRONTIERS[2]!.tsUs, event: { kind: 'market.candle.closed' }, commands: [] },
+  timelineEntry(0, [{ command: PLACE, outcome: { status: 'applied' } }]),
+  timelineEntry(1),
+  timelineEntry(2),
 ];
 
 /** Ожидаемая артефактная форма того же потока — он обязан ДОЖИТЬ до результата, а не только пройти проверку. */
@@ -136,11 +152,12 @@ const TIMELINE_ROWS: ActorTimelineArtifact = [
     seq: 0,
     barIndex: 0,
     ts: T0,
-    event: 'market.candle.closed',
+    event: candleEvent(0),
+    delivery: delivery(0),
     commands: [{ command: PLACE, status: 'applied' }],
   },
-  { seq: 1, barIndex: 1, ts: T0 + MINUTE, event: 'market.candle.closed', commands: [] },
-  { seq: 2, barIndex: 2, ts: T0 + 2 * MINUTE, event: 'market.candle.closed', commands: [] },
+  { seq: 1, barIndex: 1, ts: T0 + MINUTE, event: candleEvent(1), delivery: delivery(1), commands: [] },
+  { seq: 2, barIndex: 2, ts: T0 + 2 * MINUTE, event: candleEvent(2), delivery: delivery(2), commands: [] },
 ];
 
 const RISK: RiskDecision = {

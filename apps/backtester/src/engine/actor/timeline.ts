@@ -39,7 +39,13 @@
 // строкой — новый вид команды или события красит СБОРКУ вместо того, чтобы завестись опечаткой.
 
 import { assertContiguous } from '@trdlabs/engine';
-import type { ActorCommand, ActorInputEventKind, TimestampUs } from '@trdlabs/sdk/research-contract';
+import type {
+  ActorCommand,
+  ActorInputEvent,
+  ActorInputEventKind,
+  SubscriptionId,
+  TimestampUs,
+} from '@trdlabs/sdk/research-contract';
 
 import { canonicalJson } from '../../determinism/canonical-json.js';
 
@@ -62,15 +68,40 @@ export interface ActorTimelineCommand {
 }
 
 /**
- * Входное событие: вид из ЗАМКНУТОГО каталога контракта и идентичность там, где она есть.
+ * Класс доставки события — определяет, какая идентичность обязана быть записана.
  *
- * Здесь записан вид, а не событие целиком: рыночное событие несёт свой payload (OHLCV, объёмы), и
- * он уже лежит в ленте — вот это и была бы вторая копия одного факта. У команды такого носителя
- * нет, поэтому она пишется целиком.
+ * Таблицей по ЗАМКНУТОМУ каталогу контракта: новый вид события красит сборку, а не заводится с
+ * произвольным правилом. Три класса, а не два, потому что `market.subscription.status_changed`
+ * относится к подписке, но НЕ к строке ленты — у смены статуса строки нет.
  */
-export interface ActorTimelineEvent {
-  readonly kind: ActorInputEventKind;
-  readonly ref?: string;
+const DELIVERY_CLASS: Readonly<Record<ActorInputEventKind, 'tape' | 'subscription' | 'internal'>> = {
+  'market.candle.closed': 'tape',
+  'market.open_interest.observed': 'tape',
+  'market.liquidations.bucket_closed': 'tape',
+  'market.taker_volume.bucket_closed': 'tape',
+  'market.funding.observed': 'tape',
+  'market.subscription.status_changed': 'subscription',
+  'order.accepted': 'internal',
+  'order.denied': 'internal',
+  'order.rejected': 'internal',
+  'order.canceled': 'internal',
+  'cancel.rejected': 'internal',
+  'order.expired': 'internal',
+  fill: 'internal',
+  'timer.fired': 'internal',
+  'trading_state.changed': 'internal',
+};
+
+/**
+ * Точная идентичность доставки рыночного события.
+ *
+ * `subscriptionId` — ссылка на элемент `ActorInit.subscriptions`, а не свободная строка (контракт,
+ * doc у `ActorEnvelope`). `row` — строка ленты, названная СИМВОЛОМ И МЕТКОЙ, а не индексом: индекс
+ * съезжает при любой правке ленты и указывает потом на чужие данные молча.
+ */
+export interface ActorMarketDelivery {
+  readonly subscriptionId: SubscriptionId;
+  readonly row?: { readonly symbol: string; readonly tsUs: TimestampUs };
 }
 
 /**
@@ -85,7 +116,18 @@ export interface ActorTimelineEntry {
   readonly frontier: number;
   /** Business-время `U` своего frontier'а. */
   readonly tsUs: TimestampUs;
-  readonly event: ActorTimelineEvent;
+  /**
+   * КОНТРАКТНОЕ СОБЫТИЕ ЦЕЛИКОМ.
+   *
+   * Первая редакция писала вид и ссылку, рассуждая «рыночный payload уже в ленте». Рассуждение
+   * верно ровно для рыночных данных и ложно для всего остального: `reason` у `order.denied`,
+   * `dueTsUs` у `timer.fired`, `previous`/`state` у `trading_state.changed`, статус подписки и сами
+   * числа филла В ЛЕНТЕ НЕ ЛЕЖАТ. Для них поток — единственный носитель, и вид без payload'а
+   * означал бы, что событие записано, а что в нём было — нет.
+   */
+  readonly event: ActorInputEvent;
+  /** Идентичность доставки. Обязательна для рыночных видов, запрещена для внутренних. */
+  readonly delivery?: ActorMarketDelivery;
   readonly commands: readonly ActorTimelineCommand[];
   /** `seq` записи, из которой это событие выросло. Отсутствует у внешних. */
   readonly causedBySeq?: number;
@@ -99,8 +141,8 @@ export interface ActorTimelineRow {
   readonly seq: number;
   readonly barIndex: number;
   readonly ts: number;
-  readonly event: ActorInputEventKind;
-  readonly eventRef?: string;
+  readonly event: ActorInputEvent;
+  readonly delivery?: ActorMarketDelivery;
   readonly causedBySeq?: number;
   readonly commands: readonly {
     readonly command: ActorCommand;
@@ -210,6 +252,25 @@ export function assertActorTimeline(timeline: ActorTimeline, axis: readonly Time
       }
     }
 
+    // Идентичность доставки обязана соответствовать классу события. Рыночное без неё нельзя
+    // связать ни с подпиской, ни со строкой ленты; внутреннее с ней утверждало бы подписку,
+    // которой у него нет.
+    const cls = DELIVERY_CLASS[entry.event.kind];
+    if (cls === 'internal' && entry.delivery !== undefined) {
+      fail(`seq ${entry.seq}: у внутреннего события ${entry.event.kind} записана доставка подписки`);
+    }
+    if (cls !== 'internal' && entry.delivery === undefined) {
+      fail(`seq ${entry.seq}: у события ${entry.event.kind} нет идентичности доставки`);
+    }
+    if (cls === 'tape' && entry.delivery?.row === undefined) {
+      fail(`seq ${entry.seq}: у рыночного события ${entry.event.kind} не записана строка ленты`);
+    }
+    if (cls === 'subscription' && entry.delivery?.row !== undefined) {
+      fail(
+        `seq ${entry.seq}: у смены статуса подписки записана строка ленты — у неё строки нет`,
+      );
+    }
+
     for (const c of entry.commands) {
       if (c.outcome.status !== 'applied' && c.outcome.reason.trim() === '') {
         fail(`seq ${entry.seq}: команда ${c.command.kind} со статусом ${c.outcome.status} без причины`);
@@ -264,8 +325,8 @@ export function projectActorTimeline(
       seq: entry.seq,
       barIndex: entry.frontier,
       ts: tsUs / US_PER_MS,
-      event: entry.event.kind,
-      ...(entry.event.ref !== undefined ? { eventRef: entry.event.ref } : {}),
+      event: entry.event,
+      ...(entry.delivery !== undefined ? { delivery: entry.delivery } : {}),
       ...(entry.causedBySeq !== undefined ? { causedBySeq: entry.causedBySeq } : {}),
       commands: entry.commands.map((c) => ({
         command: c.command,

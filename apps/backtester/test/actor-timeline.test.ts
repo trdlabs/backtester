@@ -26,7 +26,7 @@ import type {
   ActorTimelineEntry,
   TimelineAxis,
 } from '../src/engine/actor/timeline.js';
-import type { ActorCommand } from '@trdlabs/sdk/research-contract';
+import type { ActorCommand, ActorInputEvent } from '@trdlabs/sdk/research-contract';
 
 const T0 = 1_700_000_000_000;
 const MINUTE = 60_000;
@@ -75,6 +75,20 @@ const axisFor = (timeline: ActorTimeline, n: number): TimelineAxis[] => {
 
 const AXIS = axisOf(2);
 
+/** Свеча: рыночное событие, значит обязана нести идентичность подписки И строки ленты. */
+const candleEvent = (frontier: number): ActorInputEvent => ({
+  kind: 'market.candle.closed',
+  candle: {
+    value: { open: 100, high: 101, low: 99, close: 100.5, volume: 10 },
+    eventTsUs: timestampUsFromMillis(T0 + frontier * MINUTE),
+  } as never,
+});
+
+const delivery = (frontier: number) => ({
+  subscriptionId: 'sub-btc-1m',
+  row: { symbol: 'BTCUSDT', tsUs: timestampUsFromMillis(T0 + frontier * MINUTE) },
+});
+
 const entry = (
   seq: number,
   frontier: number,
@@ -84,7 +98,18 @@ const entry = (
   seq,
   frontier,
   tsUs: AXIS[frontier]!.tsUs,
-  event: { kind: event },
+  ...(event === 'market.candle.closed'
+    ? { event: candleEvent(frontier), delivery: delivery(frontier) }
+    : {
+        event: {
+          kind: 'fill',
+          clientOrderId: 'o1',
+          price: 100,
+          qty: 1,
+          fee: 0.1,
+          last: true,
+        } as ActorInputEvent,
+      }),
   commands: [],
   ...extra,
 });
@@ -99,7 +124,7 @@ const STREAM: ActorTimeline = [
   entry(0, 0, 'market.candle.closed', {
     commands: [{ command: PLACE, outcome: { status: 'applied' } }],
   }),
-  entry(1, 0, 'fill', { event: { kind: 'fill', ref: 'o1' }, causedBySeq: 0 }),
+  entry(1, 0, 'fill', { causedBySeq: 0 }),
   entry(2, 1, 'market.candle.closed'),
 ];
 
@@ -110,20 +135,36 @@ describe('форма и проекция', () => {
         seq: 0,
         barIndex: 0,
         ts: T0,
-        event: 'market.candle.closed',
+        event: candleEvent(0),
+        delivery: delivery(0),
         commands: [{ command: PLACE, status: 'applied' }],
       },
-      { seq: 1, barIndex: 0, ts: T0, event: 'fill', eventRef: 'o1', causedBySeq: 0, commands: [] },
-      { seq: 2, barIndex: 1, ts: T0 + MINUTE, event: 'market.candle.closed', commands: [] },
+      {
+        seq: 1,
+        barIndex: 0,
+        ts: T0,
+        event: { kind: 'fill', clientOrderId: 'o1', price: 100, qty: 1, fee: 0.1, last: true },
+        causedBySeq: 0,
+        commands: [],
+      },
+      {
+        seq: 2,
+        barIndex: 1,
+        ts: T0 + MINUTE,
+        event: candleEvent(1),
+        delivery: delivery(1),
+        commands: [],
+      },
     ]);
   });
 
   it('необязательные ключи отсутствуют, а не равны undefined', () => {
-    const [row] = projectActorTimeline(STREAM, axisFor(STREAM, 2));
-    expect('eventRef' in row!).toBe(false);
-    expect('causedBySeq' in row!).toBe(false);
+    const rows = projectActorTimeline(STREAM, axisFor(STREAM, 2));
+    expect('causedBySeq' in rows[0]!).toBe(false);
+    // У внутреннего события идентичности доставки нет — и ключа тоже.
+    expect('delivery' in rows[1]!).toBe(false);
     // У принятой команды причины нет — и ключа тоже.
-    expect('reason' in row!.commands[0]!).toBe(false);
+    expect('reason' in rows[0]!.commands[0]!).toBe(false);
   });
 
   it('причина отказа доезжает, и это единственный её носитель', () => {
@@ -176,6 +217,116 @@ describe('сериализация стабильна', () => {
       seq: number;
     }[];
     expect(parsed.map((r) => r.seq)).toEqual([0, 1, 2]);
+  });
+});
+
+describe('payload события СОХРАНЯЕТСЯ — вид и ссылка были недостаточны', () => {
+  // Проба формы, а не значения: две записи, различающиеся ТОЛЬКО полем внутри события, обязаны
+  // давать разные байты. Прежняя редакция писала `kind` и `ref`, поэтому все четыре пары ниже
+  // сериализовались одинаково — событие было записано, а что в нём было, нет.
+  //
+  // Для каждого поля названо, почему его больше негде взять.
+  const differs = (a: ActorInputEvent, b: ActorInputEvent): void => {
+    const streamOf = (event: ActorInputEvent): ActorTimeline => [
+      { seq: 0, frontier: 0, tsUs: AXIS[0]!.tsUs, event, commands: [] },
+      entry(1, 1, 'market.candle.closed'),
+    ];
+    const bytes = (event: ActorInputEvent): string =>
+      serializeActorTimeline(projectActorTimeline(streamOf(event), axisFor(streamOf(event), 2)));
+    expect(bytes(a)).not.toBe(bytes(b));
+  };
+
+  it('reason у order.denied — причины отказа нет ни в заявках, ни в журнале', () => {
+    differs(
+      { kind: 'order.denied', clientOrderId: 'o1', reason: 'exposure limit' },
+      { kind: 'order.denied', clientOrderId: 'o1', reason: 'reduce-only violated' },
+    );
+  });
+
+  it('dueTsUs у timer.fired — таймер не оставляет материального следа вовсе', () => {
+    differs(
+      { kind: 'timer.fired', timerId: 't1', dueTsUs: timestampUsFromMillis(T0) },
+      { kind: 'timer.fired', timerId: 't1', dueTsUs: timestampUsFromMillis(T0 + MINUTE) },
+    );
+  });
+
+  it('price и qty у fill — в потоке это то, что УВИДЕЛ актор, а не то, что записал хост', () => {
+    // Филл материализуется в журнале, но журнал — запись хоста. Совпадение двух записей есть
+    // утверждение, а не тавтология; для этого обе и нужны.
+    differs(
+      { kind: 'fill', clientOrderId: 'o1', price: 100, qty: 1, fee: 0.1, last: true },
+      { kind: 'fill', clientOrderId: 'o1', price: 101, qty: 1, fee: 0.1, last: true },
+    );
+    differs(
+      { kind: 'fill', clientOrderId: 'o1', price: 100, qty: 1, fee: 0.1, last: true },
+      { kind: 'fill', clientOrderId: 'o1', price: 100, qty: 2, fee: 0.1, last: true },
+    );
+  });
+
+  it('previous и state у trading_state.changed — переход не хранится больше нигде', () => {
+    differs(
+      { kind: 'trading_state.changed', previous: 'normal', state: 'halted' },
+      { kind: 'trading_state.changed', previous: 'halted', state: 'normal' },
+    );
+  });
+});
+
+describe('идентичность доставки', () => {
+  const rejects = (timeline: ActorTimeline, match: RegExp): void => {
+    expect(() => assertActorTimeline(timeline, axisFor(timeline, 2))).toThrow(match);
+  };
+
+  it('рыночное событие без идентичности отвергается', () => {
+    const noDelivery: ActorTimelineEntry = {
+      seq: 0,
+      frontier: 0,
+      tsUs: AXIS[0]!.tsUs,
+      event: candleEvent(0),
+      commands: [],
+    };
+    rejects([noDelivery, entry(1, 1, 'market.candle.closed')], /нет идентичности доставки/);
+  });
+
+  it('рыночное событие без строки ленты отвергается', () => {
+    // Подписки мало: одна подписка отдаёт много строк, и без метки строки событие не привязано
+    // к тому, из чего выросло.
+    const noRow: ActorTimelineEntry = {
+      seq: 0,
+      frontier: 0,
+      tsUs: AXIS[0]!.tsUs,
+      event: candleEvent(0),
+      delivery: { subscriptionId: 'sub-btc-1m' },
+      commands: [],
+    };
+    rejects([noRow, entry(1, 1, 'market.candle.closed')], /не записана строка ленты/);
+  });
+
+  it('внутреннее событие С идентичностью подписки отвергается', () => {
+    // Она утверждала бы подписку, которой у филла нет.
+    const withDelivery: ActorTimelineEntry = { ...entry(0, 0, 'fill'), delivery: delivery(0) };
+    rejects([withDelivery, entry(1, 1, 'market.candle.closed')], /записана доставка подписки/);
+  });
+
+  it('смена статуса подписки: идентичность есть, строки ленты нет', () => {
+    const statusEvent = {
+      kind: 'market.subscription.status_changed',
+      status: { state: 'gap', from: 1, to: 2 },
+    } as unknown as ActorInputEvent;
+    const ok: ActorTimelineEntry = {
+      seq: 0,
+      frontier: 0,
+      tsUs: AXIS[0]!.tsUs,
+      event: statusEvent,
+      delivery: { subscriptionId: 'sub-btc-1m' },
+      commands: [],
+    };
+    expect(() =>
+      assertActorTimeline([ok, entry(1, 1, 'market.candle.closed')], axisFor([ok, entry(1, 1, 'market.candle.closed')], 2)),
+    ).not.toThrow();
+    rejects(
+      [{ ...ok, delivery: delivery(0) }, entry(1, 1, 'market.candle.closed')],
+      /у неё строки нет/,
+    );
   });
 });
 
