@@ -51,7 +51,8 @@ import { createSeededRng } from '../determinism/rng.js';
 // changes»). `ENGINE_VERSION` is the shared core's own version, not a host constant.
 import { ENGINE_VERSION } from '@trdlabs/engine';
 import { mergeAccumulators } from './bar-major-aggregate.js';
-import { admitActorExecutor, admitActorRun } from './actor/admission.js';
+import { admitActorExecutor, admitActorRun, isEventDriven } from './actor/admission.js';
+import { runActorProduction } from './actor/production.js';
 import type { ActorLifecycleExecutor } from './actor/execution-handle.js';
 
 /** Зависимости прогона (contracts/runner-api.md §RunDeps; 019 additive — всё опционально). */
@@ -1194,14 +1195,59 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
     // router закрывается `finally` и на этом отказе тоже. Спрашивается способность ВЫБРАННОГО
     // исполнителя — узнать о её отсутствии надо здесь, а не на первом событии посреди прогона.
     // Ни одна ветка не порождает сессий и не трогает модуль: `forStrategy` только выбирает.
-    {
-      const refusal = admitActorExecutor(
-        strategy,
-        router.forStrategy(strategy) as Partial<ActorLifecycleExecutor>,
-      );
+    if (isEventDriven(strategy)) {
+      const executor = router.forStrategy(strategy) as Partial<ActorLifecycleExecutor>;
+      const refusal = admitActorExecutor(strategy, executor);
       if (refusal !== null) {
         return rejected(refusal.code, refusal.message, refusal.path);
       }
+
+      // 083 S3 — ПРОДОВАЯ ТОЧКА ВЫЗОВА actor-пути.
+      //
+      // Обе транспортные ветки приходят СЮДА: direct и thread различаются только исполнителем,
+      // которого вернул `router.forStrategy`, и ничем больше. Развилки «если thread, то иначе»
+      // здесь нет намеренно — она и есть тот способ, которым транспорты расходятся.
+      //
+      // Результат собирает `assembleResult` — тот же, что и у legacy. Своя сборка завела бы вторую
+      // форму evidence, совпадающую с первой сегодня и расходящуюся завтра.
+      //
+      // FAIL-CLOSED СОХРАНЁН И ПОСЛЕ ПОДКЛЮЧЕНИЯ: `runActorProduction` спрашивает у датасета
+      // происхождение свечей, и датасет, который его не объявил, закрывает путь до `createActor`.
+      // Ни один реальный датасет его сегодня не объявляет — поведение прода не изменилось.
+      const actorOutcome = await runActorProduction({
+        strategy,
+        executor: executor as ActorLifecycleExecutor,
+        dataset,
+        symbols: request.symbols,
+        seed: request.seed,
+        params: {
+          ...((strategy.manifest.params as Record<string, unknown> | undefined) ?? {}),
+          ...((request.params as Record<string, unknown> | undefined) ?? {}),
+        },
+        // Комиссия и проскальзывание берутся из ПРОФИЛЯ прогона, а не выбираются раннером: это
+        // объявленные параметры, и подставить сюда своё число значило бы посчитать прогон не по
+        // тому, что заказано.
+        costs: {
+          feeBps: (execProfile.feeModel as { readonly bps: number }).bps,
+          slippageBps: (execProfile.slippageModel as { readonly bps: number }).bps,
+          initialEquity: INITIAL_EQUITY,
+        },
+        barIntervalUs: (parseTimeframeMs(request.timeframe) ?? 60_000) * 1000,
+      });
+      if (actorOutcome.refusal !== null) {
+        return rejected(actorOutcome.refusal.code, actorOutcome.refusal.message, actorOutcome.refusal.path);
+      }
+
+      const actorBaseline = assembleResult(
+        { kind: 'baseline', runId: request.runId, strategy, overlays: [] },
+        request,
+        actorOutcome.accumulators!,
+        actorOutcome.barsProcessed!,
+        request.riskProfileRef,
+        request.executionProfileRef,
+        undefined,
+      );
+      return { status: 'completed', baseline: actorBaseline, variant: null, comparison: null };
     }
 
     const baseline = await simulateTarget(

@@ -14,7 +14,13 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { admitActorExecutor, admitActorRun, isEventDriven } from '../src/engine/actor/admission.js';
+import {
+  admitActorExecutor,
+  admitActorMarketData,
+  admitActorRun,
+  isEventDriven,
+  proveCandleVenue,
+} from '../src/engine/actor/admission.js';
 import { supportsActorLifecycle } from '../src/engine/actor/execution-handle.js';
 import type { ActorLifecycleExecutor } from '../src/engine/actor/execution-handle.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
@@ -108,11 +114,6 @@ describe('S3: НИ ОДИН набор условий не проваливае�
       name: 'исполнитель умеет create, но не dispose',
       input: { ...allCompatible(), executor: { createActor: async () => ({}) as never, executeActorEvent: async () => [] } },
     },
-    { name: 'ВСЁ совместимо', input: allCompatible() },
-    {
-      name: 'marketData пуст — допуск его НЕ читает, отказ тот же',
-      input: { ...allCompatible(), strategy: strategyWith({ marketData: [] }) },
-    },
     {
       name: 'флаг выключен И BAR_BATCHING',
       input: { ...allCompatible(), eventDrivenEnabled: false, barBatching: true },
@@ -147,70 +148,41 @@ describe('S3: НИ ОДИН набор условий не проваливае�
   });
 });
 
-describe('S3: ПОЛНОСТЬЮ совместимый набор всё равно отвергается', () => {
-  // Отдельно от перебора, потому что это утверждение среза, а не одна из его строк: пока нет
-  // проекции ledger → артефакты, успешного actor-прогона не существует.
-  it('отказ называет именно отсутствие проекции, а не что-то другое', () => {
-    const refusal = admit(allCompatible());
-    expect(refusal!.message).toMatch(/проекц/);
+describe('S3: полностью совместимый набор ПРОХОДИТ допуск исполнителя — и упирается дальше', () => {
+  // ПЕРЕПИСАНО ВМЕСТЕ С ПОДКЛЮЧЕНИЕМ ПУТИ. Прежде здесь стоял стоячий отказ «нет проекции»: он был
+  // верен, пока проекции не было, и стал бы ложью после её подключения. Утверждение среза не
+  // исчезло — оно переехало туда, где теперь и живёт.
+  //
+  // Гарантия «ни один набор условий не проваливается в legacy» держится ПО-ПРЕЖНЕМУ, но её держит
+  // `admitActorMarketData`: он требует доказанного происхождения свечей и точного candle-only
+  // поднабора. Разница существенная: стоячий отказ молчал о причине и не различал случаи, а этот
+  // называет ровно тот параметр, который не сошёлся, и снимется ровно тогда, когда он сойдётся.
+
+  it('совместимый набор больше НЕ отвергается на уровне исполнителя', () => {
+    expect(admit(allCompatible())).toBeNull();
   });
 
-  it('и это ЕДИНСТВЕННОЕ, что мешает: остальные причины к нему не относятся', () => {
-    // Проверка проверки. Если бы совместимый набор отвергался, скажем, по способности исполнителя,
-    // снятие последнего отказа не открыло бы путь — и мы бы этого не заметили.
-    const refusal = admit(allCompatible());
-    expect(refusal!.message).not.toMatch(/BACKTESTER_EVENT_DRIVEN_ENABLED|BAR_BATCHING|BAR_MAJOR_BATCH/);
-  });
-
-  it('объявленный marketData НЕ перебивает отказ по проекции', () => {
-    // Порядок проверок здесь несущий, а не косметический. Контракт 017.4 требует от event_driven
-    // непустой marketData, и модульная валидация идёт ДО допуска — значит проверка marketData,
-    // стоящая выше, срабатывала бы ВСЕГДА, а отказ по проекции не срабатывал бы никогда. Оператор
-    // получал бы «объявлен marketData» и шёл править манифест, которого нечем исполнить вовсе.
-    const withMany = admit({
-      ...allCompatible(),
-      strategy: strategyWith({ marketData: [{ id: 'oi' }, { id: 'liq' }, { id: 'funding' }] }),
+  it('но дальше стоит допуск подписок, и он закрывает путь на недоказанном датасете', () => {
+    // Это состояние ВСЕХ реальных датасетов: рекордер знал венью и выбросил его.
+    const out = admitActorMarketData(strategyWith({}), {
+      candleVenue: proveCandleVenue({ datasetRef: 'no-venue-fixture' }),
+      symbol: 'BTCUSDT',
+      barIntervalUs: 60_000_000,
+      barCount: 10,
     });
-    expect(withMany!.message).toMatch(/проекц/);
-  });
-});
-
-describe('S3: способность исполнителя — ЦЕЛОЕ, а не метод', () => {
-  it('полный lifecycle распознаётся', () => {
-    expect(supportsActorLifecycle(capableExecutor())).toBe(true);
+    expect(out.refusal?.code).toBe('unsupported_lifecycle');
+    expect(out.refusal?.path).toBe('');
+    expect(out.refusal?.message).toMatch(/происхождение свечей не доказано/);
   });
 
-  it.each([
-    ['без createActor', { executeActorEvent: async () => [], disposeActor: async () => {} }],
-    ['без executeActorEvent', { createActor: async () => ({}) as never, disposeActor: async () => {} }],
-    ['без disposeActor', { createActor: async () => ({}) as never, executeActorEvent: async () => [] }],
-    ['пустой', {}],
-  ])('%s — способности нет', (_name, executor) => {
-    // Исполнитель, умеющий создать актора и не умеющий освободить, оставил бы сессию на каждый
-    // прогон. Узнать об этом на допуске дешевле, чем на dispose последнего символа.
-    expect(supportsActorLifecycle(executor as Partial<ActorLifecycleExecutor>)).toBe(false);
-  });
-});
-
-describe('S3: допуск не трогает модуль', () => {
-  it('ни одна ветка не зовёт init/dispose и не создаёт актора', () => {
-    // «До init» легко заявить и трудно заметить, когда перестало быть правдой. Здесь исполнитель
-    // считает вызовы: любой из них означал бы, что отказ обошёлся дороже, чем должен.
-    const calls: string[] = [];
-    const spy: Partial<ActorLifecycleExecutor> = {
-      createActor: async () => {
-        calls.push('createActor');
-        return {} as never;
-      },
-      executeActorEvent: async () => {
-        calls.push('executeActorEvent');
-        return [];
-      },
-      disposeActor: async () => {
-        calls.push('disposeActor');
-      },
-    };
-    admit({ ...allCompatible(), executor: spy });
-    expect(calls).toEqual([]);
+  it('пустой marketData тоже не проваливается в legacy — отказывает допуск подписок', () => {
+    const out = admitActorMarketData(strategyWith({ marketData: [] }), {
+      candleVenue: proveCandleVenue({ datasetRef: 'proven-fixture', candleVenue: 'bybit' }),
+      symbol: 'BTCUSDT',
+      barIntervalUs: 60_000_000,
+      barCount: 10,
+    });
+    expect(out.refusal?.code).toBe('unsupported_lifecycle');
+    expect(out.refusal?.message).toMatch(/не объявляет marketData/);
   });
 });

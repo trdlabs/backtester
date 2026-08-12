@@ -22,6 +22,12 @@ interface CandleDatasetFile {
 export interface CandleDataset {
   readonly datasetRef: string;
   readonly timeframe: string;
+  /**
+   * Венью, с которого записаны СВЕЧИ (083 S3). Объявляет ДАТАСЕТ; отсутствие читается как
+   * «происхождение неизвестно» и закрывает actor-путь (`proveCandleVenue`). Названо по ряду:
+   * агрегированные ряды своего венью не имеют по построению, и общего венью у датасета нет.
+   */
+  readonly candleVenue?: string;
   symbols(): readonly string[];
   candles(symbol: string): readonly Readonly<Bar>[];
 }
