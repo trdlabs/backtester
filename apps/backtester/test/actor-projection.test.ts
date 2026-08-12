@@ -32,6 +32,8 @@ import type {
   ActorFrontierRecord,
   ActorJournalEntry,
 } from '../src/engine/actor/execution-record.js';
+import type { ActorTimeline } from '../src/engine/actor/timeline.js';
+import { ActorTimelineError } from '../src/engine/actor/timeline.js';
 import {
   ActorProjectionError,
   ORDER_STATUS_BY_STATE,
@@ -51,7 +53,10 @@ const frontier = (index: number, lastCommittedSeq: number): ActorFrontierRecord 
   lastCommittedSeq,
 });
 
-const FRONTIERS = [frontier(0, 3), frontier(1, 5), frontier(2, 9)];
+// `lastCommittedSeq` согласованы с потоком ниже: гейт timeline сверяет их с максимальным
+// доставленным `seq` каждого frontier'а, и произвольные числа здесь означали бы, что зафиксировано
+// то, чего не доставлялось.
+const FRONTIERS = [frontier(0, 0), frontier(1, 1), frontier(2, 2)];
 
 const fillEntry = (
   fillId: string,
@@ -98,6 +103,24 @@ function foldAnchor(journal: readonly ActorJournalEntry[]): Ledger {
   return ledger;
 }
 
+/**
+ * Минимальный связный поток на три frontier'а базовой записи.
+ *
+ * Своя форма и свои гарды живут в `actor-timeline.test.ts`; здесь он нужен потому, что успешный
+ * прогон без потока проекция не принимает — и это проверяется отдельным тестом ниже.
+ */
+const TIMELINE: ActorTimeline = [
+  {
+    seq: 0,
+    frontier: 0,
+    tsUs: FRONTIERS[0]!.tsUs,
+    event: { kind: 'candle' },
+    commands: [{ kind: 'place', ref: 'o1', outcome: { status: 'applied' } }],
+  },
+  { seq: 1, frontier: 1, tsUs: FRONTIERS[1]!.tsUs, event: { kind: 'candle' }, commands: [] },
+  { seq: 2, frontier: 2, tsUs: FRONTIERS[2]!.tsUs, event: { kind: 'candle' }, commands: [] },
+];
+
 const RISK: RiskDecision = {
   barIndex: 0,
   decisionKind: 'open_long',
@@ -132,6 +155,7 @@ function baseRecord(overrides: Partial<ActorExecutionRecord> = {}): ActorExecuti
       { frontier: 2, equity: 1017.5 },
     ],
     riskDecisions: [RISK],
+    timeline: TIMELINE,
     finalLedger: foldAnchor(journal),
     ...overrides,
   };
@@ -453,6 +477,7 @@ describe('сужение состояний ордера до статуса а�
       closes: [],
       equity: [{ frontier: 0, equity: 1000 }],
       riskDecisions: [],
+      timeline: [TIMELINE[0]!],
       finalLedger: foldAnchor(journal),
     };
   }
@@ -500,7 +525,7 @@ describe('отказ: запись, не сходящаяся сама с соб
   };
 
   it('нет ни одного frontier’а', () => {
-    rejects({ frontiers: [], equity: [], journal: [], orders: [], closes: [] }, /нет ни одного business-момента/);
+    rejects({ frontiers: [], equity: [], journal: [], orders: [], closes: [], timeline: [] }, /нет ни одного business-момента/);
   });
 
   it('номер frontier’а не совпадает с позицией', () => {
@@ -516,7 +541,7 @@ describe('отказ: запись, не сходящаяся сама с соб
 
   it('lastCommittedSeq убывает — раннер переиграл события', () => {
     rejects(
-      { frontiers: [FRONTIERS[0]!, { ...FRONTIERS[1]!, lastCommittedSeq: 1 }, FRONTIERS[2]!] },
+      { frontiers: [FRONTIERS[0]!, { ...FRONTIERS[1]!, lastCommittedSeq: -1 }, FRONTIERS[2]!] },
       /lastCommittedSeq/,
     );
   });
@@ -670,6 +695,25 @@ describe('тождество «сделки ≡ леджер» — гейт ре
 
   it('совпадение проходит', () => {
     expect(() => assertTradesReconcile(17.5, 17.5)).not.toThrow();
+  });
+});
+
+describe('успешный прогон без потока диспетчеризации невозможен', () => {
+  it('пустой timeline отвергается ПРОЕКЦИЕЙ, а не отдельным вызовом', () => {
+    // Гейт, который вызывающий может забыть позвать, ничего не гарантирует. Поэтому проверка стоит
+    // внутри `projectActorRun`, а не рядом с ней.
+    expect(() => project({ timeline: [] })).toThrow(/успешный actor-прогон без timeline/);
+  });
+
+  it('отказ приезжает СВОИМ классом — чинит его тот, кто пишет диспетчеризацию', () => {
+    // `ActorProjectionError` означал бы «артефакты не сходятся» и отправил бы читателя не туда.
+    expect(() => project({ timeline: [] })).toThrow(ActorTimelineError);
+    expect(() => project({ timeline: [] })).not.toThrow(ActorProjectionError);
+  });
+
+  it('разрыв seq в потоке валит прогон целиком', () => {
+    const gapped: ActorTimeline = [TIMELINE[0]!, TIMELINE[2]!];
+    expect(() => project({ timeline: gapped })).toThrow(/разрыв seq/);
   });
 });
 

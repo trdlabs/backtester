@@ -55,6 +55,7 @@ import type {
 import type { DecisionRecord, EquityPoint, SimulatedFill, SimulatedOrder } from '../artifacts.js';
 import type { FundingLedgerEntry } from '../runner.js';
 import { ledgerFillOf } from './execution-record.js';
+import { assertActorTimeline } from './timeline.js';
 import type { ActorExecutionRecord, ActorFrontierRecord } from './execution-record.js';
 
 /** Микросекунд в миллисекунде. Артефакты бэктестера живут в мс, актор — в µs. */
@@ -469,6 +470,14 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
     record.riskDecisions.map((rd) => rd.barIndex),
     'вердикты риска',
   );
+
+  // --- Поток диспетчеризации: обязателен, непрерывен, привязан к оси ---
+  //
+  // Здесь, а не отдельным вызовом, потому что «успешный прогон без timeline» обязан быть
+  // невозможен: гейт, который вызывающий может забыть позвать, ничего не гарантирует. Отказ
+  // приезжает своим классом (`ActorTimelineError`) — чинит его тот, кто пишет диспетчеризацию, а не
+  // тот, кто собирает артефакты.
+  assertActorTimeline(record.timeline, frontiers);
 
   // --- Бухгалтерия: два независимых счёта обязаны сойтись ---
   const entries = journalEntriesFor(record);

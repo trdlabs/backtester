@@ -53,14 +53,16 @@
 // привязанным набором чисел: раннер мог бы записать любые. Самостоятельный пересчёт в хосте завёл
 // бы второй интерпретатор бухгалтерии — то, ради прекращения чего существует `@trdlabs/engine`.
 //
-// **`DecisionRecord` на actor-пути пуст, и это временное решение.** У актора `onEvent →
-// ActorCommand[]`, у legacy `hook → StrategyDecision` — разные словари, а расширение общей формы
-// видят голдены и comparison. До раскатки обязателен отдельный actor timeline/artifact: `frontiers`
-// живут в этом агрегате, но проекция их наружу НЕ отдаёт, то есть сегодня пофронтирная запись
-// теряется на границе слоя. Требование записано владельцем 2026-08-12.
+// **`DecisionRecord` на actor-пути пуст, и это НЕ пропуск.** У актора `onEvent → ActorCommand[]`, у
+// legacy `hook → StrategyDecision` — разные словари, а расширение общей формы видят голдены и
+// comparison. Пофронтирная запись живёт не там: её носитель — `timeline`, отдельный append-only
+// поток диспетчеризации со своей проекцией и своими гардами (`timeline.ts`). Он не расширяет
+// legacy-форму и потому ничего в ней не двигает.
 
 import type { CloseAnnotation, Fill, FillSide, Ledger, OrderState, RiskDecision } from '@trdlabs/engine';
 import type { TimestampUs } from '@trdlabs/sdk/research-contract';
+
+import type { ActorTimeline } from './timeline.js';
 
 /**
  * Один frontier — один business-момент `U` для одного инстанса актора (§3.8).
@@ -199,6 +201,14 @@ export interface ActorExecutionRecord {
    */
   readonly forcedExit?: { readonly frontier: number; readonly price: number };
   readonly finalLedger: Ledger;
+  /**
+   * Append-only поток диспетчеризации — ОБЯЗАТЕЛЕН, а не опционален.
+   *
+   * Успешный actor-прогон без потока не принимается: отвергнутая командой не оставляет следа
+   * больше НИГДЕ — ни заявки, ни филла, ни сделки, — и «прогон прошёл, журнала нет» неотличимо от
+   * «ничего не отвергалось». Форма и гарды живут в `timeline.ts`.
+   */
+  readonly timeline: ActorTimeline;
 }
 
 /** Форма филла для движковых функций — проекция сворачивает записанное ИМИ, а не своей копией. */
