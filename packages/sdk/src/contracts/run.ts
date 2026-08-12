@@ -4,7 +4,9 @@ import type { BacktestEngine, ModuleBundle, ModuleKind, ModuleManifest } from '.
 // 017 primitives are re-sourced from the kernel @trdlabs/sdk — single source of truth, no drift.
 // The api-extractor rollup re-exports them by import (NOT inlined — see run-api-extractor.mjs),
 // so a consumer's `Ref` and ours are the same declaration, not two structurally equal copies.
-import type { Ref, RunPeriod } from '@trdlabs/sdk/research-contract';
+// `ValidationIssue` тоже из ядра, а не своё: причина отказа обязана быть ТЕМ ЖЕ типом, что её
+// породил, иначе структурно совпадающая копия разъедется с ним при первой правке контракта.
+import type { Ref, RunPeriod, ValidationIssue } from '@trdlabs/sdk/research-contract';
 
 export type { ModuleKind, ModuleManifest, ModuleBundle, BacktestEngine };
 export type { Ref, RunPeriod };
@@ -297,6 +299,18 @@ export interface RunStatusView {
   readonly status: RunStatus;
   readonly timeline: readonly RunTimelineEntry[];
   readonly terminalCode?: string;
+  /**
+   * Структурированная причина терминального отказа. Присутствует ТОЛЬКО у отказавших прогонов.
+   *
+   * `terminalCode` отвечает «какого рода отказ», и для большинства кодов это причина целиком
+   * (`missing_dataset`, `lease_expired`). `validation_error` объединяет десятки разных отказов, и
+   * без подробности читатель видит слово, из которого не следует ничего — в частности, не следует,
+   * ЕГО это проблема или автора стратегии.
+   *
+   * Отсутствие у успешного прогона намеренно: причина у завершившегося прогона означала бы, что
+   * поле пишется всегда и потому ничего не различает.
+   */
+  readonly terminalIssues?: readonly ValidationIssue[];
 }
 
 export interface RunEvidence {

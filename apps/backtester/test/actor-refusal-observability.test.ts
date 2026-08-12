@@ -221,3 +221,74 @@ describe('ПРОВЕРКА ПРОВЕРКИ: legacy-прогон не измен
     expect(t.terminalIssues).toBeUndefined();
   }, 300_000);
 });
+
+describe('публичные эндпоинты отдают ту же причину', () => {
+  /** Прогнать через очередь и, НЕ закрывая приложение, спросить публичные эндпоинты. */
+  async function runAndAsk(
+    runId: string,
+    bundleFile: string,
+    eventDrivenEnabled: boolean,
+  ): Promise<{ status: number; statusBody: Record<string, unknown>; resultBody: Record<string, unknown> }> {
+    __resetTapeCachesForTest();
+    const bundle = loadBundle(bundleFile);
+    const app = await buildTestApp({
+      enableOverlayEngine: true,
+      workerConcurrency: 1,
+      eventDrivenEnabled,
+      overlaySandbox: { ...loadConfig().overlaySandbox, backend: 'isolate' },
+    });
+    try {
+      const submitted = await app.server.inject({
+        method: 'POST',
+        url: '/v1/runs',
+        headers: AUTH,
+        payload: {
+          ...loadRequest('baseline.json'),
+          runId,
+          engine: 'strategy',
+          moduleBundle: bundle,
+          moduleRef: { id: bundle.manifest.id, version: bundle.manifest.version },
+          metrics: ['pnl', 'win_rate'],
+        },
+      });
+      expect(submitted.statusCode).toBe(202);
+      expect(await app.drain()).toBe(1);
+
+      const st = await app.server.inject({ method: 'GET', url: `/v1/runs/${runId}/status`, headers: AUTH });
+      const rs = await app.server.inject({ method: 'GET', url: `/v1/runs/${runId}/result`, headers: AUTH });
+      return {
+        status: st.statusCode,
+        statusBody: st.json() as Record<string, unknown>,
+        resultBody: rs.json() as Record<string, unknown>,
+      };
+    } finally {
+      await app.dispose();
+    }
+  }
+
+  it('/status и /result несут структурированную причину отказа', async () => {
+    // Хранилище её уже держит; здесь проверяется, что она ВЫХОДИТ наружу. Поле, доехавшее до базы и
+    // не доехавшее до клиента, оператору не помогает ничем.
+    const r = await runAndAsk('ref-api-refused', EVENT_DRIVEN, false);
+    expect(r.status).toBe(200);
+
+    for (const [where, body] of [['status', r.statusBody], ['result', r.resultBody]] as const) {
+      const issues = body.terminalIssues as ValidationIssue[] | undefined;
+      expect(issues, `${where}: причина не вышла наружу`).toBeDefined();
+      expect(issues![0]!.code).toBe('unsupported_lifecycle');
+      // Пустой Pointer обязан пережить и HTTP-сериализацию.
+      expect('path' in issues![0]!).toBe(true);
+      expect(issues![0]!.path).toBe('');
+      expect(body.terminalCode).toBe('validation_error');
+    }
+  }, 300_000);
+
+  it('у УСПЕШНОГО legacy-ответа поля нет вовсе', async () => {
+    // Проверка проверки: поле, присутствующее всегда, не различает ничего. У успешного прогона
+    // `/result` отдаёт сводку, а не отказ, — и причины в ней быть не должно.
+    const r = await runAndAsk('ref-api-legacy', LEGACY, true);
+    expect(r.statusBody.status).toBe('completed');
+    expect('terminalIssues' in r.statusBody).toBe(false);
+    expect('terminalIssues' in r.resultBody).toBe(false);
+  }, 300_000);
+});
