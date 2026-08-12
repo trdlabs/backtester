@@ -118,25 +118,23 @@ const PLACE: ActorCommand = {
   qtyUsd: 100,
 };
 
+// Настоящее контрактное значение, без приведений: `as never` обходил бы ровно ту типовую
+// гарантию, ради которой таксономия закрыта типами SDK.
 const candleEvent = (i: number): ActorInputEvent => ({
   kind: 'market.candle.closed',
   candle: {
+    effectiveTsUs: FRONTIERS[i]!.tsUs,
     value: { open: 100, high: 101, low: 99, close: 100.5, volume: 10 },
-    eventTsUs: FRONTIERS[i]!.tsUs,
-  } as never,
+    finality: 'final',
+    revision: 0,
+  },
 });
 
-const delivery = (i: number) => ({
-  subscriptionId: 'sub-btc-1m',
-  row: { symbol: SYMBOL, tsUs: FRONTIERS[i]!.tsUs },
-});
+const SUB = 'sub-btc-1m';
 
 const timelineEntry = (i: number, commands: ActorTimeline[number]['commands'] = []) => ({
-  seq: i,
+  envelope: { seq: i, eventTsUs: FRONTIERS[i]!.tsUs, subscriptionId: SUB, event: candleEvent(i) },
   frontier: i,
-  tsUs: FRONTIERS[i]!.tsUs,
-  event: candleEvent(i),
-  delivery: delivery(i),
   commands,
 });
 
@@ -152,12 +150,12 @@ const TIMELINE_ROWS: ActorTimelineArtifact = [
     seq: 0,
     barIndex: 0,
     ts: T0,
+    subscriptionId: SUB,
     event: candleEvent(0),
-    delivery: delivery(0),
     commands: [{ command: PLACE, status: 'applied' }],
   },
-  { seq: 1, barIndex: 1, ts: T0 + MINUTE, event: candleEvent(1), delivery: delivery(1), commands: [] },
-  { seq: 2, barIndex: 2, ts: T0 + 2 * MINUTE, event: candleEvent(2), delivery: delivery(2), commands: [] },
+  { seq: 1, barIndex: 1, ts: T0 + MINUTE, subscriptionId: SUB, event: candleEvent(1), commands: [] },
+  { seq: 2, barIndex: 2, ts: T0 + 2 * MINUTE, subscriptionId: SUB, event: candleEvent(2), commands: [] },
 ];
 
 const RISK: RiskDecision = {

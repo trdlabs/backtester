@@ -65,7 +65,7 @@ const axisOf = (n: number, lastCommitted: readonly number[] = []): TimelineAxis[
  */
 const axisFor = (timeline: ActorTimeline, n: number): TimelineAxis[] => {
   const last = new Map<number, number>();
-  for (const e of timeline) last.set(e.frontier, e.seq);
+  for (const e of timeline) last.set(e.frontier, e.envelope.seq);
   return Array.from({ length: n }, (_, i) => ({
     index: i,
     tsUs: timestampUsFromMillis(T0 + i * MINUTE),
@@ -75,44 +75,55 @@ const axisFor = (timeline: ActorTimeline, n: number): TimelineAxis[] => {
 
 const AXIS = axisOf(2);
 
-/** Свеча: рыночное событие, значит обязана нести идентичность подписки И строки ленты. */
+/**
+ * Свеча — НАСТОЯЩЕЕ контрактное значение, без приведений.
+ *
+ * `as never` в фикстуре обходил бы ровно ту типовую гарантию, ради которой таксономия и закрыта
+ * типами SDK: тест заявлял бы контрактность и не проверял её. Здесь `ObservedValue<CandleValue>`
+ * собран целиком — `effectiveTsUs`, `finality`, `revision` и есть та идентичность строки ленты,
+ * ради которой раньше заводилось отдельное поле `row`.
+ */
 const candleEvent = (frontier: number): ActorInputEvent => ({
   kind: 'market.candle.closed',
   candle: {
+    effectiveTsUs: timestampUsFromMillis(T0 + frontier * MINUTE),
     value: { open: 100, high: 101, low: 99, close: 100.5, volume: 10 },
-    eventTsUs: timestampUsFromMillis(T0 + frontier * MINUTE),
-  } as never,
+    finality: 'final',
+    revision: 0,
+  },
 });
 
-const delivery = (frontier: number) => ({
-  subscriptionId: 'sub-btc-1m',
-  row: { symbol: 'BTCUSDT', tsUs: timestampUsFromMillis(T0 + frontier * MINUTE) },
+const fillEvent: ActorInputEvent = {
+  kind: 'fill',
+  clientOrderId: 'o1',
+  price: 100,
+  qty: 1,
+  fee: 0.1,
+  last: true,
+};
+
+const SUB = 'sub-btc-1m';
+
+/** Запись потока: контрактный конверт целиком плюс привязка к frontier'у. */
+const entryOf = (
+  seq: number,
+  frontier: number,
+  event: ActorInputEvent,
+  extra: Partial<Omit<ActorTimelineEntry, 'envelope'>> = {},
+): ActorTimelineEntry => ({
+  envelope: { seq, eventTsUs: AXIS[frontier]!.tsUs, subscriptionId: SUB, event },
+  frontier,
+  commands: [],
+  ...extra,
 });
 
 const entry = (
   seq: number,
   frontier: number,
   event: 'market.candle.closed' | 'fill',
-  extra: Partial<ActorTimelineEntry> = {},
-): ActorTimelineEntry => ({
-  seq,
-  frontier,
-  tsUs: AXIS[frontier]!.tsUs,
-  ...(event === 'market.candle.closed'
-    ? { event: candleEvent(frontier), delivery: delivery(frontier) }
-    : {
-        event: {
-          kind: 'fill',
-          clientOrderId: 'o1',
-          price: 100,
-          qty: 1,
-          fee: 0.1,
-          last: true,
-        } as ActorInputEvent,
-      }),
-  commands: [],
-  ...extra,
-});
+  extra: Partial<Omit<ActorTimelineEntry, 'envelope'>> = {},
+): ActorTimelineEntry =>
+  entryOf(seq, frontier, event === 'fill' ? fillEvent : candleEvent(frontier), extra);
 
 /**
  * Поток одного минимального прогона: свеча → команда принята → её филл → свеча.
@@ -135,34 +146,18 @@ describe('форма и проекция', () => {
         seq: 0,
         barIndex: 0,
         ts: T0,
+        subscriptionId: SUB,
         event: candleEvent(0),
-        delivery: delivery(0),
         commands: [{ command: PLACE, status: 'applied' }],
       },
-      {
-        seq: 1,
-        barIndex: 0,
-        ts: T0,
-        event: { kind: 'fill', clientOrderId: 'o1', price: 100, qty: 1, fee: 0.1, last: true },
-        causedBySeq: 0,
-        commands: [],
-      },
-      {
-        seq: 2,
-        barIndex: 1,
-        ts: T0 + MINUTE,
-        event: candleEvent(1),
-        delivery: delivery(1),
-        commands: [],
-      },
+      { seq: 1, barIndex: 0, ts: T0, subscriptionId: SUB, event: fillEvent, causedBySeq: 0, commands: [] },
+      { seq: 2, barIndex: 1, ts: T0 + MINUTE, subscriptionId: SUB, event: candleEvent(1), commands: [] },
     ]);
   });
 
   it('необязательные ключи отсутствуют, а не равны undefined', () => {
     const rows = projectActorTimeline(STREAM, axisFor(STREAM, 2));
     expect('causedBySeq' in rows[0]!).toBe(false);
-    // У внутреннего события идентичности доставки нет — и ключа тоже.
-    expect('delivery' in rows[1]!).toBe(false);
     // У принятой команды причины нет — и ключа тоже.
     expect('reason' in rows[0]!.commands[0]!).toBe(false);
   });
@@ -228,7 +223,7 @@ describe('payload события СОХРАНЯЕТСЯ — вид и ссылк
   // Для каждого поля названо, почему его больше негде взять.
   const differs = (a: ActorInputEvent, b: ActorInputEvent): void => {
     const streamOf = (event: ActorInputEvent): ActorTimeline => [
-      { seq: 0, frontier: 0, tsUs: AXIS[0]!.tsUs, event, commands: [] },
+      entryOf(0, 0, event),
       entry(1, 1, 'market.candle.closed'),
     ];
     const bytes = (event: ActorInputEvent): string =>
@@ -267,65 +262,6 @@ describe('payload события СОХРАНЯЕТСЯ — вид и ссылк
     differs(
       { kind: 'trading_state.changed', previous: 'normal', state: 'halted' },
       { kind: 'trading_state.changed', previous: 'halted', state: 'normal' },
-    );
-  });
-});
-
-describe('идентичность доставки', () => {
-  const rejects = (timeline: ActorTimeline, match: RegExp): void => {
-    expect(() => assertActorTimeline(timeline, axisFor(timeline, 2))).toThrow(match);
-  };
-
-  it('рыночное событие без идентичности отвергается', () => {
-    const noDelivery: ActorTimelineEntry = {
-      seq: 0,
-      frontier: 0,
-      tsUs: AXIS[0]!.tsUs,
-      event: candleEvent(0),
-      commands: [],
-    };
-    rejects([noDelivery, entry(1, 1, 'market.candle.closed')], /нет идентичности доставки/);
-  });
-
-  it('рыночное событие без строки ленты отвергается', () => {
-    // Подписки мало: одна подписка отдаёт много строк, и без метки строки событие не привязано
-    // к тому, из чего выросло.
-    const noRow: ActorTimelineEntry = {
-      seq: 0,
-      frontier: 0,
-      tsUs: AXIS[0]!.tsUs,
-      event: candleEvent(0),
-      delivery: { subscriptionId: 'sub-btc-1m' },
-      commands: [],
-    };
-    rejects([noRow, entry(1, 1, 'market.candle.closed')], /не записана строка ленты/);
-  });
-
-  it('внутреннее событие С идентичностью подписки отвергается', () => {
-    // Она утверждала бы подписку, которой у филла нет.
-    const withDelivery: ActorTimelineEntry = { ...entry(0, 0, 'fill'), delivery: delivery(0) };
-    rejects([withDelivery, entry(1, 1, 'market.candle.closed')], /записана доставка подписки/);
-  });
-
-  it('смена статуса подписки: идентичность есть, строки ленты нет', () => {
-    const statusEvent = {
-      kind: 'market.subscription.status_changed',
-      status: { state: 'gap', from: 1, to: 2 },
-    } as unknown as ActorInputEvent;
-    const ok: ActorTimelineEntry = {
-      seq: 0,
-      frontier: 0,
-      tsUs: AXIS[0]!.tsUs,
-      event: statusEvent,
-      delivery: { subscriptionId: 'sub-btc-1m' },
-      commands: [],
-    };
-    expect(() =>
-      assertActorTimeline([ok, entry(1, 1, 'market.candle.closed')], axisFor([ok, entry(1, 1, 'market.candle.closed')], 2)),
-    ).not.toThrow();
-    rejects(
-      [{ ...ok, delivery: delivery(0) }, entry(1, 1, 'market.candle.closed')],
-      /у неё строки нет/,
     );
   });
 });
@@ -398,14 +334,24 @@ describe('привязка к оси и причинность', () => {
   };
 
   it('ссылка на несуществующий frontier', () => {
-    rejects([entry(0, 0, 'market.candle.closed'), { ...entry(1, 0, 'market.candle.closed'), frontier: 7 }], AXIS, /которого нет/);
+    rejects(
+      [entry(0, 0, 'market.candle.closed'), { ...entry(1, 0, 'market.candle.closed'), frontier: 7 }],
+      AXIS,
+      /которого нет/,
+    );
   });
 
-  it('метка не равна business-времени своего frontier’а', () => {
+  it('eventTsUs конверта не равен business-времени своего frontier’а', () => {
+    // Конверт несёт frontier диспатча `U` сам (контракт), поэтому расхождение с осью означает, что
+    // событие приписано не своему моменту.
+    const wrong = entry(1, 1, 'market.candle.closed');
     rejects(
-      [entry(0, 0, 'market.candle.closed'), { ...entry(1, 1, 'market.candle.closed'), tsUs: AXIS[0]!.tsUs }],
+      [
+        entry(0, 0, 'market.candle.closed'),
+        { ...wrong, envelope: { ...wrong.envelope, eventTsUs: AXIS[0]!.tsUs } },
+      ],
       AXIS,
-      /не равна business-времени/,
+      /не равен business-времени/,
     );
   });
 
