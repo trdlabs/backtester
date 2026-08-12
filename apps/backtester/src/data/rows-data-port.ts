@@ -134,7 +134,22 @@ export class RowsReader implements HistoricalDatasetReader {
 // ── RowsDataPort ──────────────────────────────────────────────────────────────
 
 export class RowsDataPort implements BacktesterDataPort {
+  /** Настоящие данные платформы ⇒ допуск периода обязателен. */
+  readonly requiresAdmission = true;
+
   private readonly client: HistoricalClient;
+
+  /**
+   * Д3 3.3в — допуск периода. Метод существует ТОЛЬКО если установленный SDK его
+   * умеет: возможность обнаруживается у клиента, а не объявляется наперёд.
+   *
+   * Так сделано потому, что пин SDK в этом репозитории пока `^0.15.0`, где
+   * `preflight` ещё нет. Объяви метод безусловно — и он бросал бы на каждом
+   * прогоне; а отсутствие свойства воркер читает как «источник допуска не
+   * поддерживает» и honestly пропускает проверку вместо ложного отказа.
+   * После бампа пина на 0.16.0 допуск включится сам, без правок здесь.
+   */
+  readonly preflight?: (fromMs: number, toMs: number) => Promise<unknown>;
 
   constructor(opts: RowsDataPortOptions) {
     this.client = new HistoricalClient({
@@ -150,6 +165,15 @@ export class RowsDataPort implements BacktesterDataPort {
       ...(opts.maxRows !== undefined ? { maxRows: opts.maxRows } : {}),
       ...(opts.operationDeadlineMs !== undefined ? { operationDeadlineMs: opts.operationDeadlineMs } : {}),
     });
+    // Возможность спрашивается У КЛИЕНТА, а не выводится из номера версии в
+    // package.json: пин — это то, что объявлено, а установленный пакет — то, что
+    // есть на самом деле, и расходятся они регулярно.
+    const maybe = this.client as unknown as {
+      preflight?: (fromMs: number, toMs: number) => Promise<unknown>;
+    };
+    if (typeof maybe.preflight === 'function') {
+      this.preflight = (fromMs, toMs) => maybe.preflight!(fromMs, toMs);
+    }
   }
 
   async listDatasets(): Promise<DatasetDescriptor[]> {
