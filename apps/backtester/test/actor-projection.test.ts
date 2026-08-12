@@ -355,26 +355,44 @@ describe('сделки: считает движок, хост приносит �
   });
 
   it('запрошенная доля доезжает до движка и меняет апорционирование', () => {
-    // Доказательство проводки, а не арифметики: та же запись с долей и без даёт РАЗНЫЙ
-    // `fundingPaid` (1/3 во float64 — 0.3333333333333333, поэтому 3 × (1/3) ≠ 3 × 1 / 3).
+    // Пара СОГЛАСОВАННАЯ: `mul(2, 1/6)` = 0.3333333333333333 ровно, поэтому движок её принимает.
+    // При накоплении 3 запрошенный путь даёт 0.5, восстановленный — 0.49999999999999994.
+    // Доказательство проводки, а не арифметики: те же данные с долей и без дают разное число.
     const journal: ActorJournalEntry[] = [
-      fillEntry('f1', 'o1', 0, 'buy', 3, 100, 3),
+      fillEntry('f1', 'o1', 0, 'buy', 2, 100, 3),
       fundingEntry(1, 3),
-      fillEntry('f2', 'o2', 2, 'sell', 1, 110, 1),
+      fillEntry('f2', 'o2', 2, 'sell', 0.3333333333333333, 110, 1),
     ];
     const orders = baseRecord().orders;
     const withFraction = project({
       journal,
       orders,
-      closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 1 / 3 }],
+      closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 1 / 6 }],
     });
     const withoutFraction = project({
       journal,
       orders,
       closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit' }],
     });
-    expect(withFraction.trades[0]!.fundingPaid).toBe(0.9999999999999999);
-    expect(withoutFraction.trades[0]!.fundingPaid).toBe(1);
+    expect(withFraction.trades[0]!.fundingPaid).toBe(0.5);
+    expect(withoutFraction.trades[0]!.fundingPaid).toBe(0.49999999999999994);
+  });
+
+  it('противоречивая пара «доля против исполненного» отвергается через проекцию', () => {
+    // Эра 4, исполнено 1, заявлено 0.5. Тождество сходимости этого НЕ ловит: сделка вычитает
+    // `entryFeeClosed`, остаток эры ровно на него уменьшается, и в сумме члены сокращаются.
+    // Числа прогона были бы верны в сумме и неверны в каждой своей части.
+    const journal: ActorJournalEntry[] = [
+      fillEntry('f1', 'o1', 0, 'buy', 4, 100, 2),
+      fillEntry('f2', 'o2', 2, 'sell', 1, 110, 0.5),
+    ];
+    expect(() =>
+      project({
+        journal,
+        orders: baseRecord().orders,
+        closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 0.5 }],
+      }),
+    ).toThrow(/что даёт 2, а исполнено 1/);
   });
 
   it('дубликат аннотации отвергается', () => {
