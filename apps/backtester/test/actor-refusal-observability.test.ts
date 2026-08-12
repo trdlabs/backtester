@@ -228,7 +228,12 @@ describe('публичные эндпоинты отдают ту же прич�
     runId: string,
     bundleFile: string,
     eventDrivenEnabled: boolean,
-  ): Promise<{ status: number; statusBody: Record<string, unknown>; resultBody: Record<string, unknown> }> {
+  ): Promise<{
+    status: number;
+    statusBody: Record<string, unknown>;
+    resultBody: Record<string, unknown>;
+    stored: readonly ValidationIssue[] | undefined;
+  }> {
     __resetTapeCachesForTest();
     const bundle = loadBundle(bundleFile);
     const app = await buildTestApp({
@@ -260,6 +265,7 @@ describe('публичные эндпоинты отдают ту же прич�
         status: st.statusCode,
         statusBody: st.json() as Record<string, unknown>,
         resultBody: rs.json() as Record<string, unknown>,
+        stored: (await app.store.get(runId))?.terminalIssues,
       };
     } finally {
       await app.dispose();
@@ -271,16 +277,25 @@ describe('публичные эндпоинты отдают ту же прич�
     // не доехавшее до клиента, оператору не помогает ничем.
     const r = await runAndAsk('ref-api-refused', EVENT_DRIVEN, false);
     expect(r.status).toBe(200);
+    expect(r.stored, 'причина не доехала до хранилища').toBeDefined();
 
+    // ТОЧНОЕ РАВЕНСТВО МАССИВА в трёх местах, а не выборочные поля. Проверка по одному полю
+    // пропустила бы и потерянное `severity`, и подрезанное `message`, и лишний элемент — то есть
+    // ровно те расхождения, которые «код совпал» и маскирует.
     for (const [where, body] of [['status', r.statusBody], ['result', r.resultBody]] as const) {
       const issues = body.terminalIssues as ValidationIssue[] | undefined;
       expect(issues, `${where}: причина не вышла наружу`).toBeDefined();
-      expect(issues![0]!.code).toBe('unsupported_lifecycle');
-      // Пустой Pointer обязан пережить и HTTP-сериализацию.
-      expect('path' in issues![0]!).toBe(true);
-      expect(issues![0]!.path).toBe('');
+      expect(issues, `${where}: причина наружу разошлась с хранилищем`).toEqual(r.stored);
       expect(body.terminalCode).toBe('validation_error');
     }
+
+    // И отдельно — что в этом массиве лежит то, что мы думаем: код, непустое сообщение и пустой
+    // Pointer КЛЮЧОМ, переживший HTTP-сериализацию.
+    const issue = (r.statusBody.terminalIssues as ValidationIssue[])[0]!;
+    expect(issue.code).toBe('unsupported_lifecycle');
+    expect(issue.message.length).toBeGreaterThan(0);
+    expect('path' in issue).toBe(true);
+    expect(issue.path).toBe('');
   }, 300_000);
 
   it('у УСПЕШНОГО legacy-ответа поля нет вовсе', async () => {

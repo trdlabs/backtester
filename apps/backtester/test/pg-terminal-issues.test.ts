@@ -110,12 +110,34 @@ describe.skipIf(!PG_AVAILABLE)('terminalIssues переживают Postgres (ro
     expect((await reader.get('pg-ti-none'))?.terminalIssues).toBeUndefined();
   });
 
-  it('повторный переход БЕЗ причины не стирает уже записанную', async () => {
-    // `COALESCE` в UPDATE означает «не трогать колонку, если в патче ничего нет». Без этого любой
-    // последующий патч (например, продление активности) обнулял бы причину молча.
+  it('последующий патч БЕЗ причины не стирает уже записанную', async () => {
+    // `COALESCE` в UPDATE означает «не трогать колонку, если в патче ничего нет». Без него любой
+    // последующий патч — например, продление активности — обнулял бы причину молча.
+    //
+    // ПЕРЕХОДЫ ВЗЯТЫ РАЗРЕШЁННЫЕ, и это существенно. Первая редакция пробы делала
+    // `failed → failed`, которого в таблице переходов нет вовсе (`failed: []`): SQL не исполнялся,
+    // возврат игнорировался, и «до» равнялось «после» просто потому, что НИЧЕГО не происходило.
+    // Проверка была зелена по несостоявшемуся предусловию — то есть не проверяла ничего.
+    //
+    // `running → running` разрешён (продление активности), поэтому здесь UPDATE действительно
+    // выполняется дважды, и оба раза это видно по возвращённому `true`.
+    await toRunning('pg-ti-coalesce');
+    expect(
+      await writer.transition('pg-ti-coalesce', 'running', 'running', {
+        atMs: 3,
+        terminalCode: 'validation_error',
+        terminalIssues: ISSUES,
+      }),
+    ).toBe(true);
+
+    // Второй патч про причину не говорит НИЧЕГО — и потому не имеет права её тронуть.
+    expect(
+      await writer.transition('pg-ti-coalesce', 'running', 'running', { atMs: 4, lastActivityMs: 4 }),
+    ).toBe(true);
+
     const reader = new PgJobStore(pool);
-    const before = (await reader.get('pg-ti-failed'))!.terminalIssues;
-    await writer.transition('pg-ti-failed', 'failed', 'failed', { atMs: 4 }).catch(() => undefined);
-    expect((await reader.get('pg-ti-failed'))?.terminalIssues).toEqual(before);
+    const after = (await reader.get('pg-ti-coalesce'))!;
+    expect(after.terminalIssues).toEqual(ISSUES);
+    expect(after.terminalIssues![0]!.path).toBe('');
   });
 });
