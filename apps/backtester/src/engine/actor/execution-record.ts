@@ -60,7 +60,7 @@
 // legacy-форму и потому ничего в ней не двигает.
 
 import type { CloseAnnotation, Fill, FillSide, Ledger, OrderState, RiskDecision } from '@trdlabs/engine';
-import type { TimestampUs } from '@trdlabs/sdk/research-contract';
+import type { ActorSubscriptionDescriptor, TimestampUs } from '@trdlabs/sdk/research-contract';
 
 import type { ActorTimeline } from './timeline.js';
 
@@ -184,7 +184,20 @@ export interface ActorEquitySample {
  * агрегат был бы набором списков, про которые никто не проверяет, что они описывают одну историю.
  */
 export interface ActorExecutionRecord {
+  /**
+   * Идентификатор ИНСТАНСА актора. Обязателен уже здесь, а не при агрегации нескольких символов:
+   * восстановить его снаружи можно было бы только по `symbol`, а это неверно ровно тогда, когда
+   * акторов на символ больше одного. `seq` и `subscriptionId` актор-локальны, и без этого поля две
+   * записи склеились бы в одну историю с пересекающимися номерами.
+   */
+  readonly actorId: string;
   readonly symbol: string;
+  /**
+   * ФАКТИЧЕСКИЕ подписки, с которыми актор был создан, — тот же список, что уехал в
+   * `ActorInit.subscriptions`. Не реконструкция по манифесту: реконструкция отвечала бы на вопрос
+   * «что было объявлено», а нужен ответ «что было разрешено и доставлено».
+   */
+  readonly subscriptions: readonly ActorSubscriptionDescriptor[];
   readonly frontiers: readonly ActorFrontierRecord[];
   readonly orders: readonly ActorOrderRecord[];
   /** Единая упорядоченная последовательность бухгалтерии: филлы и funding вперемешку, как было. */

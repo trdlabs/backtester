@@ -15,10 +15,13 @@
 // расстановки скобок, а само правило: бросок создания проходит мимо `finally` по построению, и
 // «dispose не зовётся на несозданном» держится формой кода, а не дисциплиной читателя.
 
-import type { ActorInit, ActorBudgets } from '@trdlabs/sdk/research-contract';
+import type { ActorInit, ActorBudgets, TradingState } from '@trdlabs/sdk/research-contract';
+import type { CascadeBudget } from '@trdlabs/engine';
 
 import type { ActorLifecycleExecutor, ActorSource } from './execution-handle.js';
 import type { ActorMarketDataAdmitted } from './admission.js';
+import { runActorFrontiers, type ActorBar, type ActorExecutionCosts } from './frontier-runner.js';
+import type { ActorExecutionRecord } from './execution-record.js';
 
 /** Вход раннера: всё уже ПРОВЕРЕНО допуском, перечитывать манифест здесь нечего. */
 export interface EventDrivenSymbolInput {
@@ -32,6 +35,11 @@ export interface EventDrivenSymbolInput {
   /** Результат `admitActorMarketData`, уже сузённый до разрешённого. */
   readonly admission: ActorMarketDataAdmitted;
   readonly budgets?: ActorBudgets;
+  /** Лента прогона. Пустая законна: прогон без баров даёт запись с нулём frontier'ов. */
+  readonly bars?: readonly ActorBar[];
+  readonly costs?: ActorExecutionCosts;
+  readonly cascade?: CascadeBudget;
+  readonly tradingState?: TradingState;
 }
 
 /**
@@ -83,6 +91,15 @@ export async function withActorLifecycle<T>(
 ): Promise<T> {
   // СНАРУЖИ. Бросок отсюда обязан пройти мимо освобождения по построению: освобождать нечего.
   const handle = await input.executor.createActor(input.source, buildActorInit(input));
+  return withHandle(input, handle, body);
+}
+
+/** Тело цикла в отрыве от создания — чтобы правило трёх исходов жило ровно в одном месте. */
+async function withHandle<T>(
+  input: EventDrivenSymbolInput,
+  handle: Awaited<ReturnType<ActorLifecycleExecutor['createActor']>>,
+  body: (handle: Awaited<ReturnType<ActorLifecycleExecutor['createActor']>>) => Promise<T>,
+): Promise<T> {
 
   let result!: T;
   let bodyError: unknown;
@@ -108,4 +125,42 @@ export async function withActorLifecycle<T>(
 
   if (!bodyOk) throw bodyError;
   return result;
+}
+
+/**
+ * Внутренний event-driven раннер одного символа.
+ *
+ * Один `ActorHost` на инстанс актора создаётся внутри `runActorFrontiers` — не переиспользуется
+ * между акторами: гейт чекпойнта и фаза frontier'а принадлежат ИНСТАНСУ, и общий хост на двоих
+ * означал бы, что открытый frontier одного запрещает чекпойнт другому.
+ *
+ * Production-проводка (direct/thread, агрегация нескольких символов) здесь НЕ делается: это
+ * следующий срез. Функция принимает уже разрешённый допуском вход и уже поднятого исполнителя.
+ */
+export async function runEventDrivenSymbol(
+  input: EventDrivenSymbolInput,
+): Promise<ActorExecutionRecord> {
+  const bars = input.bars ?? [];
+  const costs = input.costs;
+  if (costs === undefined) {
+    // Дефолта нет намеренно: прогон с забытой комиссией показал бы прибыль, которой нет, и ничем
+    // бы себя не выдал. Отсутствие параметров исполнения — отказ, а не ноль.
+    throw new Error('runEventDrivenSymbol: costs обязательны — комиссия и стартовый капитал не имеют дефолта');
+  }
+  const cascade = input.cascade ?? { maxCascadeDepth: 8, maxEventsPerFrontier: 256 };
+
+  return withActorLifecycle(input, async (handle) =>
+    runActorFrontiers({
+      executor: input.executor,
+      handle,
+      actorId: input.actorId,
+      symbol: input.symbol,
+      seed: input.seed,
+      admission: input.admission,
+      bars,
+      costs,
+      cascade,
+      ...(input.tradingState !== undefined ? { tradingState: input.tradingState } : {}),
+    }),
+  );
 }
