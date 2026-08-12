@@ -32,7 +32,8 @@ import type {
   ActorFrontierRecord,
   ActorJournalEntry,
 } from '../src/engine/actor/execution-record.js';
-import type { ActorTimeline } from '../src/engine/actor/timeline.js';
+import type { ActorTimeline, ActorTimelineArtifact } from '../src/engine/actor/timeline.js';
+import type { ActorCommand } from '@trdlabs/sdk/research-contract';
 import { ActorTimelineError } from '../src/engine/actor/timeline.js';
 import {
   ActorProjectionError,
@@ -109,16 +110,37 @@ function foldAnchor(journal: readonly ActorJournalEntry[]): Ledger {
  * Своя форма и свои гарды живут в `actor-timeline.test.ts`; здесь он нужен потому, что успешный
  * прогон без потока проекция не принимает — и это проверяется отдельным тестом ниже.
  */
+const PLACE: ActorCommand = {
+  kind: 'place',
+  type: 'market',
+  clientOrderId: 'o1',
+  side: 'buy',
+  qtyUsd: 100,
+};
+
 const TIMELINE: ActorTimeline = [
   {
     seq: 0,
     frontier: 0,
     tsUs: FRONTIERS[0]!.tsUs,
-    event: { kind: 'candle' },
-    commands: [{ kind: 'place', ref: 'o1', outcome: { status: 'applied' } }],
+    event: { kind: 'market.candle.closed' },
+    commands: [{ command: PLACE, outcome: { status: 'applied' } }],
   },
-  { seq: 1, frontier: 1, tsUs: FRONTIERS[1]!.tsUs, event: { kind: 'candle' }, commands: [] },
-  { seq: 2, frontier: 2, tsUs: FRONTIERS[2]!.tsUs, event: { kind: 'candle' }, commands: [] },
+  { seq: 1, frontier: 1, tsUs: FRONTIERS[1]!.tsUs, event: { kind: 'market.candle.closed' }, commands: [] },
+  { seq: 2, frontier: 2, tsUs: FRONTIERS[2]!.tsUs, event: { kind: 'market.candle.closed' }, commands: [] },
+];
+
+/** Ожидаемая артефактная форма того же потока — он обязан ДОЖИТЬ до результата, а не только пройти проверку. */
+const TIMELINE_ROWS: ActorTimelineArtifact = [
+  {
+    seq: 0,
+    barIndex: 0,
+    ts: T0,
+    event: 'market.candle.closed',
+    commands: [{ command: PLACE, status: 'applied' }],
+  },
+  { seq: 1, barIndex: 1, ts: T0 + MINUTE, event: 'market.candle.closed', commands: [] },
+  { seq: 2, barIndex: 2, ts: T0 + 2 * MINUTE, event: 'market.candle.closed', commands: [] },
 ];
 
 const RISK: RiskDecision = {
@@ -228,6 +250,7 @@ describe('отображение: семь семейств артефактов
       ],
       fundingLedger: [{ barIndex: 1, ts: T0 + MINUTE, rate: 0.0001, covered: true, cost: 0.5 }],
       validationIssues: [],
+      timeline: TIMELINE_ROWS,
     } satisfies ActorRunArtifacts);
   });
 
@@ -717,16 +740,37 @@ describe('успешный прогон без потока диспетчери
   });
 });
 
+describe('поток доживает до результата, а не только проходит проверку', () => {
+  it('timeline выходит из проекции артефактной формой', () => {
+    expect(project().timeline).toEqual(TIMELINE_ROWS);
+  });
+
+  it('и попадает в каноническую сериализацию результата', () => {
+    // Проверка того, что раньше терялось молча: гарантия была, а данных — нет. Здесь поток обязан
+    // присутствовать в тех же байтах, которыми сериализуется всё остальное.
+    const bytes = canonicalJson(project());
+    expect(bytes).toContain('"timeline"');
+    expect(bytes).toContain('"market.candle.closed"');
+    // И команда целиком, а не только её вид: `timer.set`/`annotate`/отвергнутые не восстанавливаются
+    // ни из заявок, ни из журнала.
+    expect(bytes).toContain('"qtyUsd"');
+  });
+});
+
 describe('форма выхода совпадает с той, что собирает раннер', () => {
   it('поля ActorRunArtifacts и MergedAccumulators — один в один', () => {
+    // Направления два, и они проверяют разное. Первое — что аккумуляторы ПОКРЫТЫ: забытое поле
+    // здесь ошибка компиляции, а не пропуск на проводке. Второе — что «сверх» ровно `timeline`:
+    // без него расхождение с аккумуляторами въехало бы сюда под видом расширения.
     type ArtifactKeys = keyof ActorRunArtifacts;
     type AccumulatorKeys = keyof MergedAccumulators;
-    const _sameKeys: [ArtifactKeys] extends [AccumulatorKeys]
-      ? [AccumulatorKeys] extends [ArtifactKeys]
+    const _coversAccumulators: [AccumulatorKeys] extends [ArtifactKeys] ? true : never = true;
+    const _onlyExtraIsTimeline: [Exclude<ArtifactKeys, AccumulatorKeys>] extends ['timeline']
+      ? ['timeline'] extends [Exclude<ArtifactKeys, AccumulatorKeys>]
         ? true
         : never
       : never = true;
-    expect(_sameKeys).toBe(true);
+    expect(_coversAccumulators && _onlyExtraIsTimeline).toBe(true);
 
     expect(Object.keys(project()).sort()).toEqual(
       [
@@ -738,6 +782,7 @@ describe('форма выхода совпадает с той, что соби�
         'riskDecisions',
         'trades',
         'validationIssues',
+        'timeline',
       ].sort(),
     );
   });

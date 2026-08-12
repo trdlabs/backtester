@@ -22,16 +22,24 @@
 // выросла. Множество «что породило это» восстанавливается обходом, а форма остаётся неизменяемой.
 // У внешних событий (свеча, рыночные данные) ссылки нет — их не породил никто внутри актора.
 //
-// ═══ ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ ═══
+// ═══ КОМАНДА ЗАПИСЫВАЕТСЯ ЦЕЛИКОМ И ПРИ ЛЮБОМ ИСХОДЕ ═══
 //
-// Полных payload'ов команд. Принятая команда оставляет след в `ActorOrderRecord` и в журнале
-// бухгалтерии; дублировать её здесь значило бы завести второй источник истины о том, что было
-// заявлено. Записывается то, чего больше нет НИГДЕ: вид команды, её идентичность и исход —
-// применена, отвергнута с причиной, пропущена как суффикс после отказа (§3.8: prefix committed /
-// suffix skipped / no rollback).
+// Первая редакция писала только вид команды и её идентификатор — «полный payload есть в
+// `ActorOrderRecord`, дублировать не надо». Рассуждение неверно, и неверно дважды.
+//
+// Во-первых, восстановить нечего у целых классов команд: `timer.set`, `timer.cancel`, `annotate` и
+// отмена не оставляют следа ни в заявках, ни в журнале бухгалтерии — их материального эффекта там
+// просто нет. Во-вторых, отвергнутая и пропущенная команды не оставляют следа НИГДЕ по построению.
+//
+// И главное: timeline и материальные эффекты — не конкурирующие SSOT. Поток отвечает, что было
+// СКОМАНДОВАНО; артефакты — что из этого МАТЕРИАЛИЗОВАЛОСЬ. Это разные факты, и совпадение между
+// ними есть утверждение, а не тавтология; именно поэтому его можно проверять.
+//
+// Отсюда: `ActorCommand` контракта целиком, при любом исходе. Таксономия закрыта типом SDK, а не
+// строкой — новый вид команды или события красит СБОРКУ вместо того, чтобы завестись опечаткой.
 
 import { assertContiguous } from '@trdlabs/engine';
-import type { TimestampUs } from '@trdlabs/sdk/research-contract';
+import type { ActorCommand, ActorInputEventKind, TimestampUs } from '@trdlabs/sdk/research-contract';
 
 import { canonicalJson } from '../../determinism/canonical-json.js';
 
@@ -47,17 +55,21 @@ export type ActorCommandOutcome =
   | { readonly status: 'rejected'; readonly reason: string }
   | { readonly status: 'skipped'; readonly reason: string };
 
-/** Команда в потоке: вид, идентичность и исход. Payload не дублируется — см. шапку. */
+/** Команда в потоке: КОНТРАКТНАЯ команда целиком плюс исход её применения. */
 export interface ActorTimelineCommand {
-  readonly kind: string;
-  /** `clientOrderId`, идентификатор таймера — то, по чему команду можно связать со следствием. */
-  readonly ref?: string;
+  readonly command: ActorCommand;
   readonly outcome: ActorCommandOutcome;
 }
 
-/** Входное событие: вид и идентичность там, где она есть. */
+/**
+ * Входное событие: вид из ЗАМКНУТОГО каталога контракта и идентичность там, где она есть.
+ *
+ * Здесь записан вид, а не событие целиком: рыночное событие несёт свой payload (OHLCV, объёмы), и
+ * он уже лежит в ленте — вот это и была бы вторая копия одного факта. У команды такого носителя
+ * нет, поэтому она пишется целиком.
+ */
 export interface ActorTimelineEvent {
-  readonly kind: string;
+  readonly kind: ActorInputEventKind;
   readonly ref?: string;
 }
 
@@ -87,12 +99,11 @@ export interface ActorTimelineRow {
   readonly seq: number;
   readonly barIndex: number;
   readonly ts: number;
-  readonly event: string;
+  readonly event: ActorInputEventKind;
   readonly eventRef?: string;
   readonly causedBySeq?: number;
   readonly commands: readonly {
-    readonly kind: string;
-    readonly ref?: string;
+    readonly command: ActorCommand;
     readonly status: ActorCommandOutcome['status'];
     readonly reason?: string;
   }[];
@@ -201,7 +212,7 @@ export function assertActorTimeline(timeline: ActorTimeline, axis: readonly Time
 
     for (const c of entry.commands) {
       if (c.outcome.status !== 'applied' && c.outcome.reason.trim() === '') {
-        fail(`seq ${entry.seq}: команда ${c.kind} со статусом ${c.outcome.status} без причины`);
+        fail(`seq ${entry.seq}: команда ${c.command.kind} со статусом ${c.outcome.status} без причины`);
       }
     }
   }
@@ -213,14 +224,20 @@ export function assertActorTimeline(timeline: ActorTimeline, axis: readonly Time
     if (!maxSeqPerFrontier.has(f.index)) {
       fail(`frontier ${f.index} не представлен в потоке ни одной записью`);
     }
-    // Односторонне: зафиксировать МОЖНО меньше, чем доставлено (суффикс батча пропускается без
-    // отката, §3.8), но не больше. Frontier, объявивший зафиксированным seq, которого поток не
-    // видел, — расхождение двух половин записи.
+    // РАВЕНСТВО, а не «не больше». Первая редакция допускала отставание, ссылаясь на пропуск
+    // суффикса батча (§3.8) — и это была подмена уровней. Пропуск относится к КОМАНДАМ внутри
+    // события и уже выражен в `commands[].outcome`; само событие при этом доставлено и
+    // зафиксировано. `seq` считает события, а не команды, поэтому отставание watermark'а означает
+    // ровно одно: frontier закрылся, не зафиксировав того, что ему доставили.
+    //
+    // Проекция работает только с УСПЕШНО завершёнными прогонами (у прерванного артефактов нет), а
+    // значит и все frontier'ы здесь завершены — послаблению неоткуда взяться.
     const maxSeq = maxSeqPerFrontier.get(f.index)!;
-    if (f.lastCommittedSeq > maxSeq) {
+    if (f.lastCommittedSeq !== maxSeq) {
       fail(
-        `frontier ${f.index}: lastCommittedSeq ${f.lastCommittedSeq} больше максимального seq ` +
-          `потока в этом frontier’е (${maxSeq}) — зафиксировано то, что не доставлялось`,
+        `frontier ${f.index}: lastCommittedSeq ${f.lastCommittedSeq} не равен максимальному ` +
+          `доставленному seq (${maxSeq}) — завершённый frontier обязан зафиксировать всё, что ему ` +
+          'доставлено; пропуск суффикса относится к командам события, а не к самому событию',
       );
     }
   }
@@ -251,8 +268,7 @@ export function projectActorTimeline(
       ...(entry.event.ref !== undefined ? { eventRef: entry.event.ref } : {}),
       ...(entry.causedBySeq !== undefined ? { causedBySeq: entry.causedBySeq } : {}),
       commands: entry.commands.map((c) => ({
-        kind: c.kind,
-        ...(c.ref !== undefined ? { ref: c.ref } : {}),
+        command: c.command,
         status: c.outcome.status,
         ...(c.outcome.status !== 'applied' ? { reason: c.outcome.reason } : {}),
       })),

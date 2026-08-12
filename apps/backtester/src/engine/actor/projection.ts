@@ -55,7 +55,8 @@ import type {
 import type { DecisionRecord, EquityPoint, SimulatedFill, SimulatedOrder } from '../artifacts.js';
 import type { FundingLedgerEntry } from '../runner.js';
 import { ledgerFillOf } from './execution-record.js';
-import { assertActorTimeline } from './timeline.js';
+import { projectActorTimeline } from './timeline.js';
+import type { ActorTimelineArtifact } from './timeline.js';
 import type { ActorExecutionRecord, ActorFrontierRecord } from './execution-record.js';
 
 /** Микросекунд в миллисекунде. Артефакты бэктестера живут в мс, актор — в µs. */
@@ -117,10 +118,14 @@ const FILLS_EXPECTED_BY_STATE: Readonly<Record<OrderState, 'none' | 'some' | 'ei
 /**
  * Артефакты одного actor-прогона.
  *
- * Поля повторяют `MergedAccumulators` раннера ОДИН В ОДИН — это не совпадение, а условие: конечную
- * сборку (`summary`, метрики, evidence) обязан выполнять тот же `assembleResult`, что и на
- * legacy-пути. Своя сборка у actor-пути означала бы второй владелец формы результата, и разойтись
- * они смогли бы в чём угодно, вплоть до состава evidence.
+ * Поля ПОКРЫВАЮТ `MergedAccumulators` раннера — это не совпадение, а условие: конечную сборку
+ * (`summary`, метрики, evidence) обязан выполнять тот же `assembleResult`, что и на legacy-пути.
+ * Своя сборка у actor-пути означала бы второй владелец формы результата, и разойтись они смогли бы
+ * в чём угодно, вплоть до состава evidence.
+ *
+ * Сверх них ровно одно поле — `timeline`. Оно НЕ часть legacy-формы и потому ничего в ней не
+ * двигает; типовой гейт в тестах требует, чтобы список «сверх» состоял ровно из него, иначе
+ * расхождение с аккумуляторами въехало бы сюда под видом расширения.
  */
 export interface ActorRunArtifacts {
   readonly decisionRecords: readonly DecisionRecord[];
@@ -131,6 +136,14 @@ export interface ActorRunArtifacts {
   readonly equityCurve: readonly EquityPoint[];
   readonly fundingLedger: readonly FundingLedgerEntry[];
   readonly validationIssues: readonly ValidationIssue[];
+  /**
+   * Append-only поток диспетчеризации в артефактной форме.
+   *
+   * Возвращается, а не только проверяется. Проверить и выбросить значило бы повторить ту самую
+   * ошибку, из-за которой пофронтирная запись раньше терялась на границе слоя: гарантия была бы, а
+   * данных — нет.
+   */
+  readonly timeline: ActorTimelineArtifact;
 }
 
 function fail(message: string): never {
@@ -477,7 +490,7 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
   // невозможен: гейт, который вызывающий может забыть позвать, ничего не гарантирует. Отказ
   // приезжает своим классом (`ActorTimelineError`) — чинит его тот, кто пишет диспетчеризацию, а не
   // тот, кто собирает артефакты.
-  assertActorTimeline(record.timeline, frontiers);
+  const timeline = projectActorTimeline(record.timeline, frontiers);
 
   // --- Бухгалтерия: два независимых счёта обязаны сойтись ---
   const entries = journalEntriesFor(record);
@@ -549,5 +562,6 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
     // Отказы допуска случаются ДО прогона и до этого слоя не доезжают: спроецированный прогон по
     // построению состоялся.
     validationIssues: [],
+    timeline,
   };
 }
