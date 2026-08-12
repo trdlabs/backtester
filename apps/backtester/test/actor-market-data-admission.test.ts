@@ -19,6 +19,7 @@ import type { MarketDataRequirement } from '@trdlabs/sdk/research-contract';
 
 import {
   admitActorMarketData,
+  proveTapeVenue,
   readinessAtBar,
   subscriptionIdFor,
   subscriptionsOf,
@@ -27,8 +28,10 @@ import type { ActorTapeCapabilities } from '../src/engine/actor/admission.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
 
 const MINUTE_US = 60_000_000;
+/** Венью берётся ТОЛЬКО у прувера — тест не вправе объявить его сам, иначе гейт проверялся бы мимо. */
+const PROVEN_BINANCE = proveTapeVenue({ datasetRef: 'probe-fixture-1m', venue: 'binance' });
 const TAPE: ActorTapeCapabilities = {
-  venue: 'binance',
+  venue: PROVEN_BINANCE,
   symbol: 'BTCUSDT',
   barIntervalUs: MINUTE_US,
   barCount: 100,
@@ -91,15 +94,67 @@ describe('поддерживаемая форма проходит и НАЗЫВ
 });
 
 describe('допуск отдаёт РАЗРЕШЁННЫЙ вход, а не сырьё для повторного резолва', () => {
-  it('binding несёт то самое требование и его lookback', () => {
+  it('binding несёт НОРМАЛИЗОВАННЫЙ СНИМОК требования, а не ссылку на манифест', () => {
     // Раннеру нечего перечитывать в манифесте: всё проверенное лежит здесь. Второе чтение того же
     // поля в другом месте рано или поздно разойдётся с первым — и разойдётся молча.
     const req = supported({ lookback: 7 });
     const [binding, ...rest] = admitted([req]).bindings;
     expect(rest).toEqual([]);
-    expect(binding!.requirement).toBe(req);
+    expect(binding!.requirement).not.toBe(req);
+    expect(binding!.requirement).toEqual({
+      id: 'req-candles',
+      kind: 'candles',
+      venue: 'binance',
+      symbol: 'BTCUSDT',
+      intervalUs: MINUTE_US,
+      lookback: 7,
+      priceType: 'trade',
+      revisions: 'final_only',
+    });
     expect(binding!.lookback).toBe(7);
     expect(binding!.descriptor.requirementId).toBe('req-candles');
+  });
+
+  it('МУТАЦИЯ МАНИФЕСТА ПОСЛЕ ДОПУСКА не меняет ни binding, ни дескриптор, ни готовность', () => {
+    // Главная проба этого блока. Манифест приезжает из недоверенного модуля и живёт своей жизнью;
+    // ссылка на его объект сделала бы результат допуска изменяемым ПОСЛЕ проверки — «проверено»
+    // относилось бы к одному состоянию, «доставлено» к другому, и следа бы не осталось.
+    const req = supported({ lookback: 7 });
+    const out = admitted([req]);
+    const before = structuredClone({
+      bindings: out.bindings,
+      subscriptions: subscriptionsOf(out.bindings),
+      tradingFromBarIndex: out.tradingFromBarIndex,
+    });
+
+    const mutable = req as unknown as {
+      id: string;
+      lookback: number;
+      priceType: string;
+      instrument: { venue: string; symbol: string };
+      interval: number;
+    };
+    mutable.id = 'подменённый';
+    mutable.lookback = 999;
+    mutable.priceType = 'mark';
+    mutable.instrument = { venue: 'bybit', symbol: 'ETHUSDT' };
+    mutable.interval = 5 * MINUTE_US;
+
+    expect(out.bindings).toEqual(before.bindings);
+    expect(subscriptionsOf(out.bindings)).toEqual(before.subscriptions);
+    expect(out.tradingFromBarIndex).toBe(before.tradingFromBarIndex);
+  });
+
+  it('снимок и дескриптор заморожены — правка через сам binding тоже не проходит', () => {
+    // Заморозка поуровневая: `Object.isFrozen` истинен и для поверхностно замороженного объекта,
+    // поэтому проверять надо КАЖДЫЙ уровень, а не только внешний.
+    const [binding] = admitted([supported()]).bindings;
+    expect(Object.isFrozen(binding)).toBe(true);
+    expect(Object.isFrozen(binding!.requirement)).toBe(true);
+    expect(Object.isFrozen(binding!.descriptor)).toBe(true);
+    expect(() => {
+      (binding!.requirement as { lookback: number }).lookback = 42;
+    }).toThrow(TypeError);
   });
 
   it('порядок bindings повторяет порядок требований манифеста', () => {
@@ -178,6 +233,42 @@ describe('всё, что не поддержано, отвергается — �
   });
 });
 
+describe('венью обязано быть ДОКАЗАНО, а не объявлено вызывающим', () => {
+  it('датасет без метаданных венью — происхождение неизвестно', () => {
+    // Ровно случай реальной ленты: рекордер знал венью в момент записи (переменная окружения
+    // адаптера) и не положил его ни в строку, ни в дескриптор.
+    const proof = proveTapeVenue({ datasetRef: 'smoke-btc-1m' });
+    expect(proof.proven).toBe(false);
+    // Поля `venue` у недоказанного НЕТ — его нельзя случайно сравнить с требованием.
+    expect(proof.venue).toBeUndefined();
+  });
+
+  it('пустая строка — это не объявление', () => {
+    expect(proveTapeVenue({ datasetRef: 'ds', venue: '' }).proven).toBe(false);
+  });
+
+  it('датасет с объявленным венью доказывает его и НАЗЫВАЕТ источник', () => {
+    const proof = proveTapeVenue({ datasetRef: 'smoke-btc-1m', venue: 'bybit' });
+    expect(proof).toEqual({
+      proven: true,
+      venue: 'bybit',
+      source: 'dataset_metadata:smoke-btc-1m',
+    });
+  });
+
+  it('недоказанное венью отвергает прогон ЦЕЛИКОМ, даже если строки совпали бы', () => {
+    // Требование просит binance; будь венью просто строкой 'binance', проверка совпала бы и
+    // зеленела. Доказательства нет — значит сверять не с чем, и совпадение строк ничего не значит.
+    const out = admitActorMarketData(strategyWith([supported()]), {
+      ...TAPE,
+      venue: proveTapeVenue({ datasetRef: 'smoke-btc-1m' }),
+    });
+    expect(out.refusal?.code).toBe('unsupported_lifecycle');
+    expect(out.refusal?.message).toMatch(/венью ленты не доказано/);
+    expect(out.bindings).toBeUndefined();
+  });
+});
+
 describe('lookback — это ПРОГРЕВ, а не пропуск: граница торговых прав', () => {
   it('порог равен объявленному lookback', () => {
     expect(admitted([supported({ lookback: 5 })]).tradingFromBarIndex).toBe(5);
@@ -229,14 +320,21 @@ describe('ПРОВЕРКА ПРОВЕРКИ: границы допуска', () 
   });
 
   it('своё венью допускается — иначе проверка венью зеленела бы, отвергая любое', () => {
-    const out = admitActorMarketData(strategyWith([supported()]), { ...TAPE, venue: 'bybit' });
-    expect(out.refusal?.message).toMatch(/просит венью binance, а прогон идёт по bybit/);
+    const bybitTape: ActorTapeCapabilities = {
+      ...TAPE,
+      venue: proveTapeVenue({ datasetRef: 'probe-fixture-1m', venue: 'bybit' }),
+    };
+    expect(admitActorMarketData(strategyWith([supported()]), bybitTape).refusal?.message).toMatch(
+      /просит венью binance, а прогон идёт по bybit/,
+    );
     // …и ровно та же стратегия на своей ленте проходит.
     expect(
-      admitActorMarketData(strategyWith([supported({ instrument: { venue: 'bybit', symbol: 'BTCUSDT' } } as Partial<MarketDataRequirement>)]), {
-        ...TAPE,
-        venue: 'bybit',
-      }).refusal,
+      admitActorMarketData(
+        strategyWith([
+          supported({ instrument: { venue: 'bybit', symbol: 'BTCUSDT' } } as Partial<MarketDataRequirement>),
+        ]),
+        bybitTape,
+      ).refusal,
     ).toBeNull();
   });
 

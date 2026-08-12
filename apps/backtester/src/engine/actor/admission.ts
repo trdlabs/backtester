@@ -17,7 +17,6 @@ import { findDuplicateSubscriptionIds } from '@trdlabs/sdk/research-contract';
 import type {
   ActorReadiness,
   ActorSubscriptionDescriptor,
-  CandlesMarketDataRequirement,
   MarketDataRequirement,
 } from '@trdlabs/sdk/research-contract';
 
@@ -183,21 +182,58 @@ const SUPPORTED_KIND = 'candles';
  */
 const SUPPORTED_PRICE_TYPE = 'trade';
 
+/**
+ * Венью ленты — ДОКАЗАННОЕ либо никакое. Union, а не строка: у «не доказано» поля `venue` нет
+ * вовсе, поэтому недоказанное происхождение нельзя случайно сравнить с требованием и получить
+ * совпадение.
+ *
+ * ПОЧЕМУ ЭТО НЕ ФОРМАЛЬНОСТЬ, А ЕДИНСТВЕННЫЙ ЧЕСТНЫЙ ВАРИАНТ. Строка, которую кладёт вызывающий,
+ * доказывает лишь то, что вызывающий её написал. Проверка «требование == объявление хоста» при
+ * этом выглядит работающей и зеленеет, а данные за ней могут быть чьи угодно.
+ */
+export type ActorTapeVenue =
+  | { readonly proven: true; readonly venue: string; readonly source: string }
+  | { readonly proven: false; readonly venue?: undefined; readonly reason: string };
+
+/**
+ * Единственный прувер венью. Источник — метаданные датасета, версионированные ВМЕСТЕ с данными:
+ * заявление, лежащее рядом с лентой, переживает её копирование, а боковая карта по имени — нет
+ * (она молча начинает отвечать по старой мерке).
+ *
+ * ЧТО СЕЙЧАС ОТВЕЧАЕТ `proven: false` И ПОЧЕМУ ЭТО НЕ ЛЕНЬ. У реальных данных венью НЕ СУЩЕСТВУЕТ
+ * ни в одном доступном месте, и это не пробел в бэктестере, а свойство записи:
+ *
+ *   • свечи пишет ОДИН адаптер биржи, выбранный на деплое рекордера переменной окружения
+ *     `MARKET_SOURCE_EXCHANGE` (legacy-дефолт `bybit`, `platform/src/config/market_layer.ts`).
+ *     В сам ряд этот выбор не попадает: `CanonicalRow` несёт `symbol`, OHLCV и флаги покрытия —
+ *     и ни одного поля источника;
+ *   • OI, funding и ликвидации, наоборот, АГРЕГИРОВАНЫ по нескольким венью (`oi_total_usd` —
+ *     «Aggregated OI», `funding_rate` — «Aggregated funding»), то есть у одной строки ленты нет
+ *     одного венью даже в принципе;
+ *   • `DatasetDescriptor` (и у бэктестера, и у mock-platform) поля венью не имеет, а `datasetRef` —
+ *     свободная строка (`smoke-btc-1m`, `evidence-fixture-1m`), в которой венью не закодировано.
+ *
+ * То есть рекордер знал венью в момент записи и выбросил его. Пока канал не восстановлен, ЛЮБАЯ
+ * реальная лента отвечает `proven: false`, и actor-путь на ней отказывает — это и есть требуемое
+ * поведение, а не временная заглушка.
+ */
+export function proveTapeVenue(dataset: { readonly datasetRef: string; readonly venue?: string }): ActorTapeVenue {
+  if (dataset.venue !== undefined && dataset.venue !== '') {
+    return { proven: true, venue: dataset.venue, source: `dataset_metadata:${dataset.datasetRef}` };
+  }
+  return {
+    proven: false,
+    reason:
+      `датасет «${dataset.datasetRef}» не объявляет венью в своих метаданных. Восстановить его по ` +
+      'данным нечем: свечи пишет один адаптер, выбранный переменной окружения рекордера и в строку ' +
+      'не попадающий, а OI/funding/ликвидации агрегированы по нескольким венью',
+  };
+}
+
 /** Что хост может доставить: параметры ленты, против которых сверяется подписка. */
 export interface ActorTapeCapabilities {
-  /**
-   * Венью, которое хост ОБЪЯВЛЯЕТ для этой ленты.
-   *
-   * ЧЕСТНАЯ ОГОВОРКА: в бэктестере нет оси венью — ни у датасета, ни у ленты, ни у запроса (проверено
-   * поиском по `src`: слова `venue` там нет вовсе). Поэтому значение сюда КЛАДЁТ вызывающий, и
-   * проверка ниже ловит ровно один класс ошибки: стратегия просит ДРУГОЕ венью, чем то, на котором
-   * хост считает себя работающим. Она не может поймать неверно размеченные данные — для этого венью
-   * должно приехать вместе с ними, а этого канала пока не существует.
-   *
-   * Поле обязательное, а не опциональное с дефолтом, намеренно: дефолт означал бы «совпадает с чем
-   * угодно» у вызывающего, который просто забыл его заполнить.
-   */
-  readonly venue: string;
+  /** Происхождение венью — только доказанное принимается (см. `proveTapeVenue`). */
+  readonly venue: ActorTapeVenue;
   readonly symbol: string;
   /** Интервал бара ленты в микросекундах. */
   readonly barIntervalUs: number;
@@ -215,10 +251,35 @@ export interface ActorTapeCapabilities {
 export interface ActorSubscriptionBinding {
   /** Ровно то, что уедет в `ActorInit.subscriptions`. */
   readonly descriptor: ActorSubscriptionDescriptor;
-  /** Требование манифеста, сужённое до поддержанного вида ПРОВЕРКОЙ, а не приведением типа. */
-  readonly requirement: CandlesMarketDataRequirement;
+  /** Нормализованный СНИМОК проверенного требования — не ссылка на объект манифеста. */
+  readonly requirement: ActorCandleRequirement;
   /** Проверенный `lookback` этого требования — в барах ленты. */
   readonly lookback: number;
+}
+
+/**
+ * Нормализованное требование свечей — то, что допуск ПРОВЕРИЛ, в форме, которой пользуется хост.
+ *
+ * СНИМОК, А НЕ ССЫЛКА. Объект манифеста приезжает из недоверенного модуля и живёт своей жизнью:
+ * оставить на него ссылку значит сделать результат допуска изменяемым ПОСЛЕ проверки — «проверено»
+ * относилось бы к одному состоянию объекта, «доставлено» к другому, и никакой отметки об этом не
+ * осталось бы. Поэтому поля скопированы, объект заморожен, и мутация исходника ничего здесь не
+ * меняет (проба в наборе).
+ *
+ * НОРМАЛИЗАЦИЯ, а не копирование один-в-один: `instrument` разложен, бранд `DurationUs` сведён к
+ * числу микросекунд, а `revisionPolicy` — к одному значению `'final_only'`. Отсутствие политики и
+ * явный `final_only` допускаются оба и означают для хоста РОВНО одно; хранить различие, на которое
+ * никто не смотрит, — значит рано или поздно на него посмотреть по-разному в двух местах.
+ */
+export interface ActorCandleRequirement {
+  readonly id: string;
+  readonly kind: 'candles';
+  readonly venue: string;
+  readonly symbol: string;
+  readonly intervalUs: number;
+  readonly lookback: number;
+  readonly priceType: 'trade';
+  readonly revisions: 'final_only';
 }
 
 /** Допуск отказал: ничего пригодного к употреблению НЕ отдаётся — этого требует тип, а не дисциплина. */
@@ -294,6 +355,16 @@ export function admitActorMarketData(
     .marketData;
   const no = (message: string): ActorMarketDataRefused => ({ refusal: refuse(message) });
 
+  // Происхождение венью — свойство ЛЕНТЫ, а не требования, поэтому проверяется один раз и до
+  // разбора требований: недоказанное венью не спасает совпадение строк ни в одном из них.
+  if (!tape.venue.proven) {
+    return no(
+      `${label(strategy)}: венью ленты не доказано, а требования его называют. ${tape.venue.reason}. ` +
+        'Сверять объявленное венью не с чем, а запустить прогон, сделав вид, что совпало, значит ' +
+        'отдать стратегии данные неизвестного происхождения',
+    );
+  }
+
   if (requirements === undefined || requirements.length === 0) {
     // Контракт 017.4 требует непустой `marketData` у event-driven манифеста и отвергает такой
     // манифест раньше допуска. Ветка оставлена потому, что допуск обязан быть самостоятельным: он
@@ -324,11 +395,11 @@ export function admitActorMarketData(
     }
     seen.add(req.id);
 
-    if (req.instrument.venue !== tape.venue) {
+    if (req.instrument.venue !== tape.venue.venue) {
       return no(
         `${label(strategy)}: требование «${req.id}» просит венью ${req.instrument.venue}, а прогон идёт ` +
-          `по ${tape.venue}. Подставить одно вместо другого нельзя: у разных венью различаются и цены, ` +
-          'и комиссии, и funding',
+          `по ${tape.venue.venue} (${tape.venue.source}). Подставить одно вместо другого нельзя: у ` +
+          'разных венью различаются и цены, и комиссии, и funding',
       );
     }
     if (req.instrument.symbol !== tape.symbol) {
@@ -362,11 +433,28 @@ export function admitActorMarketData(
       );
     }
 
-    bindings.push({
-      descriptor: { subscriptionId: subscriptionIdFor(req.id), kind: req.kind, requirementId: req.id },
-      requirement: req,
-      lookback: req.lookback,
-    });
+    // Заморозка ПОУРОВНЕВАЯ и явная: `Object.freeze` поверхностна, а `Object.isFrozen` истинен и для
+    // поверхностно замороженного — то есть проверка на родителе ничего не говорит о детях.
+    bindings.push(
+      Object.freeze({
+        descriptor: Object.freeze({
+          subscriptionId: subscriptionIdFor(req.id),
+          kind: req.kind,
+          requirementId: req.id,
+        }),
+        requirement: Object.freeze({
+          id: req.id,
+          kind: SUPPORTED_KIND,
+          venue: req.instrument.venue,
+          symbol: req.instrument.symbol,
+          intervalUs: Number(req.interval),
+          lookback: req.lookback,
+          priceType: SUPPORTED_PRICE_TYPE,
+          revisions: 'final_only',
+        } satisfies ActorCandleRequirement),
+        lookback: req.lookback,
+      }),
+    );
   }
 
   // Контрактный гейт уникальности (`findDuplicateSubscriptionIds`, doc у `ActorSubscriptionDescriptor`):
@@ -384,5 +472,5 @@ export function admitActorMarketData(
   // Максимум, а не сумма и не первый: готовность у актора одна, и наступает она, когда набрана
   // история КАЖДОГО требования. Пустым `bindings` быть не может — пустой `marketData` отвергнут выше.
   const tradingFromBarIndex = Math.max(...bindings.map((b) => b.lookback));
-  return { refusal: null, bindings, tradingFromBarIndex };
+  return Object.freeze({ refusal: null, bindings: Object.freeze(bindings), tradingFromBarIndex });
 }

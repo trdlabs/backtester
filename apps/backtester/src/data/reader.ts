@@ -26,6 +26,12 @@ export interface BacktesterDataPort {
 interface FixtureFile {
   readonly datasetRef: string;
   readonly timeframe: string;
+  /**
+   * Венью, которое фикстура объявляет о своих данных (083 S3). Заявление лежит РЯДОМ с данными и
+   * версионируется вместе с ними — боковая карта по имени датасета разошлась бы с файлом молча.
+   * Фикстура без этого поля читается как «происхождение неизвестно» (см. `proveTapeVenue`).
+   */
+  readonly venue?: string;
   readonly rows: ReaderRow[];
 }
 
@@ -87,6 +93,9 @@ export class FixtureDataPort implements BacktesterDataPort {
         datasetRef: fixture.datasetRef,
         symbols,
         timeframe: fixture.timeframe,
+        // Пробрасывается ТОЛЬКО когда объявлено: `venue: undefined` и отсутствие ключа читаются
+        // одинаково, но отсутствие нельзя перепутать с пустой строкой при сериализации.
+        ...(fixture.venue !== undefined ? { venue: fixture.venue } : {}),
         period: {
           from: new Date(Math.min(...tss)).toISOString(),
           to: new Date(Math.max(...tss) + 60_000).toISOString(),
