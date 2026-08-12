@@ -67,8 +67,8 @@ function admittedInput(executor: ActorLifecycleExecutor): EventDrivenSymbolInput
   };
 }
 
-/** Счётчик вызовов исполнителя. `createActor` управляем: успех либо бросок. */
-function recordingExecutor(opts: { createFails?: boolean } = {}) {
+/** Счётчик вызовов исполнителя. `createActor` и `disposeActor` управляемы: успех либо бросок. */
+function recordingExecutor(opts: { createFails?: boolean; disposeError?: Error } = {}) {
   const calls = { create: 0, dispose: 0, execute: 0 };
   const handle = { __actorExecutionHandle: 'ActorExecutionHandle' } as unknown as ActorExecutionHandle;
   const executor: ActorLifecycleExecutor = {
@@ -83,9 +83,20 @@ function recordingExecutor(opts: { createFails?: boolean } = {}) {
     },
     disposeActor: async () => {
       calls.dispose += 1;
+      if (opts.disposeError !== undefined) throw opts.disposeError;
     },
   };
   return { calls, executor, handle };
+}
+
+/** Поймать бросок и вернуть САМ объект ошибки: `rejects.toThrow` сверяет текст, а нужен объект. */
+async function thrown(run: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await run();
+  } catch (err) {
+    return err;
+  }
+  throw new Error('ожидался бросок, его не было');
 }
 
 describe('создание не удалось — освобождать нечего', () => {
@@ -146,6 +157,61 @@ describe('создание удалось — освобождение РОВН�
     await withActorLifecycle(admittedInput(executor), async () => 'b');
     expect(calls.create).toBe(2);
     expect(calls.dispose).toBe(2);
+  });
+});
+
+describe('ОСВОБОЖДЕНИЕ ТОЖЕ МОЖЕТ ОТКАЗАТЬ: три исхода, и ни один не сводится к другому', () => {
+  // Первая редакция закрывала цикл через `finally`. Это выглядит как та же семантика и ею не
+  // является: бросок из `finally` ЗАМЕЩАЕТ ошибку тела. Прогон, упавший по прикладной причине и не
+  // сумевший освободить сессию, доложил бы только вторую — а диагносту нужна первая.
+
+  it('тело прошло, dispose бросил → ошибка dispose (другой причины нет)', async () => {
+    const disposeError = new Error('сессия изолята не закрылась');
+    const { calls, executor } = recordingExecutor({ disposeError });
+    expect(await thrown(() => withActorLifecycle(admittedInput(executor), async () => 'готово'))).toBe(
+      disposeError,
+    );
+    expect(calls.dispose).toBe(1);
+  });
+
+  it('тело бросило, dispose прошёл → ИСХОДНАЯ ошибка, ТОТ ЖЕ объект', async () => {
+    // Проверяется идентичность, а не текст: обёртка с тем же сообщением прошла бы сверку по строке
+    // и потеряла бы и стек, и `cause`, и тип — то есть всё, чем ошибка полезна.
+    const bodyError = new Error('отказ внутри прогона');
+    const { calls, executor } = recordingExecutor();
+    expect(
+      await thrown(() =>
+        withActorLifecycle(admittedInput(executor), async () => {
+          throw bodyError;
+        }),
+      ),
+    ).toBe(bodyError);
+    expect(calls.dispose).toBe(1);
+  });
+
+  it('бросили ОБА → AggregateError с обеими ошибками по идентичности и в порядке [тело, dispose]', async () => {
+    // Выбрать одну значило бы решить за диагноста, какая из двух причин настоящая. Такого знания
+    // здесь нет: отказ освобождения бывает и следствием отказа тела, и независимой поломкой.
+    const bodyError = new Error('отказ внутри прогона');
+    const disposeError = new Error('сессия изолята не закрылась');
+    const { calls, executor } = recordingExecutor({ disposeError });
+    const err = await thrown(() =>
+      withActorLifecycle(admittedInput(executor), async () => {
+        throw bodyError;
+      }),
+    );
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors).toHaveLength(2);
+    expect((err as AggregateError).errors[0]).toBe(bodyError);
+    expect((err as AggregateError).errors[1]).toBe(disposeError);
+    expect(calls.dispose).toBe(1);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: успех без отказа dispose ничего не бросает', async () => {
+    // Иначе три пробы выше зеленели бы и у реализации, бросающей всегда.
+    const { calls, executor } = recordingExecutor();
+    await expect(withActorLifecycle(admittedInput(executor), async () => 'готово')).resolves.toBe('готово');
+    expect(calls.dispose).toBe(1);
   });
 });
 
