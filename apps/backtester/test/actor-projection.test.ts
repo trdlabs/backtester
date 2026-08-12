@@ -243,27 +243,59 @@ describe('отображение: семь семейств артефактов
 
 describe('сужение состояний ордера до статуса артефакта', () => {
   // Таблица выписана СПИСКОМ, а не выведена из `ORDER_STATUS_BY_STATE`: сверять таблицу с самой
-  // собой бессмысленно. Здесь зафиксировано ожидаемое сужение, включая лосси-часть.
-  const EXPECTED: readonly (readonly [OrderState, string])[] = [
-    ['pending_new', 'pending'],
-    ['accepted', 'pending'],
-    ['partially_filled', 'pending'],
-    ['cancel_pending', 'pending'],
-    ['filled', 'filled'],
-    ['canceled', 'expired'],
-    ['rejected', 'expired'],
+  // собой бессмысленно. Здесь зафиксировано ожидаемое сужение, включая лосси-часть. Третий столбец
+  // — ждёт ли состояние исполнений: без него половина строк упёрлась бы в соседний гейт
+  // (`accepted` с филлом отвергается) и проверяла бы не сужение, а его.
+  const EXPECTED: readonly (readonly [OrderState, string, boolean])[] = [
+    ['pending_new', 'pending', false],
+    ['accepted', 'pending', false],
+    ['partially_filled', 'pending', true],
+    ['cancel_pending', 'pending', true],
+    ['filled', 'filled', true],
+    ['canceled', 'expired', true],
+    ['rejected', 'expired', false],
   ];
 
-  it.each(EXPECTED)('%s → %s', (state, status) => {
-    const base = baseRecord();
-    const projected = project({
-      orders: [{ ...base.orders[0]!, terminalState: state }, base.orders[1]!],
-    });
-    expect(projected.orders[0]!.status).toBe(status);
+  /** Минимальная запись под одно состояние: один ордер, филл — только если состояние его ждёт. */
+  function oneOrder(state: OrderState, withFill: boolean): ActorExecutionRecord {
+    const frontiers = [frontier(0, 1)];
+    const fills: ActorFillRecord[] = withFill
+      ? [
+          {
+            fillId: 'f1',
+            orderId: 'o1',
+            frontier: 0,
+            tsUs: frontiers[0]!.tsUs,
+            price: 100,
+            baseOpen: 100,
+            slippageBps: 0,
+            qty: 1,
+            fee: 0,
+            side: 'buy',
+          },
+        ]
+      : [];
+    const withoutAnchor = {
+      symbol: SYMBOL,
+      frontiers,
+      orders: [
+        { orderId: 'o1', placedAtFrontier: 0, side: 'long' as const, intent: 'open' as const, terminalState: state },
+      ],
+      fills,
+      funding: [],
+      equity: [{ frontier: 0, equity: 1000 }],
+      riskDecisions: [],
+      trades: [],
+    };
+    return { ...withoutAnchor, finalLedger: foldAnchor(withoutAnchor) };
+  }
+
+  it.each(EXPECTED)('%s → %s', (state, status, withFill) => {
+    expect(projectActorRun(oneOrder(state, withFill)).orders[0]!.status).toBe(status);
   });
 
   it('таблица покрывает ровно те состояния, что есть у автомата', () => {
-    expect(Object.keys(ORDER_STATUS_BY_STATE).sort()).toEqual(EXPECTED.map(([s]) => s).sort());
+    expect(Object.keys(ORDER_STATUS_BY_STATE).sort()).toEqual([...EXPECTED.map(([s]) => s)].sort());
   });
 
   it('«отменена» и «отвергнута» СХЛОПЫВАЮТСЯ — потеря названа, а не скрыта', () => {
@@ -381,14 +413,50 @@ describe('отказ: запись, не сходящаяся сама с соб
     // Тот же набор, переставленный: каждый филл по отдельности валиден, и валится ТОЛЬКО порядок.
     rejects({ fills: [base.fills[1]!, base.fills[0]!] }, /порядок записи нарушен/);
   });
+
+  it('метки сделки не совпадают с её барами', () => {
+    // Сделка — единственный артефакт, приходящий собранным: у неё есть И номер бара, И метка,
+    // то есть два способа сказать одно. Кривая equity берёт метку у оси и разойтись не может.
+    rejects({ trades: [{ ...TRADE, exitTs: TRADE.exitTs + 1 }] }, /не совпадают с барами/);
+  });
+});
+
+describe('состояние автомата обязано соответствовать наличию исполнений', () => {
+  // Рассинхрон двух половин записи. Раннер, записавший филл и не продвинувший FSM, отдаёт заявку,
+  // которую артефакт объявит неисполненной, — при уже поехавшей позиции.
+  const base = baseRecord();
+
+  it('исполненный ордер без единого филла', () => {
+    // `o2` остаётся `filled`, но его филл выброшен. Проверка обязана сработать РАНЬШЕ якоря
+    // леджера — она называет причину адресно («у этой заявки нет исполнений»), тогда как якорь
+    // скажет лишь «позиция не сходится», и чинить придётся с начала.
+    expect(() => projectActorRun({ ...base, fills: [base.fills[0]!] })).toThrow(
+      /исполнений у него нет/,
+    );
+  });
+
+  it('отвергнутый ордер с исполнением', () => {
+    const orders = [base.orders[0]!, { ...base.orders[1]!, terminalState: 'rejected' as OrderState }];
+    expect(() => projectActorRun({ ...base, orders })).toThrow(/но у него 1 исполнений/);
+  });
+
+  it('отмена ПОСЛЕ частичного исполнения — законный сценарий, не отказ', () => {
+    // Проверка проверки: без неё правило зеленело бы и в виде «у любого нетерминального состояния
+    // филлов быть не должно», запретив штатную отмену остатка.
+    const orders = [base.orders[0]!, { ...base.orders[1]!, terminalState: 'canceled' as OrderState }];
+    expect(() => projectActorRun({ ...base, orders })).not.toThrow();
+  });
 });
 
 describe('якорь леджера ловит потерянный факт — то, ради чего он и заведён', () => {
   it('потерянный филл: списки остаются непротиворечивыми, позиция расходится', () => {
-    // Точный портрет дефекта раннера. Ордера на месте, кривая equity непрерывна, сделка закрыта —
-    // всё выглядит целым. Не сходится только бухгалтерия, и поймать это больше негде.
+    // Точный портрет дефекта раннера: отмену заявки записал, а её исполнение потерял. Ордера на
+    // месте, кривая equity непрерывна, сделка закрыта — всё выглядит целым, и соседние гейты молчат
+    // (`canceled` вправе не иметь филлов). Не сходится только бухгалтерия: позиция осталась
+    // открытой. Поймать это больше негде.
     const base = baseRecord();
-    expect(() => projectActorRun({ ...base, fills: [base.fills[0]!] })).toThrow(
+    const orders = [base.orders[0]!, { ...base.orders[1]!, terminalState: 'canceled' as OrderState }];
+    expect(() => projectActorRun({ ...base, orders, fills: [base.fills[0]!] })).toThrow(
       /не сходится с finalLedger/,
     );
   });

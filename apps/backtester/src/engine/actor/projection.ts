@@ -82,6 +82,26 @@ export const ORDER_STATUS_BY_STATE: Readonly<Record<OrderState, SimulatedOrder['
 };
 
 /**
+ * Сколько филлов ОБЯЗАНО быть у ордера в каждом состоянии автомата.
+ *
+ * Ловит рассинхрон двух половин записи. Раннер, записавший филл и не продвинувший FSM, отдаёт ордер
+ * в `accepted` с исполнением — артефакт объявит заявку неисполненной, хотя позиция уже поехала.
+ * Обратный случай так же нем: `filled` без единого филла.
+ *
+ * `either` у `canceled` и `cancel_pending` — не лазейка, а факт: отмена после частичного исполнения
+ * законна, и требовать здесь определённости значило бы запретить штатный сценарий.
+ */
+const FILLS_EXPECTED_BY_STATE: Readonly<Record<OrderState, 'none' | 'some' | 'either'>> = {
+  pending_new: 'none',
+  accepted: 'none',
+  partially_filled: 'some',
+  cancel_pending: 'either',
+  filled: 'some',
+  canceled: 'either',
+  rejected: 'none',
+};
+
+/**
  * Артефакты одного actor-прогона.
  *
  * Поля повторяют `MergedAccumulators` раннера ОДИН В ОДИН — это не совпадение, а условие: конечную
@@ -250,6 +270,7 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
 
   // --- Филлы ---
   const seenFillId = new Set<string>();
+  const fillsPerOrder = new Map<string, number>();
   const fills: SimulatedFill[] = [];
   for (const f of record.fills) {
     if (seenFillId.has(f.fillId)) fail(`филл ${f.fillId} записан дважды`);
@@ -257,6 +278,7 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
     if (!seenOrderId.has(f.orderId)) {
       fail(`филл ${f.fillId} ссылается на незаписанный ордер ${f.orderId}`);
     }
+    fillsPerOrder.set(f.orderId, (fillsPerOrder.get(f.orderId) ?? 0) + 1);
     const frontier = frontierAt(frontiers, f.frontier, `филл ${f.fillId}`);
     // Один frontier — один business-момент (§3.8). Филл, чья метка не равна метке своего
     // frontier'а, означает, что раннер склеил два момента в один; числа при этом остаются
@@ -282,6 +304,19 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
     record.fills.map((f) => f.frontier),
     'филлы',
   );
+
+  // Состояние автомата обязано соответствовать наличию исполнений — иначе две половины записи
+  // рассказывают разные истории про одну заявку, и артефакт унаследует ту, что неверна.
+  for (const o of record.orders) {
+    const count = fillsPerOrder.get(o.orderId) ?? 0;
+    const expected = FILLS_EXPECTED_BY_STATE[o.terminalState];
+    if (expected === 'none' && count > 0) {
+      fail(`ордер ${o.orderId} в состоянии ${o.terminalState}, но у него ${count} исполнений`);
+    }
+    if (expected === 'some' && count === 0) {
+      fail(`ордер ${o.orderId} в состоянии ${o.terminalState}, но исполнений у него нет`);
+    }
+  }
 
   // --- Кривая equity: ровно одна точка на каждый frontier ---
   if (record.equity.length !== frontiers.length) {
@@ -334,10 +369,21 @@ export function projectActorRun(record: ActorExecutionRecord): ActorRunArtifacts
     if (t.symbol !== record.symbol) {
       fail(`сделка ${t.id}: символ ${t.symbol} не совпадает с символом прогона ${record.symbol}`);
     }
-    frontierAt(frontiers, t.entryBarIndex, `сделка ${t.id} (вход)`);
-    frontierAt(frontiers, t.exitBarIndex, `сделка ${t.id} (выход)`);
+    const entry = frontierAt(frontiers, t.entryBarIndex, `сделка ${t.id} (вход)`);
+    const exit = frontierAt(frontiers, t.exitBarIndex, `сделка ${t.id} (выход)`);
     if (t.exitBarIndex < t.entryBarIndex) {
       fail(`сделка ${t.id}: выход на баре ${t.exitBarIndex} раньше входа на ${t.entryBarIndex}`);
+    }
+    // Сделка несёт И номер бара, И метку времени — два способа сказать одно, а значит и
+    // возможность их рассогласовать. Кривая equity берёт метку у оси и разойтись не может;
+    // сделка приходит собранной, поэтому её пара сверяется здесь.
+    const entryTs = msOf(Number(entry.tsUs), `сделка ${t.id} (вход)`);
+    const exitTs = msOf(Number(exit.tsUs), `сделка ${t.id} (выход)`);
+    if (t.entryTs !== entryTs || t.exitTs !== exitTs) {
+      fail(
+        `сделка ${t.id}: метки (${t.entryTs}, ${t.exitTs}) не совпадают с барами ` +
+          `${t.entryBarIndex}/${t.exitBarIndex} (${entryTs}, ${exitTs})`,
+      );
     }
   }
   assertNonDecreasing(
