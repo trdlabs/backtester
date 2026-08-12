@@ -59,14 +59,7 @@
 // живут в этом агрегате, но проекция их наружу НЕ отдаёт, то есть сегодня пофронтирная запись
 // теряется на границе слоя. Требование записано владельцем 2026-08-12.
 
-import type {
-  CloseReason,
-  Fill,
-  FillSide,
-  Ledger,
-  OrderState,
-  RiskDecision,
-} from '@trdlabs/engine';
+import type { CloseAnnotation, Fill, FillSide, Ledger, OrderState, RiskDecision } from '@trdlabs/engine';
 import type { TimestampUs } from '@trdlabs/sdk/research-contract';
 
 /**
@@ -159,15 +152,14 @@ export interface ActorJournalFunding {
 export type ActorJournalEntry = ActorJournalFill | ActorJournalFunding;
 
 /**
- * Причина закрытия — ЕДИНСТВЕННОЕ, что хост приносит про сделку.
+ * Причина закрытия и запрошенная доля — ЕДИНСТВЕННОЕ, что хост приносит про сделку.
  *
- * Всё остальное считает движок. Привязка по идентификатору закрывающего филла, а не по индексу:
- * индекс молча съедет при любой правке журнала.
+ * Тип движковый, а не одноимённая копия: копия разошлась бы ровно тогда, когда движок добавит поле,
+ * — и разошлась бы молча, потому что структурная совместимость лишнего поля не замечает. `0.9.0`
+ * добавил `closeFraction`, и локальное объявление продолжало бы компилироваться, роняя долю на
+ * границе.
  */
-export interface ActorCloseAnnotation {
-  readonly exitFillId: string;
-  readonly closeReason: CloseReason;
-}
+export type ActorCloseAnnotation = CloseAnnotation;
 
 /**
  * Точка equity — ОДНА НА КАЖДЫЙ frontier, без пропусков.

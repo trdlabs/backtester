@@ -303,6 +303,102 @@ describe('сделки: считает движок, хост приносит �
     expect(out.trades).toEqual([]);
   });
 
+  it('две последовательные эры: closeSeq у каждой свой, имена не расходятся с legacy', () => {
+    // Полный выход, затем новый вход и снова полный выход. Глобальный счётчик закрытий дал бы
+    // второй сделке `closeSeq: 1`, а с ним и суффикс `-c1` в имени — то есть переименовал бы
+    // половину сделок прогона, не тронув ни одного числа.
+    const journal: ActorJournalEntry[] = [
+      fillEntry('f1', 'o1', 0, 'buy', 2, 100, 1),
+      fillEntry('f2', 'o2', 1, 'sell', 2, 110, 1),
+      fillEntry('f3', 'o3', 1, 'buy', 2, 100, 1),
+      fillEntry('f4', 'o4', 2, 'sell', 2, 105, 1),
+    ];
+    const out = project({
+      journal,
+      orders: [
+        { orderId: 'o1', placedAtFrontier: 0, side: 'long', intent: 'open', terminalState: 'filled' },
+        { orderId: 'o2', placedAtFrontier: 1, side: 'long', intent: 'close', terminalState: 'filled' },
+        { orderId: 'o3', placedAtFrontier: 1, side: 'long', intent: 'open', terminalState: 'filled' },
+        { orderId: 'o4', placedAtFrontier: 2, side: 'long', intent: 'close', terminalState: 'filled' },
+      ],
+      closes: [
+        { exitFillId: 'f2', closeReason: 'strategy_exit' },
+        { exitFillId: 'f4', closeReason: 'strategy_exit' },
+      ],
+    });
+    expect(out.trades.map((t) => t.id)).toEqual(['trade-BTCUSDT-0-1', 'trade-BTCUSDT-1-2']);
+    expect(out.trades.every((t) => !('closeSeq' in t))).toBe(true);
+  });
+
+  it('две эры через ФЛИП — счётчик обнуляется и там', () => {
+    const journal: ActorJournalEntry[] = [
+      fillEntry('f1', 'o1', 0, 'buy', 2, 100, 1),
+      fillEntry('f2', 'o2', 1, 'sell', 5, 110, 2),
+      fillEntry('f3', 'o3', 2, 'buy', 3, 105, 1),
+    ];
+    const out = project({
+      journal,
+      orders: [
+        { orderId: 'o1', placedAtFrontier: 0, side: 'long', intent: 'open', terminalState: 'filled' },
+        { orderId: 'o2', placedAtFrontier: 1, side: 'short', intent: 'open', terminalState: 'filled' },
+        { orderId: 'o3', placedAtFrontier: 2, side: 'short', intent: 'close', terminalState: 'filled' },
+      ],
+      closes: [
+        { exitFillId: 'f2', closeReason: 'strategy_exit' },
+        { exitFillId: 'f3', closeReason: 'strategy_exit' },
+      ],
+    });
+    expect(out.trades.map((t) => [t.side, t.id])).toEqual([
+      ['long', 'trade-BTCUSDT-0-1'],
+      ['short', 'trade-BTCUSDT-1-2'],
+    ]);
+  });
+
+  it('запрошенная доля доезжает до движка и меняет апорционирование', () => {
+    // Доказательство проводки, а не арифметики: та же запись с долей и без даёт РАЗНЫЙ
+    // `fundingPaid` (1/3 во float64 — 0.3333333333333333, поэтому 3 × (1/3) ≠ 3 × 1 / 3).
+    const journal: ActorJournalEntry[] = [
+      fillEntry('f1', 'o1', 0, 'buy', 3, 100, 3),
+      fundingEntry(1, 3),
+      fillEntry('f2', 'o2', 2, 'sell', 1, 110, 1),
+    ];
+    const orders = baseRecord().orders;
+    const withFraction = project({
+      journal,
+      orders,
+      closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 1 / 3 }],
+    });
+    const withoutFraction = project({
+      journal,
+      orders,
+      closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit' }],
+    });
+    expect(withFraction.trades[0]!.fundingPaid).toBe(0.9999999999999999);
+    expect(withoutFraction.trades[0]!.fundingPaid).toBe(1);
+  });
+
+  it('дубликат аннотации отвергается', () => {
+    expect(() =>
+      project({
+        closes: [
+          { exitFillId: 'f2', closeReason: 'stop_hit' },
+          { exitFillId: 'f2', closeReason: 'take_hit' },
+        ],
+      }),
+    ).toThrow(/задана дважды/);
+  });
+
+  it('аннотация на филл ВХОДА отвергается', () => {
+    expect(() =>
+      project({
+        closes: [
+          { exitFillId: 'f2', closeReason: 'strategy_exit' },
+          { exitFillId: 'f1', closeReason: 'stop_hit' },
+        ],
+      }),
+    ).toThrow(/не сработали ни разу: f1/);
+  });
+
   it('отказ движка доезжает целиком, а не превращается в «проекция упала»', () => {
     // Причину закрытия знает только хост; движок отвергает закрывающий филл без аннотации.
     expect(() => project({ closes: [] })).toThrow(/нет аннотации причины/);
