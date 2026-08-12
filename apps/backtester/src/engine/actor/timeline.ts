@@ -22,6 +22,19 @@
 // выросла. Множество «что породило это» восстанавливается обходом, а форма остаётся неизменяемой.
 // У внешних событий (свеча, рыночные данные) ссылки нет — их не породил никто внутри актора.
 //
+// ═══ КОНВЕРТ КОНТРАКТА, А НЕ СВОЯ ФОРМА ═══
+//
+// Запись хранит `ActorEnvelope<ActorInputEvent>` целиком. Соблазн разобрать его на удобные поля и
+// добавить «свою» идентичность строки ленты был, и он неверен: локальная параллельная форма чужого
+// типа расходится с ним при первой же правке контракта, причём молча — структурная совместимость
+// лишнего и недостающего не замечает одинаково.
+//
+// Отдельной `row` (символ + метка) больше нет, и она была ИЗБЫТОЧНОЙ, а не полезной: символ задаёт
+// подписка (`subscriptionId` — ссылка на элемент `ActorInit.subscriptions`), а метку и ревизию
+// строки несёт сам `ObservedValue` события (`effectiveTsUs`, `revision`). То есть обе половины
+// «идентичности строки» уже записаны, а третья копия рядом — это ровно возможность разойтись с
+// каждой из них.
+//
 // ═══ КОМАНДА ЗАПИСЫВАЕТСЯ ЦЕЛИКОМ И ПРИ ЛЮБОМ ИСХОДЕ ═══
 //
 // Первая редакция писала только вид команды и её идентификатор — «полный payload есть в
@@ -41,9 +54,8 @@
 import { assertContiguous } from '@trdlabs/engine';
 import type {
   ActorCommand,
+  ActorEnvelope,
   ActorInputEvent,
-  ActorInputEventKind,
-  SubscriptionId,
   TimestampUs,
 } from '@trdlabs/sdk/research-contract';
 
@@ -68,43 +80,6 @@ export interface ActorTimelineCommand {
 }
 
 /**
- * Класс доставки события — определяет, какая идентичность обязана быть записана.
- *
- * Таблицей по ЗАМКНУТОМУ каталогу контракта: новый вид события красит сборку, а не заводится с
- * произвольным правилом. Три класса, а не два, потому что `market.subscription.status_changed`
- * относится к подписке, но НЕ к строке ленты — у смены статуса строки нет.
- */
-const DELIVERY_CLASS: Readonly<Record<ActorInputEventKind, 'tape' | 'subscription' | 'internal'>> = {
-  'market.candle.closed': 'tape',
-  'market.open_interest.observed': 'tape',
-  'market.liquidations.bucket_closed': 'tape',
-  'market.taker_volume.bucket_closed': 'tape',
-  'market.funding.observed': 'tape',
-  'market.subscription.status_changed': 'subscription',
-  'order.accepted': 'internal',
-  'order.denied': 'internal',
-  'order.rejected': 'internal',
-  'order.canceled': 'internal',
-  'cancel.rejected': 'internal',
-  'order.expired': 'internal',
-  fill: 'internal',
-  'timer.fired': 'internal',
-  'trading_state.changed': 'internal',
-};
-
-/**
- * Точная идентичность доставки рыночного события.
- *
- * `subscriptionId` — ссылка на элемент `ActorInit.subscriptions`, а не свободная строка (контракт,
- * doc у `ActorEnvelope`). `row` — строка ленты, названная СИМВОЛОМ И МЕТКОЙ, а не индексом: индекс
- * съезжает при любой правке ленты и указывает потом на чужие данные молча.
- */
-export interface ActorMarketDelivery {
-  readonly subscriptionId: SubscriptionId;
-  readonly row?: { readonly symbol: string; readonly tsUs: TimestampUs };
-}
-
-/**
  * Одна запись потока — один доставленный актору `seq`.
  *
  * `seq` actor-local и НЕПРЕРЫВЕН (§3.5). Именно здесь это утверждение впервые становится
@@ -112,22 +87,21 @@ export interface ActorMarketDelivery {
  * двигает. Поток видит каждое событие поимённо, и потому гард живёт тут.
  */
 export interface ActorTimelineEntry {
-  readonly seq: number;
-  readonly frontier: number;
-  /** Business-время `U` своего frontier'а. */
-  readonly tsUs: TimestampUs;
   /**
-   * КОНТРАКТНОЕ СОБЫТИЕ ЦЕЛИКОМ.
+   * КОНТРАКТНЫЙ КОНВЕРТ ЦЕЛИКОМ: `seq`, `eventTsUs`, `subscriptionId`, событие.
    *
-   * Первая редакция писала вид и ссылку, рассуждая «рыночный payload уже в ленте». Рассуждение
-   * верно ровно для рыночных данных и ложно для всего остального: `reason` у `order.denied`,
-   * `dueTsUs` у `timer.fired`, `previous`/`state` у `trading_state.changed`, статус подписки и сами
-   * числа филла В ЛЕНТЕ НЕ ЛЕЖАТ. Для них поток — единственный носитель, и вид без payload'а
-   * означал бы, что событие записано, а что в нём было — нет.
+   * Не разобранный на поля и не сокращённый. Прежняя редакция хранила `seq`, свою метку `tsUs`,
+   * событие и СВОЙ тип идентичности доставки — то есть локальную параллельную форму конверта, в
+   * которой `subscriptionId` был условным. Условным его сделал я, а не контракт: `ActorEnvelope<E>`
+   * требует его для ЛЮБОГО `E`. Локальное исключение для внутренних событий — это своя семантика
+   * поверх чужого типа, и расходиться с ним она начала бы при первой же правке контракта.
+   *
+   * Собственной метки времени здесь тоже больше нет: `eventTsUs` конверта И ЕСТЬ frontier диспатча
+   * `U` (doc контракта у `ActorEnvelope`), и вторая метка рядом была её копией с возможностью
+   * разойтись.
    */
-  readonly event: ActorInputEvent;
-  /** Идентичность доставки. Обязательна для рыночных видов, запрещена для внутренних. */
-  readonly delivery?: ActorMarketDelivery;
+  readonly envelope: ActorEnvelope<ActorInputEvent>;
+  readonly frontier: number;
   readonly commands: readonly ActorTimelineCommand[];
   /** `seq` записи, из которой это событие выросло. Отсутствует у внешних. */
   readonly causedBySeq?: number;
@@ -141,8 +115,8 @@ export interface ActorTimelineRow {
   readonly seq: number;
   readonly barIndex: number;
   readonly ts: number;
+  readonly subscriptionId: string;
   readonly event: ActorInputEvent;
-  readonly delivery?: ActorMarketDelivery;
   readonly causedBySeq?: number;
   readonly commands: readonly {
     readonly command: ActorCommand;
@@ -197,7 +171,7 @@ export function assertActorTimeline(timeline: ActorTimeline, axis: readonly Time
     );
   }
 
-  const first = timeline[0]!.seq;
+  const first = timeline[0]!.envelope.seq;
   if (!Number.isSafeInteger(first) || first < 0) {
     fail(`первый seq потока ${first} — обязан быть неотрицательным safe-целым`);
   }
@@ -207,73 +181,57 @@ export function assertActorTimeline(timeline: ActorTimeline, axis: readonly Time
   // с ним в том, что именно считать нарушением.
   try {
     assertContiguous(
-      timeline.map((e) => e.seq),
+      timeline.map((e) => e.envelope.seq),
       first,
     );
   } catch (cause) {
     fail(`непрерывность seq нарушена: ${(cause as Error).message}`);
   }
 
-  const seqs = new Set(timeline.map((e) => e.seq));
+  const seqs = new Set(timeline.map((e) => e.envelope.seq));
   const maxSeqPerFrontier = new Map<number, number>();
   let prevFrontier = -1;
 
   for (let i = 0; i < timeline.length; i += 1) {
     const entry = timeline[i]!;
+    const { seq, eventTsUs, event } = entry.envelope;
     const f = axis[entry.frontier];
     if (f === undefined || f.index !== entry.frontier) {
-      fail(`seq ${entry.seq}: ссылка на frontier ${entry.frontier}, которого нет (всего ${axis.length})`);
+      fail(`seq ${seq}: ссылка на frontier ${entry.frontier}, которого нет (всего ${axis.length})`);
     }
-    if (Number(entry.tsUs) !== Number(f.tsUs)) {
+    // `eventTsUs` конверта — это frontier диспатча `U` (контракт). Расхождение с осью означает,
+    // что событие приписано не своему моменту.
+    if (Number(eventTsUs) !== Number(f.tsUs)) {
       fail(
-        `seq ${entry.seq}: метка ${Number(entry.tsUs)} не равна business-времени своего frontier’а ${Number(f.tsUs)}`,
+        `seq ${seq}: eventTsUs ${Number(eventTsUs)} не равен business-времени своего frontier’а ${Number(f.tsUs)}`,
       );
     }
     // Поток идёт вперёд по business-времени: запись, вернувшаяся в прошлый frontier, означает, что
     // журналирование шло не в порядке диспетчеризации, и причинный порядок больше не читается.
     if (entry.frontier < prevFrontier) {
-      fail(`seq ${entry.seq}: frontier ${entry.frontier} после ${prevFrontier} — поток идёт назад`);
+      fail(`seq ${seq}: frontier ${entry.frontier} после ${prevFrontier} — поток идёт назад`);
     }
     prevFrontier = entry.frontier;
-    maxSeqPerFrontier.set(entry.frontier, entry.seq);
+    maxSeqPerFrontier.set(entry.frontier, seq);
 
     if (entry.causedBySeq !== undefined) {
       // Причинность в append-only потоке указывает НАЗАД — вперёд её записать нечем: будущих `seq`
       // в момент записи не существует. Ссылка вперёд либо на себя означает, что поток собран
       // задним числом, то есть перестал быть тем, ради чего заведён.
-      if (entry.causedBySeq >= entry.seq) {
+      if (entry.causedBySeq >= seq) {
         fail(
-          `seq ${entry.seq}: causedBySeq ${entry.causedBySeq} не меньше собственного seq — ` +
+          `seq ${seq}: causedBySeq ${entry.causedBySeq} не меньше собственного seq — ` +
             'в append-only потоке причина всегда записана РАНЬШЕ следствия',
         );
       }
       if (!seqs.has(entry.causedBySeq)) {
-        fail(`seq ${entry.seq}: causedBySeq ${entry.causedBySeq} не встречается в потоке`);
+        fail(`seq ${seq}: causedBySeq ${entry.causedBySeq} не встречается в потоке`);
       }
-    }
-
-    // Идентичность доставки обязана соответствовать классу события. Рыночное без неё нельзя
-    // связать ни с подпиской, ни со строкой ленты; внутреннее с ней утверждало бы подписку,
-    // которой у него нет.
-    const cls = DELIVERY_CLASS[entry.event.kind];
-    if (cls === 'internal' && entry.delivery !== undefined) {
-      fail(`seq ${entry.seq}: у внутреннего события ${entry.event.kind} записана доставка подписки`);
-    }
-    if (cls !== 'internal' && entry.delivery === undefined) {
-      fail(`seq ${entry.seq}: у события ${entry.event.kind} нет идентичности доставки`);
-    }
-    if (cls === 'tape' && entry.delivery?.row === undefined) {
-      fail(`seq ${entry.seq}: у рыночного события ${entry.event.kind} не записана строка ленты`);
-    }
-    if (cls === 'subscription' && entry.delivery?.row !== undefined) {
-      fail(
-        `seq ${entry.seq}: у смены статуса подписки записана строка ленты — у неё строки нет`,
-      );
     }
 
     for (const c of entry.commands) {
       if (c.outcome.status !== 'applied' && c.outcome.reason.trim() === '') {
-        fail(`seq ${entry.seq}: команда ${c.command.kind} со статусом ${c.outcome.status} без причины`);
+        fail(`seq ${seq}: команда ${c.command.kind} со статусом ${c.outcome.status} без причины`);
       }
     }
   }
@@ -317,16 +275,18 @@ export function projectActorTimeline(
 ): ActorTimelineArtifact {
   assertActorTimeline(timeline, axis);
   return timeline.map((entry) => {
-    const tsUs = Number(entry.tsUs);
+    const tsUs = Number(entry.envelope.eventTsUs);
     if (tsUs % US_PER_MS !== 0) {
-      fail(`seq ${entry.seq}: метка ${tsUs} мкс не кратна миллисекунде — перевод был бы с потерей`);
+      fail(
+        `seq ${entry.envelope.seq}: метка ${tsUs} мкс не кратна миллисекунде — перевод был бы с потерей`,
+      );
     }
     return {
-      seq: entry.seq,
+      seq: entry.envelope.seq,
       barIndex: entry.frontier,
       ts: tsUs / US_PER_MS,
-      event: entry.event,
-      ...(entry.delivery !== undefined ? { delivery: entry.delivery } : {}),
+      subscriptionId: entry.envelope.subscriptionId,
+      event: entry.envelope.event,
       ...(entry.causedBySeq !== undefined ? { causedBySeq: entry.causedBySeq } : {}),
       commands: entry.commands.map((c) => ({
         command: c.command,
