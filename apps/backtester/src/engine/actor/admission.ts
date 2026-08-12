@@ -13,6 +13,11 @@
 // single_position-пути значит подменить объявленную семантику молча: прогон завершится, числа
 // получатся, и ничто не скажет, что исполнялось не то, что объявлено.
 
+import type {
+  ActorSubscriptionDescriptor,
+  MarketDataRequirement,
+} from '@trdlabs/sdk/research-contract';
+
 import type { ResolvedStrategy } from '../artifacts.js';
 import { supportsActorLifecycle, type ActorLifecycleExecutor } from './execution-handle.js';
 
@@ -153,4 +158,129 @@ export function admitActorExecutor(
       'отдаёт результат: проекция ledger → артефакты не подключена. Успешный прогон с пустыми ' +
       'артефактами хуже отказа — у отказа есть причина и адресат.',
   );
+}
+
+// ═══ ПОДДЕРЖИВАЕМЫЙ ПОДНАБОР MARKET DATA (срез 1: candle-only) ═══
+//
+// Поднабор задан ТОЧНО, а не «примерно свечи». Подписка — это обещание: актор, объявивший
+// `open_interest` или ревизии, вправе на них рассчитывать, и хост, который их не доставляет, но
+// прогон запускает, врёт молча. Числа при этом получаются правдоподобные.
+//
+// Отказ происходит ДО `createActor` и до init: актор, которому нечего доставлять, не должен быть
+// создан вовсе — иначе отказ приезжает посреди прогона, когда закрывать уже есть что.
+
+/** Точный поддерживаемый вид требования в этом срезе. */
+const SUPPORTED_KIND = 'candles';
+
+/** Что хост может доставить: параметры ленты, против которых сверяется подписка. */
+export interface ActorTapeCapabilities {
+  readonly symbol: string;
+  /** Интервал бара ленты в микросекундах. */
+  readonly barIntervalUs: number;
+  /** Сколько баров в ленте — верхняя граница `lookback`. */
+  readonly barCount: number;
+}
+
+export interface ActorMarketDataAdmission {
+  readonly refusal: ActorAdmissionRefusal | null;
+  /**
+   * ФАКТИЧЕСКИЕ дескрипторы подписок, которые уедут в `ActorInit.subscriptions`.
+   *
+   * Строятся здесь, а не в раннере: `subscriptionId` обязан быть канонической и стабильной ссылкой
+   * на элемент этого же списка (контракт, doc у `ActorEnvelope`), и назначать его в двух местах
+   * значило бы дать им разойтись.
+   */
+  readonly subscriptions: readonly ActorSubscriptionDescriptor[];
+}
+
+/** Идентификатор подписки выводится из требования — хост его не выбирает произвольно. */
+export function subscriptionIdFor(requirementId: string): string {
+  return `sub-${requirementId}`;
+}
+
+/**
+ * Допуск подписок: ровно candle-only, каждый параметр проверен.
+ *
+ * Возвращает и отказ, и дескрипторы: тот, кто проверил подписки, и обязан их назвать — иначе раннер
+ * построил бы свой список, и «проверено» относилось бы к одному, а «доставлено» к другому.
+ */
+export function admitActorMarketData(
+  strategy: ResolvedStrategy,
+  tape: ActorTapeCapabilities,
+): ActorMarketDataAdmission {
+  const requirements = (strategy.manifest as { marketData?: readonly MarketDataRequirement[] })
+    .marketData;
+  const none: { readonly subscriptions: readonly ActorSubscriptionDescriptor[] } = { subscriptions: [] };
+
+  if (requirements === undefined || requirements.length === 0) {
+    // Контракт 017.4 требует непустой `marketData` у event-driven манифеста и отвергает такой
+    // манифест раньше допуска. Ветка оставлена потому, что допуск обязан быть самостоятельным: он
+    // не вправе полагаться на то, что кто-то раньше уже проверил.
+    return { ...none, refusal: refuse(`${label(strategy)} не объявляет marketData`) };
+  }
+
+  const seen = new Set<string>();
+  const subscriptions: ActorSubscriptionDescriptor[] = [];
+
+  for (const req of requirements) {
+    if (req.kind !== SUPPORTED_KIND) {
+      return {
+        ...none,
+        refusal: refuse(
+          `${label(strategy)} требует market data вида «${req.kind}»; в этом срезе поддержаны только ` +
+            `«${SUPPORTED_KIND}». Запустить прогон, не доставляя объявленного, значит соврать молча`,
+        ),
+      };
+    }
+    if (seen.has(req.id)) {
+      return { ...none, refusal: refuse(`${label(strategy)}: требование «${req.id}» объявлено дважды`) };
+    }
+    seen.add(req.id);
+
+    if (req.instrument.symbol !== tape.symbol) {
+      return {
+        ...none,
+        refusal: refuse(
+          `${label(strategy)}: требование «${req.id}» просит ${req.instrument.symbol}, а прогон идёт по ` +
+            `${tape.symbol} — этой лентой его не обслужить`,
+        ),
+      };
+    }
+    if (Number(req.interval) !== tape.barIntervalUs) {
+      return {
+        ...none,
+        refusal: refuse(
+          `${label(strategy)}: требование «${req.id}» просит интервал ${Number(req.interval)} мкс, а ` +
+            `лента идёт с шагом ${tape.barIntervalUs} мкс. Агрегация интервалов в этом срезе не делается`,
+        ),
+      };
+    }
+    const revisionMode = req.revisionPolicy?.mode;
+    if (revisionMode !== undefined && revisionMode !== 'final_only') {
+      return {
+        ...none,
+        refusal: refuse(
+          `${label(strategy)}: требование «${req.id}» просит revisionPolicy «${revisionMode}»; лента ` +
+            'ревизий не несёт, и обещать их нечем',
+        ),
+      };
+    }
+    if (!Number.isInteger(req.lookback) || req.lookback < 0 || req.lookback > tape.barCount) {
+      return {
+        ...none,
+        refusal: refuse(
+          `${label(strategy)}: требование «${req.id}» просит lookback ${req.lookback} при ${tape.barCount} ` +
+            'барах в ленте — столько истории до первого события не набрать',
+        ),
+      };
+    }
+
+    subscriptions.push({
+      subscriptionId: subscriptionIdFor(req.id),
+      kind: req.kind,
+      requirementId: req.id,
+    });
+  }
+
+  return { refusal: null, subscriptions };
 }
