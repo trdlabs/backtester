@@ -207,6 +207,39 @@ describe('ОСВОБОЖДЕНИЕ ТОЖЕ МОЖЕТ ОТКАЗАТЬ: три 
     expect(calls.dispose).toBe(1);
   });
 
+  it('тело бросило undefined → это ОТКАЗ, а не успех', async () => {
+    // Различитель исхода — флаг, а не `bodyError !== undefined`. Бросить можно и `undefined`
+    // (`throw undefined` легален, и так же выглядит отвергнутый промис без причины); проверка по
+    // значению прочитала бы такой отказ как успешное завершение и вернула бы `undefined` как
+    // РЕЗУЛЬТАТ прогона. Прогон при этом «успешен», а артефактов нет.
+    const { calls, executor } = recordingExecutor();
+    let returned: unknown = 'функция не бросила';
+    try {
+      returned = await withActorLifecycle(admittedInput(executor), async () => {
+        throw undefined;
+      });
+      expect.unreachable('ожидался бросок');
+    } catch (err) {
+      expect(err).toBeUndefined();
+    }
+    expect(returned).toBe('функция не бросила');
+    expect(calls.dispose).toBe(1);
+  });
+
+  it('тело бросило undefined И dispose бросил → всё равно AggregateError, а не ошибка dispose', async () => {
+    // Тот же различитель с другой стороны: по значению этот случай выглядел бы как «тело прошло,
+    // dispose бросил», и отказ тела исчез бы бесследно.
+    const disposeError = new Error('сессия изолята не закрылась');
+    const { executor } = recordingExecutor({ disposeError });
+    const err = await thrown(() =>
+      withActorLifecycle(admittedInput(executor), async () => {
+        throw undefined;
+      }),
+    );
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors).toEqual([undefined, disposeError]);
+  });
+
   it('ПРОВЕРКА ПРОВЕРКИ: успех без отказа dispose ничего не бросает', async () => {
     // Иначе три пробы выше зеленели бы и у реализации, бросающей всегда.
     const { calls, executor } = recordingExecutor();
