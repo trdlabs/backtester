@@ -22,7 +22,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { EMPTY_LEDGER, applyFill, applyFunding } from '@trdlabs/engine';
-import type { Ledger, OrderState, RiskDecision, Trade } from '@trdlabs/engine';
+import type { Fill, Ledger, OrderState, RiskDecision, Trade } from '@trdlabs/engine';
 import { timestampUsFromMillis } from '@trdlabs/sdk/research-contract';
 
 import { canonicalJson } from '../src/determinism/canonical-json.js';
@@ -475,6 +475,48 @@ describe('якорь леджера ловит потерянный факт —
   it('ПРОВЕРКА ПРОВЕРКИ: нетронутая запись проходит', () => {
     // Без неё все три пробы выше зеленели бы и у якоря, который отвергает что угодно.
     expect(() => projectActorRun(baseRecord())).not.toThrow();
+  });
+});
+
+describe('филлы якоря сверяются ПОЛНОСТЬЮ и ПО ПОРЯДКУ, а не по длине', () => {
+  // Прежняя редакция сравнивала только количество, и это была настоящая дыра. Арифметика леджера
+  // не читает ни `fillId`, ни `causedBy`: подмена не двигает ни экспозицию, ни `avgPrice`, ни
+  // `realizedPnl`, то есть проходила все четыре скалярные проверки насквозь. При этом `causedBy` и
+  // есть «fills by causation» — по нему `fillsCausedBy` отвечает, чем исполнена заявка.
+  const withAnchorFills = (mutate: (fills: readonly Fill[]) => readonly Fill[]): ActorExecutionRecord => {
+    const base = baseRecord();
+    return { ...base, finalLedger: { ...base.finalLedger, fills: mutate(base.finalLedger.fills) } };
+  };
+
+  it('подменённый causedBy — бухгалтерия сходится, причинность лжёт', () => {
+    const record = withAnchorFills((fills) => [fills[0]!, { ...fills[1]!, causedBy: 'o1' }]);
+    // Сначала показываем, что подмена НЕ видна четырём скалярам: позиция, средняя, PnL и время
+    // открытия у якоря не тронуты. Именно поэтому её и надо ловить отдельно.
+    expect(record.finalLedger.qty).toBe(0);
+    expect(record.finalLedger.realizedPnl).toBe(17.5);
+    expect(() => projectActorRun(record)).toThrow(/fills\[1\]\.causedBy/);
+  });
+
+  it('подменённый fillId', () => {
+    const record = withAnchorFills((fills) => [{ ...fills[0]!, fillId: 'подделка' }, fills[1]!]);
+    expect(() => projectActorRun(record)).toThrow(/fills\[0\]\.fillId/);
+  });
+
+  it('переставленные филлы — та же сумма, другая история', () => {
+    const record = withAnchorFills((fills) => [fills[1]!, fills[0]!]);
+    expect(() => projectActorRun(record)).toThrow(/fills\[0\]\./);
+  });
+
+  it('подменённая комиссия одного филла при неизменных итогах', () => {
+    // Комиссия входит в `realizedPnl`, поэтому её правка в ЗАПИСИ филлов сдвинула бы скаляры. Здесь
+    // правится только копия внутри якоря — итоги якоря остаются прежними, расходится лишь журнал.
+    const record = withAnchorFills((fills) => [{ ...fills[0]!, fee: 99 }, fills[1]!]);
+    expect(() => projectActorRun(record)).toThrow(/fills\[0\]\.fee/);
+  });
+
+  it('лишний филл в якоре', () => {
+    const record = withAnchorFills((fills) => [...fills, fills[1]!]);
+    expect(() => projectActorRun(record)).toThrow(/филлов 2 против 3/);
   });
 });
 

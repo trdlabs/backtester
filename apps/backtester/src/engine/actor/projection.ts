@@ -33,7 +33,7 @@
 
 import type { ValidationIssue } from '@trading/research-contracts/research';
 import { EMPTY_LEDGER, applyFill, applyFunding } from '@trdlabs/engine';
-import type { Ledger, OrderState, RiskDecision, Trade } from '@trdlabs/engine';
+import type { Fill, Ledger, OrderState, RiskDecision, Trade } from '@trdlabs/engine';
 
 import type {
   DecisionRecord,
@@ -156,8 +156,15 @@ function frontierAxis(record: ActorExecutionRecord): readonly ActorFrontierRecor
     if (tsUs <= prevTsUs) {
       fail(`frontier[${i}]: business-время ${tsUs} не возрастает (предыдущее ${prevTsUs})`);
     }
-    // §3.5: actor-local `seq` непрерывен и монотонен. Убывание означает, что раннер переиграл уже
-    // применённые события либо потерял неприменённые — оба исхода выглядят как нормальная работа.
+    // Проверяется РОВНО невозрастание конечной точки: `lastCommittedSeq` соседних frontier'ов не
+    // убывает. Убывание означает, что раннер переиграл уже применённые события, и выглядит это как
+    // нормальная работа.
+    //
+    // Чего эта проверка НЕ доказывает — непрерывности `seq` из §3.5. Здесь видны только КОНЕЧНЫЕ
+    // точки frontier'ов, а дыра внутри frontier'а конечную точку не двигает вовсе; равенство
+    // соседних значений так же неотличимо от «в этом frontier'е не зафиксировано ничего».
+    // Непрерывность может утверждать только тот, кто видит сам поток событий, — гард
+    // gap/duplicate на стороне раннера, а не эта проекция.
     if (f.lastCommittedSeq < prevSeq) {
       fail(`frontier[${i}]: lastCommittedSeq ${f.lastCommittedSeq} меньше предыдущего ${prevSeq}`);
     }
@@ -225,11 +232,57 @@ function assertLedgerAgrees(record: ActorExecutionRecord): void {
   if (!Object.is(ledger.openedAtUs, anchor.openedAtUs)) {
     mismatch.push(`openedAtUs ${ledger.openedAtUs} против ${anchor.openedAtUs}`);
   }
-  if (ledger.fills.length !== anchor.fills.length) {
-    mismatch.push(`филлов ${ledger.fills.length} против ${anchor.fills.length}`);
-  }
   if (mismatch.length > 0) {
     fail(`свёртка записанных филлов не сходится с finalLedger: ${mismatch.join('; ')}`);
+  }
+  assertFillsIdentical(ledger.fills, anchor.fills);
+}
+
+/**
+ * Поля `Fill`, сверяемые побайтово. Список явный и ПОЛНЫЙ по типу — см. утверждение ниже.
+ *
+ * Перечислять руками пришлось потому, что `Object.keys` работает со значением, а забытое поле надо
+ * ловить на СБОРКЕ: ровно так и появилась дыра, которую этот блок закрывает.
+ */
+const FILL_FIELDS = ['fillId', 'tsUs', 'price', 'qty', 'side', 'fee', 'causedBy'] as const;
+
+/** Новое поле `Fill` красит сборку, а не проезжает несверенным. */
+type _AllFillFieldsCompared = Exclude<keyof Fill, (typeof FILL_FIELDS)[number]> extends never
+  ? true
+  : never;
+const _fillFieldsCovered: _AllFillFieldsCompared = true;
+void _fillFieldsCovered;
+
+/**
+ * Сверить филлы якоря со свёрнутыми ПОЛНОСТЬЮ и ПО ПОРЯДКУ.
+ *
+ * Прежняя редакция сравнивала только длину, и это была настоящая дыра, а не строгость про запас.
+ * Арифметика леджера не читает ни `fillId`, ни `causedBy` вовсе: филл, приписанный чужой заявке,
+ * не двигает ни экспозицию, ни `avgPrice`, ни `realizedPnl` — то есть проходил все четыре
+ * скалярные проверки насквозь. А `causedBy` и есть «fills by causation» (§3.7): по нему
+ * `fillsCausedBy` отвечает, чем исполнена конкретная заявка. Подмена делала бы этот ответ ложным
+ * при полностью сошедшейся бухгалтерии.
+ *
+ * Порядок сверяется позиционно по той же причине: две перестановленные записи дают ту же сумму и
+ * ту же позицию, но другую историю, а история — это то, ради чего журнал и ведут.
+ */
+function assertFillsIdentical(folded: readonly Fill[], anchor: readonly Fill[]): void {
+  if (folded.length !== anchor.length) {
+    fail(
+      `свёртка записанных филлов не сходится с finalLedger: филлов ${folded.length} против ${anchor.length}`,
+    );
+  }
+  for (let i = 0; i < folded.length; i += 1) {
+    const a = folded[i]!;
+    const b = anchor[i]!;
+    for (const field of FILL_FIELDS) {
+      if (!Object.is(a[field], b[field])) {
+        fail(
+          `finalLedger.fills[${i}].${field}: записано ${String(b[field])}, ` +
+            `а из записанных филлов следует ${String(a[field])}`,
+        );
+      }
+    }
   }
 }
 
