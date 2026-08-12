@@ -2,6 +2,7 @@
 // a Postgres `JobStore` against `backtest_job` + `backtest_job_event` slots in behind this interface
 // in Slice 2 (see docs/ARCHITECTURE.md §5, §7). Interface and transitions mirror trading-platform 031.
 
+import type { ValidationIssue } from '@trading/research-contracts/research';
 import type {
   ArtifactManifest,
   ContentHash,
@@ -48,6 +49,14 @@ export interface JobRow {
   resultHash?: ContentHash;
   artifactManifest?: ArtifactManifest;
   terminalCode?: string;
+  /**
+   * Структурированная причина терминального отказа — `ValidationIssue[]` контракта.
+   *
+   * `terminalCode` отвечает «какого рода отказ»; для большинства кодов это и есть причина целиком.
+   * `validation_error` объединяет десятки разных отказов, и без этого поля оператор видит слово,
+   * из которого не следует ничего — в частности, не следует, ЕГО это проблема или авторская.
+   */
+  terminalIssues?: readonly ValidationIssue[];
   /** Provenance: computeIdentity of the cache entry this run was served from (dedup HIT). Observability
    *  only — NEVER part of result_hash. Absent for freshly-computed runs. */
   dedupedFrom?: string;
@@ -93,6 +102,7 @@ export interface JobRowPatch {
   artifactManifest?: ArtifactManifest;
   datasetFingerprint?: string;
   terminalCode?: string;
+  terminalIssues?: readonly ValidationIssue[];
   /** Dedup provenance (computeIdentity of the served cache entry). Observability only. */
   dedupedFrom?: string;
   computeWaitAttempts?: number;
@@ -241,6 +251,7 @@ export class InMemoryJobStore implements JobStore {
     if (patch.artifactManifest !== undefined) job.artifactManifest = patch.artifactManifest;
     if (patch.datasetFingerprint !== undefined) job.datasetFingerprint = patch.datasetFingerprint;
     if (patch.terminalCode !== undefined) job.terminalCode = patch.terminalCode;
+    if (patch.terminalIssues !== undefined) job.terminalIssues = patch.terminalIssues;
     if (patch.dedupedFrom !== undefined) job.dedupedFrom = patch.dedupedFrom;
     if (patch.computeWaitAttempts !== undefined) job.computeWaitAttempts = patch.computeWaitAttempts;
     if (patch.computeIdentity !== undefined) job.computeIdentity = patch.computeIdentity;
@@ -481,6 +492,7 @@ export function toStatusView(job: JobRow): RunStatusView {
     status: publicStatus(job.status),
     timeline: job.timeline,
     ...(job.terminalCode !== undefined ? { terminalCode: job.terminalCode } : {}),
+    ...(job.terminalIssues !== undefined ? { terminalIssues: job.terminalIssues } : {}),
   };
 }
 
