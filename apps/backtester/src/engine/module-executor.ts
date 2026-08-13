@@ -8,7 +8,17 @@
 import type { StrategyContext } from '@trading/research-contracts/research';
 import type { OverlayDecision, StrategyDecision } from '@trading/research-contracts/research';
 import type { HypothesisOverlayModule, LifecycleHook, StrategyModule } from '@trading/research-contracts/research';
+import type {
+  ActorCommand,
+  ActorContext,
+  ActorInit,
+  ActorInputEvent,
+  EventDrivenModule,
+  StrategyActor,
+} from '@trdlabs/sdk/research-contract';
+
 import type { ResolvedOverlay, ResolvedStrategy } from './artifacts.js';
+import type { ActorExecutionHandle, ActorSource } from './actor/execution-handle.js';
 
 /** Абстракция вызова доверенного модуля (FR-004). */
 export interface ModuleExecutor {
@@ -157,6 +167,73 @@ export class InProcessTrustedModuleExecutor implements ModuleExecutor {
   /** trusted: нет контейнера — teardown не нужен. */
   close(): void {
     /* no-op */
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 083 S3 — lifecycle актора для формы `event_driven`.
+  //
+  // Прямой путь: актор — живой объект В ЭТОМ ЖЕ процессе, поэтому наружу отдаётся непрозрачный
+  // дескриптор, а сам инстанс остаётся здесь. Раннер не получает ссылку на актора и не может
+  // позвать `onEvent` в обход исполнителя — иначе граница исполнения существовала бы только на
+  // словах, и sandbox-путь разошёлся бы с прямым уже в первом отличии.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** Живые акторы этого исполнителя. Ключ — тот самый непрозрачный дескриптор. */
+  readonly #actors = new Map<object, StrategyActor>();
+
+  /**
+   * Создать актора и вернуть дескриптор.
+   *
+   * АТОМАРНОСТЬ ВЛАДЕНИЯ. Запись в таблицу появляется ПОСЛЕ проверки формы актора: отказ до
+   * возврата дескриптора не оставляет сессии, которую некому освободить. У прямого пути ресурс —
+   * только эта запись, поэтому «убрать за собой» здесь означает «не заводить».
+   */
+  async createActor(source: ActorSource, init: ActorInit): Promise<ActorExecutionHandle> {
+    const module = source.module as Partial<EventDrivenModule> | undefined;
+    if (module == null || typeof module.createActor !== 'function') {
+      throw new Error(
+        `trusted executor: модуль '${source.manifest.id}' объявлен event_driven, но не предоставляет ` +
+          'createActor — форма модуля не совпадает с объявленным lifecycle',
+      );
+    }
+    const actor = module.createActor(init) as Partial<StrategyActor> | null;
+    if (actor == null || typeof actor.onEvent !== 'function') {
+      throw new Error(
+        `trusted executor: createActor модуля '${source.manifest.id}' вернул не актора — нет onEvent`,
+      );
+    }
+    const handle = {} as unknown as ActorExecutionHandle;
+    this.#actors.set(handle as unknown as object, actor as StrategyActor);
+    return handle;
+  }
+
+  /** Доставить событие. Возврат не-массива — нарушение контракта модулем, и оно ГРОМКОЕ. */
+  async executeActorEvent(
+    handle: ActorExecutionHandle,
+    event: ActorInputEvent,
+    ctx: ActorContext,
+  ): Promise<readonly ActorCommand[]> {
+    const actor = this.#actors.get(handle as unknown as object);
+    if (actor === undefined) {
+      throw new Error('trusted executor: дескриптор неизвестен — актор не создавался либо уже освобождён');
+    }
+    const out = actor.onEvent(event, ctx);
+    if (!Array.isArray(out)) {
+      // Пустой массив вместо броска проглотил бы команды автора: прогон выглядел бы как «стратегия
+      // ничего не решила», а решала она каждый раз.
+      throw new Error(`trusted executor: onEvent вернул ${typeof out}, а контракт требует массив команд`);
+    }
+    return out as readonly ActorCommand[];
+  }
+
+  /** Освободить актора. Идемпотентно: повторный вызов на освобождённом — no-op, не бросок. */
+  async disposeActor(handle: ActorExecutionHandle): Promise<void> {
+    this.#actors.delete(handle as unknown as object);
+  }
+
+  /** Число живых акторов — по нему проверяется атомарность владения после отвергнутых созданий. */
+  activeActorSessions(): number {
+    return this.#actors.size;
   }
 }
 

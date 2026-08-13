@@ -15,6 +15,8 @@ import type { IndicatorEngine } from './indicators/index.js';
 interface CandleDatasetFile {
   readonly datasetRef: string;
   readonly timeframe: string;
+  /** Венью свечей — ОБЪЯВЛЯЕТ файл датасета; отсутствие означает «происхождение неизвестно». */
+  readonly candleVenue?: string;
   readonly symbols: Record<string, readonly Bar[]>;
 }
 
@@ -75,6 +77,9 @@ export function loadCandleDataset(datasetRef: string, fixturesDir?: string): Can
   return {
     datasetRef: parsed.datasetRef,
     timeframe: parsed.timeframe,
+    // Пробрасывается ТОЛЬКО когда объявлено. `candleVenue: undefined` и отсутствие ключа обязаны
+    // читаться одинаково: «не объявлено» — единственное состояние, а не два похожих.
+    ...(parsed.candleVenue !== undefined ? { candleVenue: parsed.candleVenue } : {}),
     symbols: () => Object.keys(frozen),
     candles: (symbol) => {
       const c = frozen[symbol];

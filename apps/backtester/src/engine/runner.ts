@@ -1183,12 +1183,6 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
 
   const router = deps.router ?? createTrustedRouter(deps.executor);
   const composer = new OverlayComposer();
-  const engine: SimEngine = {
-    router,
-    risk: new RiskEngine(riskProfile),
-    exec: new ExecutionSimulator(execProfile),
-    composer,
-  };
 
   try {
     // 083 S3 — ДОПУСК, часть 2: то, для чего нужен исполнитель. ВНУТРИ `try`, поэтому созданный
@@ -1250,6 +1244,22 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
       );
       return { status: 'completed', baseline: actorBaseline, variant: null, comparison: null };
     }
+
+    // СБОРКА ДВИЖКА СИМУЛЯЦИИ — ПОСЛЕ actor-ветки, и это не косметика.
+    //
+    // `new RiskEngine(profile)` требует объявленных `exposureLimits`: из них он берёт и потолок, и
+    // правило сайзинга. Actor-путь, наоборот, ОТКАЗЫВАЕТ прогону с объявленными лимитами — он их не
+    // соблюдает и не притворяется. Пока конструирование стояло выше ветки, оба условия сходились в
+    // одном прогоне: профиль с лимитами отвергался допуском, профиль без лимитов ронял конструктор
+    // — то есть для actor-пути не существовало ни одного проходящего профиля вовсе.
+    //
+    // Legacy-путь не задет: те же аргументы, тот же порядок относительно ПЕРВОГО использования.
+    const engine: SimEngine = {
+      router,
+      risk: new RiskEngine(riskProfile),
+      exec: new ExecutionSimulator(execProfile),
+      composer,
+    };
 
     const baseline = await simulateTarget(
       { kind: 'baseline', runId: request.runId, strategy, overlays: [] },

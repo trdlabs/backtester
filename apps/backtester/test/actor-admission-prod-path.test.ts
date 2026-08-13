@@ -124,22 +124,54 @@ function capableRouter(calls: string[]) {
   };
 }
 
+/**
+ * Router, чей исполнитель lifecycle актора НЕ умеет.
+ *
+ * Нужен с тех пор, как его умеет прямой: без явно неспособного исполнителя гейт способности стало
+ * бы нечем проверить, а он остаётся верным для sandbox-исполнителей — им lifecycle не реализован.
+ */
+function incapableRouter() {
+  const base = createTrustedRouter();
+  const strip = (ex: unknown): unknown => {
+    const { createActor: _c, executeActorEvent: _e, disposeActor: _d, ...rest } = ex as Record<string, unknown>;
+    // Прототипные методы класса тоже надо снять — копия полей их бы унаследовала.
+    const flat: Record<string, unknown> = { ...rest };
+    for (const key of ['executeStrategyHook', 'executeOverlayApply', 'executeStrategyHookBarMajor', 'initStrategy', 'disposeStrategy', 'close']) {
+      const fn = (ex as Record<string, unknown>)[key];
+      if (typeof fn === 'function') flat[key] = (fn as (...a: unknown[]) => unknown).bind(ex);
+    }
+    return flat;
+  };
+  return {
+    forStrategy: (r: never) => strip(base.forStrategy(r)),
+    forOverlay: (r: never) => base.forOverlay(r),
+    closeAll: () => base.closeAll(),
+  };
+}
+
 async function runThrough(
   overrides: Record<string, unknown>,
   deps: {
     readonly eventDrivenEnabled?: boolean;
     readonly barBatching?: { maxBars: number };
     readonly capableExecutor?: boolean;
+    readonly incapableExecutor?: boolean;
   } = {},
 ): Promise<{ outcome: RunOutcome; calls: string[] }> {
   const p = probe(overrides);
-  const { capableExecutor, ...runDeps } = deps;
+  const { capableExecutor, incapableExecutor, ...runDeps } = deps;
+  const router =
+    capableExecutor === true
+      ? capableRouter(p.calls)
+      : incapableExecutor === true
+        ? incapableRouter()
+        : createTrustedRouter();
   const outcome = await runStrategyBacktest(
     { ...makeRequest(SPEC), moduleRef: p.moduleRef },
     {
       registry: p.registry,
       marketTape: buildTape(SPEC),
-      router: capableExecutor === true ? capableRouter(p.calls) : createTrustedRouter(),
+      router,
       ...runDeps,
     } as never,
   );
@@ -186,12 +218,28 @@ describe('сквозь runBacktest: event_driven отвергается, а не
     expect(calls).toEqual([]);
   }, 60_000);
 
-  it('флаг включён, но у исполнителя НЕТ lifecycle актора → отказ по способности', async () => {
-    // Сегодня это реальное состояние прода: seam объявлен, не реализован никем.
-    const { outcome, calls } = await runThrough(eventDriven, { eventDrivenEnabled: true });
+  it('исполнитель БЕЗ lifecycle актора → отказ по способности', async () => {
+    // Прямой исполнитель lifecycle УЖЕ умеет (S3), поэтому неспособного приходится предъявить
+    // явно — иначе гейт способности перестал бы проверяться вовсе, а он остаётся верным для
+    // sandbox-исполнителей, которым lifecycle ещё не реализован.
+    const { outcome, calls } = await runThrough(eventDriven, {
+      eventDrivenEnabled: true,
+      incapableExecutor: true,
+    });
     expect(outcome.status).toBe('rejected');
     expect(refusalOf(outcome).code).toBe('unsupported_lifecycle');
     expect(refusalOf(outcome).message).toMatch(/lifecycle актора/);
+    expect(calls).toEqual([]);
+  }, 60_000);
+
+  it('прямой исполнитель умеет lifecycle → путь идёт дальше, до риск-контура', async () => {
+    // Отличие от пробы выше ровно в исполнителе: способность больше не является тем, что закрывает
+    // путь у trusted. Закрывает его профиль риска — и отказ обязан называть именно это, иначе
+    // чинить пойдут не то.
+    const { outcome, calls } = await runThrough(eventDriven, { eventDrivenEnabled: true });
+    expect(outcome.status).toBe('rejected');
+    expect(refusalOf(outcome).code).toBe('unsupported_lifecycle');
+    expect(refusalOf(outcome).message).toMatch(/профиль риска/);
     expect(calls).toEqual([]);
   }, 60_000);
 
