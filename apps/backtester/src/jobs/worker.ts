@@ -1297,7 +1297,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       }
 
       payload = outcome;
-      finalized = await finalizeResult(deps, 'strategy', outcome, claimed, dsFingerprint, evidenceRef, promotionResult);
+      finalized = await finalizeResult(deps, 'strategy', outcome, claimed, dsFingerprint, evidenceRef, promotionResult, admissionEv);
     } else {
       // ===== MOMENTUM PATH — unchanged (golden eff10116… must not move) =====
       executor = await workerInternals.executorFor(deps, claimed);
@@ -1323,7 +1323,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
       });
       payload = result;
-      finalized = await finalizeResult(deps, 'momentum', result, claimed, dsFingerprint);
+      finalized = await finalizeResult(deps, 'momentum', result, claimed, dsFingerprint, undefined, undefined, admissionEv);
     }
 
       if (deps.obs) tEngineDone = deps.clock();
