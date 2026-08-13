@@ -35,8 +35,22 @@ import type {
 export interface ActorOpenOrder {
   readonly clientOrderId: string;
   readonly side: OrderSide;
-  /** Запрошенный нотионал в USD — до превращения в базовый размер по цене исполнения. */
+  /** Запрошенный нотионал в USD — ПРОСЬБА автора (`ActorPlaceCommand.qtyUsd`). */
   readonly qtyUsd: number;
+  /**
+   * Размер в БАЗОВОЙ валюте, зафиксированный В МОМЕНТ ПОДАЧИ по последней цене, которую автор
+   * УЖЕ ВИДЕЛ (`lastSeenClose`).
+   *
+   * Прежняя редакция откладывала перевод до цены исполнения и до тех пор несла нотионал под именем
+   * `qty` — в том числе внутрь движковой `RestingOrder`, у которой это поле объявлено базовым
+   * размером. Две беды сразу: движок получал число не в своей единице, а `ctx.orders.open()` не мог
+   * назвать размер заявки вовсе и подставлял ноль — по контракту это читается как «исполнена
+   * целиком» (`qty - filledQty === 0`).
+   *
+   * Цена берётся ПОСЛЕДНЯЯ УВИДЕННАЯ АВТОРОМ, а не текущего бара: закрытие бара, который автору
+   * ещё не доставлен, дало бы ему заглянуть вперёд через размер собственной заявки.
+   */
+  readonly qtyBase: number;
   readonly type: 'market' | 'limit' | 'stop_market';
   readonly triggerPrice?: number;
   /** Frontier подачи. Нужен и анти-лукахеду движка, и записи прогона. */
@@ -59,6 +73,15 @@ export interface ActorEngineState {
   readonly readiness: ActorReadiness;
   readonly tradingState: TradingState;
   readonly ledger: Ledger;
+  /**
+   * Последняя цена закрытия, КОТОРУЮ УВИДЕЛ АВТОР, — единица перевода нотионала в базовый размер.
+   *
+   * `null` до первого доставленного бара: перевести нотионал нечем, и подстановка любой цены здесь
+   * была бы выдуманным размером. Структурно это состояние сегодня недостижимо (первое событие
+   * frontier'а 0 — свеча: филлов и таймеров до первой команды взяться неоткуда), поэтому отказ
+   * ниже — защита от будущего frontier'а, начинающегося не со свечи, а не наблюдаемый гейт.
+   */
+  readonly lastSeenClose: number | null;
   readonly openOrders: readonly ActorOpenOrder[];
   readonly timers: readonly ScheduledTimer[];
   /** Заметки команды `annotate` — единственный её эффект, и он обязан быть наблюдаем. */
@@ -175,6 +198,14 @@ export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState
           if (!Number.isFinite(command.qtyUsd) || command.qtyUsd <= 0) {
             return { ok: false, reason: `place отклонена: qtyUsd обязан быть положительным, получено ${command.qtyUsd}` };
           }
+          if (state.lastSeenClose === null || !(state.lastSeenClose > 0)) {
+            return {
+              ok: false,
+              reason:
+                'place отклонена: нотионал не во что переводить — автору не доставлено ни одной ' +
+                'цены, а подставить её за него хост не вправе',
+            };
+          }
           return { ok: true };
         }
         case 'cancel': {
@@ -206,10 +237,20 @@ export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState
       switch (command.kind) {
         case 'place': {
           const trigger = triggerPriceOf(command);
+          // Инвариант, а не гейт: `validate` уже отвергла команду без увиденной цены. Бросок здесь
+          // означал бы, что `applyBatch` применил невалидированную команду.
+          const mark = state.lastSeenClose;
+          if (mark === null || !(mark > 0)) {
+            throw new Error('actor place: применение без увиденной цены — нарушен порядок validate/apply');
+          }
           const order: ActorOpenOrder = {
             clientOrderId: command.clientOrderId,
             side: command.side,
             qtyUsd: command.qtyUsd,
+            // Нотионал → базовый размер ПО УВИДЕННОЙ ЦЕНЕ и один раз навсегда. Дальше по прогону
+            // движется только цена исполнения; размер заявки от неё не зависит, иначе автор не мог
+            // бы знать, чем он торгует, до того, как это уже произошло.
+            qtyBase: command.qtyUsd / mark,
             type: command.type,
             // `limit` несёт `price`, `stop_market` — `stopPrice`. Разные поля контракта, и путать
             // их нельзя: у стопа лимитной цены нет вовсе.

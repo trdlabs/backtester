@@ -41,9 +41,13 @@ import type {
   ActorCommand,
   ActorContext,
   ActorInputEvent,
+  ExecutionLedgerEntry,
+  OpenOrderView,
+  PositionView,
   TimestampUs,
   TradingState,
 } from '@trdlabs/sdk/research-contract';
+import { derivePositionView } from '@trdlabs/sdk/research-contract';
 
 import { readinessAtBar, type ActorMarketDataAdmitted } from './admission.js';
 import {
@@ -110,10 +114,10 @@ function restingOf(orders: readonly ActorOpenOrder[]): readonly RestingOrder[] {
     orderId: o.clientOrderId,
     kind: o.type === 'stop_market' ? 'stop' : o.type,
     side: o.side,
-    // Размер в базовой валюте неизвестен до цены исполнения; матчинг размер не выбирает, поэтому
-    // сюда идёт нотионал, а перевод в базу делается по цене матча ниже. Подменять его нулём
-    // нельзя: `matchBar` вернул бы филл нулевого размера, и позиция не изменилась бы вовсе.
-    qty: o.qtyUsd,
+    // БАЗОВЫЙ размер — та единица, в которой это поле объявлено движком. Прежняя редакция клала
+    // сюда нотионал и переводила его в базу уже после матча: движок получал число не в своей
+    // единице, и это молчало ровно до тех пор, пока цена была близка к сотне.
+    qty: o.qtyBase,
     ...(o.triggerPrice !== undefined ? { triggerPrice: o.triggerPrice } : {}),
     placedAtTsUs: o.placedAtTsUs,
   }));
@@ -192,6 +196,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
     readiness: readinessAtBar(0, tradingFrom),
     tradingState: input.tradingState ?? 'normal',
     ledger: EMPTY_LEDGER,
+    lastSeenClose: null,
     openOrders: [],
     timers: [],
     notes: [],
@@ -200,6 +205,16 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
   let seqCursor = 0;
   let lastCommittedSeq = -1;
   let fillCounter = 0;
+
+  /**
+   * Execution ledger В ФОРМЕ КОНТРАКТА — единственный вход `derivePositionView`.
+   *
+   * Держится рядом с движковым `Ledger`, а не вместо него: движковый несёт `realizedPnl` и служит
+   * якорем сверки проекции, контрактный отвечает на вопрос автора «какая у меня позиция». Совпадение
+   * двух свёрток одной и той же последовательности филлов проверяется гейтом, а не предполагается.
+   */
+  const execLedger: ExecutionLedgerEntry[] = [];
+  let positionView: PositionView | undefined;
 
   const frontiers: ActorFrontierRecord[] = [];
   const timeline: ActorTimelineEntry[] = [];
@@ -229,8 +244,6 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
       const match = matchBar(restingOf(state.openOrders), bar, positionSideOf(state.ledger));
       if (match !== null) {
         const order = state.openOrders.find((o) => o.clientOrderId === match.orderId)!;
-        // Нотионал → базовый размер по цене исполнения. Единственная арифметика, доступная без
-        // отдельной политики сайзинга; клампа риском в этом срезе нет и он не имитируется.
         // ПРОСКАЛЬЗЫВАНИЕ ПРИМЕНЯЕТСЯ, А НЕ ТОЛЬКО ОБЪЯВЛЯЕТСЯ. Прежняя редакция клала `slippageBps`
         // в журнал и считала филл по цене матча: запись утверждала расход, которого не было, и
         // прогон показывал прибыль лучше настоящей. Сдвиг всегда ПРОТИВ инициатора — покупка выше,
@@ -238,7 +251,37 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
         const baseOpen = match.price;
         const slipFactor = input.costs.slippageBps / 10_000;
         const price = order.side === 'buy' ? baseOpen * (1 + slipFactor) : baseOpen * (1 - slipFactor);
-        const qty = match.qty / price;
+        // REDUCEONLY СВЕРХ ОСТАТКА НЕ ПЕРЕВОРАЧИВАЕТ ПОЗИЦИЮ.
+        //
+        // Проверка размера стоит ЗДЕСЬ, а не в `validate`, и это не удобство: между подачей и
+        // срабатыванием позиция живёт своей жизнью. Стоп, поставленный на полную позицию, застаёт
+        // её уже частично закрытой — валидация на момент ПОДАЧИ пропустила бы его законно, а
+        // исполнение на полный размер открыло бы противоположную позицию, которую автор не просил.
+        // Биржа клампит в этот же момент и по той же причине.
+        const remaining = Math.abs(state.ledger.qty);
+        const stillReduces =
+          !order.reduceOnly || (order.side === 'buy' ? -1 : 1) === Math.sign(state.ledger.qty);
+        const qty = order.reduceOnly ? Math.min(match.qty, remaining) : match.qty;
+        if (order.reduceOnly && (!stillReduces || qty <= 0)) {
+          // Сокращать больше нечего — заявка СНИМАЕТСЯ, а не исполняется на нулевой размер:
+          // нулевой филл движок отвергает броском, а тишина оставила бы заявку в книге навсегда.
+          state = {
+            ...state,
+            openOrders: state.openOrders.filter((o) => o.clientOrderId !== order.clientOrderId),
+          };
+          advanceOrder(orderRecords, order.clientOrderId, { kind: 'cancel_request' });
+          advanceOrder(orderRecords, order.clientOrderId, { kind: 'cancel_complete' });
+          seed.push({
+            businessTsUs: frontierUs,
+            phase: 'execution',
+            stableSubscriptionId: INTERNAL_SUBSCRIPTION_ID,
+            sourceSequence: 0,
+            payload: {
+              subscriptionId: INTERNAL_SUBSCRIPTION_ID,
+              event: { kind: 'order.canceled', clientOrderId: order.clientOrderId },
+            },
+          });
+        } else {
         const fee = Math.abs(qty * price) * (input.costs.feeBps / 10_000);
         const fillId = `${input.actorId}-fill-${fillCounter}`;
         fillCounter += 1;
@@ -258,6 +301,27 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
           ledger: applyFill(before, fill),
           openOrders: state.openOrders.filter((o) => o.clientOrderId !== order.clientOrderId),
         };
+        // ТОТ ЖЕ филл — во второй форме, которую требует контракт для `ctx.position()`. Обе записи
+        // делаются В ОДНОМ месте из одного объекта: два независимых места записи разошлись бы
+        // молча, и автор видел бы одну позицию, а бухгалтерия другую.
+        execLedger.push({
+          kind: 'fill',
+          ts: frontierUs,
+          clientOrderId: order.clientOrderId,
+          side: order.side,
+          price,
+          qty,
+          fee,
+          // Частичных исполнений в этом симуляторе нет: исполненная заявка покидает книгу целиком.
+          last: true,
+        });
+        positionView = derivePositionView(execLedger);
+        // Эра закончилась — обе бухгалтерии согласны, что позиции нет. Сброс держит свёртку
+        // ограниченной: `derivePositionView` сворачивает ВЕСЬ массив на каждом филле, и без этого
+        // цена прогона росла бы квадратично по числу исполнений. Условие — РОВНЫЙ ноль у движка и
+        // `undefined` у контракта одновременно: свернуть остаток эры с нуля можно только если этот
+        // ноль точен, иначе пыль последнего разряда исчезла бы вместе с историей.
+        if (positionView === undefined && state.ledger.qty === 0) execLedger.length = 0;
         journal.push({
           kind: 'fill',
           frontier: index,
@@ -296,13 +360,18 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
             event: {
               kind: 'fill',
               clientOrderId: order.clientOrderId,
-              price: match.price,
+              // ЦЕНА ИСПОЛНЕНИЯ, а не цена матча. Прежняя редакция отдавала автору `match.price` —
+              // до проскальзывания, — а в журнал и в бухгалтерию клала цену после него. Автор
+              // считал свой средний вход по одной цене, хост по другой, и расхождение росло ровно
+              // с издержками: чем дороже исполнение, тем оптимистичнее картина у автора.
+              price,
               qty,
               fee,
               last: true,
             },
           },
         });
+        }
       }
 
       // ── Фаза 2: таймеры. Набор ЗАМОРАЖИВАЕТСЯ движком ровно один раз на frontier ──
@@ -360,7 +429,14 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
             event: scheduled.payload.event,
           } as ActorTimelineEntry['envelope'];
 
-          const ctx = buildContext(state, frontierUs, rngSource);
+          // Цена считается УВИДЕННОЙ ровно в момент доставки её события — не раньше. Взять закрытие
+          // текущего бара из ленты значило бы дать автору узнать его через размер собственной
+          // заявки до того, как свеча ему доставлена.
+          if (scheduled.payload.event.kind === 'market.candle.closed') {
+            state = { ...state, lastSeenClose: scheduled.payload.event.candle.value.close };
+          }
+
+          const ctx = buildContext(state, frontierUs, rngSource, positionView);
           const commands: readonly ActorCommand[] = await input.executor.executeActorEvent(
             input.handle,
             scheduled.payload.event,
@@ -452,38 +528,64 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
   };
 }
 
-/** Контекст автора. `readiness` берётся ИЗ ТОГО ЖЕ состояния, что видит `BatchCore.validate`. */
+/**
+ * Одна открытая заявка В ФОРМЕ КОНТРАКТА (`OpenOrderView`), разложенная по виду.
+ *
+ * Вид несёт свою цену: `limit` — `price`, `stop_market` — `stopPrice`, `market` — никакую. Отсюда
+ * же берётся и `qty`: базовый размер зафиксирован при подаче, а не сочиняется здесь.
+ */
+function openOrderViewOf(o: ActorOpenOrder): OpenOrderView {
+  const base = {
+    clientOrderId: o.clientOrderId,
+    side: o.side,
+    status: 'accepted' as const,
+    qtyUsd: o.qtyUsd,
+    qty: o.qtyBase,
+    // Частичных исполнений в этом симуляторе нет: заявка либо стоит целиком, либо покидает книгу.
+    // Ноль здесь — ФАКТ, в отличие от нуля в `qty` прежней редакции, где он означал «неизвестно» и
+    // читался контрактом как «исполнена целиком» (`qty - filledQty === 0`).
+    filledQty: 0,
+    ...(o.reduceOnly ? { reduceOnly: true as const } : {}),
+    createdTs: o.placedAtTsUs,
+  };
+  if (o.type === 'market') return { ...base, type: 'market' };
+  if (o.triggerPrice === undefined) {
+    // Инвариант хоста: `validate` не пропускает `limit`/`stop_market` без своей цены. Молчаливое
+    // `undefined` в обязательном поле контракта уехало бы автору как отсутствующая цена заявки.
+    throw new Error(`actor orders.open: заявка '${o.clientOrderId}' вида ${o.type} без цены`);
+  }
+  return o.type === 'limit'
+    ? { ...base, type: 'limit', price: o.triggerPrice }
+    : { ...base, type: 'stop_market', stopPrice: o.triggerPrice };
+}
+
+/**
+ * Контекст автора. `readiness` берётся ИЗ ТОГО ЖЕ состояния, что видит `BatchCore.validate`.
+ *
+ * КАСТА `as unknown as ActorContext` ЗДЕСЬ БОЛЬШЕ НЕТ, и это главное. Он не «успокаивал компилятор»
+ * — он прятал то, что ни одно поле собранной вручную позиции не совпадало с контрактом: `qty` со
+ * знаком вместо всегда положительного, `avgPrice` вместо `avgEntryPrice`, `openedAtUs` вместо
+ * `openedAt`, лишний `realizedPnl` (которого в `PositionView` нет намеренно) — и ни одного `side`.
+ * Автор, читающий документированные поля, получал `undefined` во всех.
+ *
+ * Позиция приходит из `derivePositionView` — ЕДИНСТВЕННОГО санкционированного источника
+ * `PositionView` (бранд `POSITION_VIEW_BRAND` неподделываем снаружи пакета). Свёртка сделана
+ * заранее, на филле: контекст строится на каждое событие, а филлов внутри frontier'а не бывает.
+ */
 function buildContext(
   state: ActorEngineState,
   frontierUs: TimestampUs,
   rng: { next: () => number },
+  position: PositionView | undefined,
 ): ActorContext {
   return {
     clock: { nowUs: () => frontierUs },
     rng,
     readiness: state.readiness,
     tradingState: state.tradingState,
-    orders: {
-      open: () =>
-        state.openOrders.map((o) => ({
-          clientOrderId: o.clientOrderId,
-          side: o.side,
-          status: 'accepted' as const,
-          qtyUsd: o.qtyUsd,
-          qty: 0,
-          filledQty: 0,
-        })),
-    },
-    position: () =>
-      state.ledger.qty === 0
-        ? undefined
-        : {
-            qty: state.ledger.qty,
-            avgPrice: state.ledger.avgPrice,
-            realizedPnl: state.ledger.realizedPnl,
-            openedAtUs: state.ledger.openedAtUs,
-          },
-  } as unknown as ActorContext;
+    orders: { open: () => state.openOrders.map(openOrderViewOf) },
+    position: () => position,
+  };
 }
 
 /**

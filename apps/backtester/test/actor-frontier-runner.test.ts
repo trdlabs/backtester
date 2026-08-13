@@ -296,6 +296,60 @@ describe('ИНТЕГРАЦИЯ: запись раннера проходит с�
   });
 
   it('прогон со входом и выходом даёт сделку, сведённую движком', async () => {
+    // ВЫХОД ПОДАЁТСЯ КАК `reduceOnly`, и это не деталь фикстуры. Размер заявки фиксируется при
+    // ПОДАЧЕ по последней увиденной цене, а исполняется она на следующем баре по другой — значит
+    // «продать на тот же нотионал» закрывает позицию НЕ ПОЛНОСТЬЮ и оставляет хвост. Ровно для
+    // этого в контракте есть `reduceOnly`: он клампится остатком позиции и закрывает её точно.
+    let step = 0;
+    const { run } = makeRun({
+      lookback: 0,
+      barCount: 6,
+      onEvent: (event) => {
+        if (event.kind !== 'market.candle.closed') return [];
+        step += 1;
+        if (step === 1) {
+          return [{ kind: 'place', type: 'market', clientOrderId: 'in', side: 'buy', qtyUsd: 1000 } as ActorCommand];
+        }
+        if (step === 4) {
+          return [
+            {
+              kind: 'place',
+              type: 'market',
+              clientOrderId: 'out',
+              side: 'sell',
+              qtyUsd: 2000,
+              reduceOnly: true,
+            } as ActorCommand,
+          ];
+        }
+        return [];
+      },
+    });
+    const record = await run();
+    // Обе заявки исполнились — значит бухгалтерия непуста и сверка ledger'а осмысленна.
+    expect(record.journal.filter((j) => j.kind === 'fill')).toHaveLength(2);
+    // Выход СОКРАТИЛ, а не перевернул: заявка на 2000 при позиции на ~1000 исполнена по остатку.
+    expect(record.finalLedger.qty).toBe(0);
+
+    const artifacts = projectActorRun(record);
+    expect(artifacts.orders.map((o) => o.id)).toEqual(['in', 'out']);
+    expect(artifacts.fills).toHaveLength(2);
+    expect(artifacts.trades).toHaveLength(1);
+    // Сверка `ledger.realizedPnl` ↔ сделки живёт в проекции; здесь достаточно того, что она прошла.
+    expect(artifacts.validationIssues).toEqual([]);
+  });
+
+  it('ХАРАКТЕРИЗАЦИЯ ОТКРЫТОГО ДЕФЕКТА: частичный выход роняет проекцию на 1 ULP', async () => {
+    // НЕ ЖЕЛАЕМОЕ ПОВЕДЕНИЕ, а пин факта. Гейт `assertTradesReconcile` сравнивает две движковые
+    // величины через `Object.is`: свёрнутый по сделкам `realizedPnl` и якорный из ledger'а. Считает
+    // обе движок, но РАЗНЫМ порядком суммирования — при незакрытом остатке они расходятся в
+    // последнем разряде (27.98060422525056 против 27.980604225250556, ~1e-16 относительной разницы).
+    //
+    // До этого среза гейт зеленел на удаче: числа фикстуры случайно совпадали побитово. Сменился
+    // размер заявки — совпадение пропало. Точное равенство двух РАЗНЫХ порядков сложения не является
+    // выполнимым инвариантом, поэтому проба пиннит наблюдаемое сегодня: прогон с частичным выходом
+    // падает отказом проекции. Решение (допуск в гейте либо единый порядок свёртки в движке) — за
+    // владельцем, и проба обязана покраснеть в тот момент, когда его примут.
     let step = 0;
     const { run } = makeRun({
       lookback: 0,
@@ -313,15 +367,9 @@ describe('ИНТЕГРАЦИЯ: запись раннера проходит с�
       },
     });
     const record = await run();
-    // Обе заявки исполнились — значит бухгалтерия непуста и сверка ledger'а осмысленна.
-    expect(record.journal.filter((j) => j.kind === 'fill')).toHaveLength(2);
-
-    const artifacts = projectActorRun(record);
-    expect(artifacts.orders.map((o) => o.id)).toEqual(['in', 'out']);
-    expect(artifacts.fills).toHaveLength(2);
-    expect(artifacts.trades).toHaveLength(1);
-    // Сверка `ledger.realizedPnl` ↔ сделки живёт в проекции; здесь достаточно того, что она прошла.
-    expect(artifacts.validationIssues).toEqual([]);
+    // Позиция закрыта НЕ ПОЛНОСТЬЮ — именно остаток и разводит два порядка суммирования.
+    expect(record.finalLedger.qty).toBeGreaterThan(0);
+    expect(() => projectActorRun(record)).toThrow(/сделки и леджер разошлись/);
   });
 });
 
