@@ -36,6 +36,47 @@ export interface ActorProductionInput {
   readonly costs: ActorExecutionCosts;
   /** Интервал бара ленты в микросекундах — из таймфрейма прогона, а не угадывается по данным. */
   readonly barIntervalUs: number;
+  /** Риск-профиль прогона. Обязателен: без него нечем проверить, что лимиты кто-то соблюдает. */
+  readonly riskProfile: RiskProfileShape;
+}
+
+/** Та часть риск-профиля, чьи лимиты actor-путь обязан соблюдать, но пока не умеет. */
+export interface RiskProfileShape {
+  readonly id: string;
+  readonly version: string;
+  readonly maxConcurrentPositions?: number;
+  readonly exposureLimits?: object;
+  readonly allowedSides?: readonly string[];
+  readonly stopBounds?: unknown;
+  readonly takeBounds?: unknown;
+}
+
+/**
+ * Какие объявленные лимиты actor-путь НЕ соблюдает.
+ *
+ * Legacy-путь пропускает каждую заявку через `RiskEngine`: тот клампит размер, режет запрещённую
+ * сторону и отвергает превышение потолка, а его вердикты уезжают в `riskDecisions` артефактов.
+ * Actor-путь этого контура НЕ имеет: `riskDecisions` у него пуст, а `qtyUsd` доезжает до
+ * исполнения ровно тем, что попросил автор.
+ *
+ * Молча исполнить прогон с объявленным профилем значило бы посчитать его БЕЗ лимитов и отдать
+ * числа, которые выглядят как результат стратегии, а на деле — результат стратегии без риска.
+ * Разница не в точности, а в предмете: это другой прогон.
+ */
+export function unenforcedRiskLimits(profile: RiskProfileShape): readonly string[] {
+  const missing: string[] = [];
+  if (profile.maxConcurrentPositions !== undefined && Number.isFinite(profile.maxConcurrentPositions)) {
+    missing.push(`maxConcurrentPositions=${profile.maxConcurrentPositions}`);
+  }
+  if (profile.exposureLimits !== undefined && Object.keys(profile.exposureLimits).length > 0) {
+    missing.push('exposureLimits');
+  }
+  if (profile.allowedSides !== undefined && profile.allowedSides.length < 2) {
+    missing.push(`allowedSides=[${profile.allowedSides.join(', ')}]`);
+  }
+  if (profile.stopBounds !== undefined) missing.push('stopBounds');
+  if (profile.takeBounds !== undefined) missing.push('takeBounds');
+  return missing;
 }
 
 export interface ActorProductionOutcome {
@@ -86,6 +127,25 @@ export async function runActorProduction(
           'фиксирует: и «применять только совпавшие», и «подставлять символ актора» меняют смысл ' +
           'поля. Пока правило не выбрано, многосимвольный actor-прогон отвергается — молча выбрать ' +
           'одно из чтений значило бы отдать стратегии не тот вход, который она объявила',
+      },
+    };
+  }
+
+  // РИСК-КОНТУР: fail-closed, потому что его нет. См. `unenforcedRiskLimits`.
+  const unenforced = unenforcedRiskLimits(input.riskProfile);
+  if (unenforced.length > 0) {
+    return {
+      refusal: {
+        code: 'unsupported_lifecycle',
+        path: '',
+        message:
+          `${input.strategy.manifest.id}@${input.strategy.manifest.version}: профиль риска ` +
+          `${input.riskProfile.id}@${input.riskProfile.version} объявляет лимиты, которые actor-путь ` +
+          `не соблюдает (${unenforced.join(', ')}). У legacy-пути их проверяет RiskEngine, и его ` +
+          'вердикты уезжают в riskDecisions; у actor-пути этого контура нет, riskDecisions пуст, а ' +
+          'запрошенный размер доезжает до исполнения без клампа. Исполнить прогон молча значило бы ' +
+          'посчитать его БЕЗ лимитов и отдать числа, выглядящие как результат стратегии, — это ' +
+          'другой прогон, а не менее точный',
       },
     };
   }

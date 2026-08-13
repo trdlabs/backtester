@@ -83,6 +83,8 @@ function executorPlacingOnce(): ActorLifecycleExecutor {
 }
 
 const COSTS = { feeBps: 5, slippageBps: 0, initialEquity: 10_000 };
+/** Профиль без объявленных лимитов — единственный, на котором actor-путь сегодня открыт. */
+const NO_LIMITS = { id: 'risk-none', version: '1.0.0', allowedSides: ['long', 'short'] as const };
 
 describe('actor-путь доезжает до настоящего RunAccumulators', () => {
   it('на доказанном датасете возвращает аккумуляторы, а не свою форму', async () => {
@@ -95,6 +97,7 @@ describe('actor-путь доезжает до настоящего RunAccumulat
       params: {},
       costs: COSTS,
       barIntervalUs: MINUTE_US,
+      riskProfile: NO_LIMITS,
     });
     expect(out.refusal).toBeNull();
     const acc = out.accumulators!;
@@ -136,6 +139,7 @@ describe('actor-путь доезжает до настоящего RunAccumulat
       params: {},
       costs: COSTS,
       barIntervalUs: MINUTE_US,
+      riskProfile: NO_LIMITS,
     });
     expect(out.refusal?.code).toBe('unsupported_lifecycle');
     expect(out.refusal?.message).toMatch(/поднимает по актору на символ/);
@@ -153,6 +157,7 @@ describe('actor-путь доезжает до настоящего RunAccumulat
       params: {},
       costs: COSTS,
       barIntervalUs: MINUTE_US,
+      riskProfile: NO_LIMITS,
     });
     expect(out.refusal).toBeNull();
     expect(out.records!.map((r) => r.actorId)).toEqual([actorIdFor('BTCUSDT')]);
@@ -171,6 +176,7 @@ describe('подключение НЕ ослабило fail-closed', () => {
       params: {},
       costs: COSTS,
       barIntervalUs: MINUTE_US,
+      riskProfile: NO_LIMITS,
     });
     expect(out.refusal?.code).toBe('unsupported_lifecycle');
     expect(out.refusal?.message).toMatch(/происхождение свечей не доказано/);
@@ -196,6 +202,7 @@ describe('подключение НЕ ослабило fail-closed', () => {
       params: {},
       costs: COSTS,
       barIntervalUs: 5 * MINUTE_US, // лента объявлена пятиминутной, требование минутное
+      riskProfile: NO_LIMITS,
     });
     expect(out.refusal?.message).toMatch(/интервал/);
   });
@@ -214,6 +221,7 @@ describe('подключение НЕ ослабило fail-closed', () => {
       params: {},
       costs: COSTS,
       barIntervalUs: MINUTE_US,
+      riskProfile: NO_LIMITS,
     });
     expect(out.refusal).not.toBeNull();
     expect(out.accumulators).toBeUndefined();

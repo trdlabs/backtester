@@ -1233,6 +1233,7 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
           initialEquity: INITIAL_EQUITY,
         },
         barIntervalUs: (parseTimeframeMs(request.timeframe) ?? 60_000) * 1000,
+        riskProfile: riskProfile as never,
       });
       if (actorOutcome.refusal !== null) {
         return rejected(actorOutcome.refusal.code, actorOutcome.refusal.message, actorOutcome.refusal.path);

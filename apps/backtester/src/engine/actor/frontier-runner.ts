@@ -30,6 +30,9 @@ import {
   type Fill,
   type FrontierEvent,
   type Ledger,
+  transition,
+  type OrderEvent,
+  type OrderState,
   type RestingOrder,
   type Side,
 } from '@trdlabs/engine';
@@ -134,6 +137,42 @@ interface QueuedPayload extends ActorOutboxPayload {
 }
 
 /**
+ * Запись заявки вместе с её ЖИВЫМ состоянием автомата.
+ *
+ * Прежняя редакция заводила запись только в момент филла и ставила `terminalState: 'filled'`
+ * присваиванием. Из-за этого заявка, отменённая или ни разу не исполнившаяся, исчезала из прогона
+ * бесследно: артефакты показывали ровно те ордера, что сработали, и ни одного из тех, что автор
+ * подал и снял. Автомат при этом не участвовал вовсе — то есть переход, которого в таблице нет,
+ * прошёл бы наравне с законным.
+ */
+interface TrackedOrder {
+  readonly record: ActorOrderRecord;
+  readonly state: OrderState;
+}
+
+/** Двинуть автомат заявки движковым `transition` и обновить её терминальное состояние. */
+function advanceOrder(
+  tracked: Map<string, TrackedOrder>,
+  orderId: string,
+  event: OrderEvent,
+  intent?: ActorOrderRecord['intent'],
+): void {
+  const current = tracked.get(orderId);
+  if (current === undefined) return;
+  const next = transition(current.state, event);
+  // Недопустимый переход НЕ бросает и здесь: «отменяю уже исполненный» — штатная гонка, а не
+  // поломка. Состояние остаётся прежним, и это видно в записи.
+  tracked.set(orderId, {
+    record: {
+      ...current.record,
+      terminalState: next.state,
+      ...(intent !== undefined ? { intent } : {}),
+    },
+    state: next.state,
+  });
+}
+
+/**
  * Исполнить все frontier'ы одного символа и собрать запись прогона.
  *
  * Вызывается ВНУТРИ `withActorLifecycle`: дескриптор уже получен, освобождение уже гарантировано.
@@ -167,7 +206,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
   const journal: ActorJournalEntry[] = [];
   const closes: ActorCloseAnnotation[] = [];
   const equity: ActorEquitySample[] = [];
-  const orderRecords = new Map<string, ActorOrderRecord>();
+  const orderRecords = new Map<string, TrackedOrder>();
 
   for (let index = 0; index < input.bars.length; index += 1) {
     const bar = input.bars[index]!;
@@ -192,14 +231,21 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
         const order = state.openOrders.find((o) => o.clientOrderId === match.orderId)!;
         // Нотионал → базовый размер по цене исполнения. Единственная арифметика, доступная без
         // отдельной политики сайзинга; клампа риском в этом срезе нет и он не имитируется.
-        const qty = match.qty / match.price;
-        const fee = Math.abs(qty * match.price) * (input.costs.feeBps / 10_000);
+        // ПРОСКАЛЬЗЫВАНИЕ ПРИМЕНЯЕТСЯ, А НЕ ТОЛЬКО ОБЪЯВЛЯЕТСЯ. Прежняя редакция клала `slippageBps`
+        // в журнал и считала филл по цене матча: запись утверждала расход, которого не было, и
+        // прогон показывал прибыль лучше настоящей. Сдвиг всегда ПРОТИВ инициатора — покупка выше,
+        // продажа ниже: проскальзывание, играющее в пользу, это не издержка, а подарок.
+        const baseOpen = match.price;
+        const slipFactor = input.costs.slippageBps / 10_000;
+        const price = order.side === 'buy' ? baseOpen * (1 + slipFactor) : baseOpen * (1 - slipFactor);
+        const qty = match.qty / price;
+        const fee = Math.abs(qty * price) * (input.costs.feeBps / 10_000);
         const fillId = `${input.actorId}-fill-${fillCounter}`;
         fillCounter += 1;
         const fill: Fill = {
           fillId,
           tsUs: frontierUs,
-          price: match.price,
+          price,
           qty,
           side: order.side,
           fee,
@@ -218,21 +264,17 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
           fillId,
           orderId: order.clientOrderId,
           tsUs: frontierUs,
-          price: match.price,
-          baseOpen: match.price,
+          price,
+          baseOpen,
           slippageBps: input.costs.slippageBps,
           qty,
           fee,
           side: order.side,
           fillKind: intent === 'add' ? 'add' : intent === 'close' ? 'close' : 'open',
         });
-        orderRecords.set(order.clientOrderId, {
-          orderId: order.clientOrderId,
-          placedAtFrontier: order.placedAtFrontier,
-          side: order.side === 'buy' ? 'long' : 'short',
-          intent,
-          terminalState: 'filled',
-        });
+        // Автомат двигается движковым `transition`, а не присваиванием: состояние 'filled' в
+        // обход таблицы прошло бы и из тех состояний, из которых перехода нет.
+        advanceOrder(orderRecords, order.clientOrderId, { kind: 'fill', partial: false }, intent);
         if (intent === 'close') {
           // Аннотация нужна КАЖДОМУ сокращающему филлу, а не только обнуляющему позицию: движковая
           // деривация сделок требует причину у любого закрытия — частичного тоже, — потому что
@@ -343,6 +385,30 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
 
           outcome.outbox.forEach((event, i) => {
             const payload = event.payload as ActorOutboxPayload;
+            // Заявка попадает в запись прогона в момент ПОДАЧИ, а не исполнения: снятая и
+            // неисполнившаяся — такие же факты прогона, как сработавшая, и терять их нельзя.
+            const ev = payload.event;
+            if (ev.kind === 'order.accepted') {
+              const placed = state.openOrders.find((o) => o.clientOrderId === ev.clientOrderId);
+              if (placed !== undefined && !orderRecords.has(ev.clientOrderId)) {
+                orderRecords.set(ev.clientOrderId, {
+                  record: {
+                    orderId: ev.clientOrderId,
+                    placedAtFrontier: placed.placedAtFrontier,
+                    side: placed.side === 'buy' ? 'long' : 'short',
+                    intent: intentOf(state.ledger, placed.side),
+                    terminalState: 'pending_new',
+                  },
+                  state: 'pending_new',
+                });
+                advanceOrder(orderRecords, ev.clientOrderId, { kind: 'accept' });
+              }
+            } else if (ev.kind === 'order.canceled') {
+              advanceOrder(orderRecords, ev.clientOrderId, { kind: 'cancel_request' });
+              advanceOrder(orderRecords, ev.clientOrderId, { kind: 'cancel_complete' });
+            } else if (ev.kind === 'order.denied') {
+              advanceOrder(orderRecords, ev.clientOrderId, { kind: 'reject', reason: 'denied' });
+            }
             cascade.push({
               businessTsUs: frontierUs,
               phase: 'cascade',
@@ -376,7 +442,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
     symbol: input.symbol,
     subscriptions: input.admission.subscriptions,
     frontiers,
-    orders: [...orderRecords.values()],
+    orders: [...orderRecords.values()].map((t) => t.record),
     journal,
     closes,
     equity,

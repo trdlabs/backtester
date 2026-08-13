@@ -23,6 +23,7 @@ import {
 } from '@trdlabs/engine';
 import type {
   ActorCommand,
+  ActorPlaceCommand,
   ActorInputEvent,
   ActorReadiness,
   OrderSide,
@@ -62,6 +63,19 @@ export interface ActorEngineState {
   readonly timers: readonly ScheduledTimer[];
   /** Заметки команды `annotate` — единственный её эффект, и он обязан быть наблюдаем. */
   readonly notes: readonly { readonly frontier: number; readonly note: string }[];
+}
+
+/**
+ * Цена срабатывания заявки — из ТОГО поля, которое несёт её вид.
+ *
+ * `limit` объявляет `price`, `stop_market` — `stopPrice`; у `market` цены нет. Читать «одно или
+ * другое, иначе ноль» нельзя: ноль это валидное число, которое стоп воспримет как настоящий
+ * триггер и сработает либо никогда, либо немедленно — молча, потому что заявка выглядит принятой.
+ */
+export function triggerPriceOf(command: ActorPlaceCommand): number | null {
+  if (command.type === 'limit') return command.price;
+  if (command.type === 'stop_market') return command.stopPrice;
+  return null;
 }
 
 /** Событие outbox'а несёт ГОТОВОЕ входное событие: раннеру нечего додумывать по строке `kind`. */
@@ -127,6 +141,34 @@ export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState
               reason: 'place отклонена: хост в режиме reducing, принимаются только reduceOnly-заявки',
             };
           }
+          // НАСТОЯЩИЙ reduceOnly, а не отметка в поле. Прежняя редакция читала флаг только при
+          // `reducing` и нигде не проверяла, что заявка ДЕЙСТВИТЕЛЬНО сокращает экспозицию:
+          // reduceOnly-заявка в ту же сторону наращивала позицию, а объявляла обратное. Биржа
+          // такую заявку не исполнит; хост, который исполняет, показывает прибыль, которой не было.
+          if (command.reduceOnly === true) {
+            if (state.ledger.qty === 0) {
+              return { ok: false, reason: 'reduceOnly отклонена: сокращать нечего — позиция flat' };
+            }
+            const wouldAdd = (command.side === 'buy' ? 1 : -1) === Math.sign(state.ledger.qty);
+            if (wouldAdd) {
+              return {
+                ok: false,
+                reason:
+                  `reduceOnly отклонена: заявка ${command.side} при позиции ${state.ledger.qty} ` +
+                  'наращивает экспозицию, а не сокращает её',
+              };
+            }
+          }
+          // Триггерная/лимитная цена — ОБЯЗАТЕЛЬНА для своего вида и проверяется здесь.
+          // Прежняя редакция подставляла 0 при её отсутствии: стоп с нулевым триггером срабатывает
+          // либо никогда, либо немедленно — и то и другое молча, потому что заявка выглядит принятой.
+          const trigger = triggerPriceOf(command);
+          if (trigger !== null && (!Number.isFinite(trigger) || trigger <= 0)) {
+            return {
+              ok: false,
+              reason: `place отклонена: ${command.type} требует положительную цену, получено ${String(trigger)}`,
+            };
+          }
           if (state.openOrders.some((o) => o.clientOrderId === command.clientOrderId)) {
             return { ok: false, reason: `place отклонена: clientOrderId '${command.clientOrderId}' уже стоит` };
           }
@@ -163,12 +205,15 @@ export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState
     apply(command, state): Applied<ActorEngineState> {
       switch (command.kind) {
         case 'place': {
+          const trigger = triggerPriceOf(command);
           const order: ActorOpenOrder = {
             clientOrderId: command.clientOrderId,
             side: command.side,
             qtyUsd: command.qtyUsd,
-            type: command.type === 'stop_market' ? 'stop_market' : command.type,
-            ...(command.type !== 'market' ? { triggerPrice: (command as { price?: number; triggerPrice?: number }).price ?? (command as { triggerPrice?: number }).triggerPrice ?? 0 } : {}),
+            type: command.type,
+            // `limit` несёт `price`, `stop_market` — `stopPrice`. Разные поля контракта, и путать
+            // их нельзя: у стопа лимитной цены нет вовсе.
+            ...(trigger !== null ? { triggerPrice: trigger } : {}),
             placedAtFrontier: state.frontierIndex,
             placedAtTsUs: state.frontierUs,
             reduceOnly: command.reduceOnly === true,
