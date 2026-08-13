@@ -5,7 +5,7 @@
 // загрузка с вычислением.
 
 import { describe, expect, it, vi } from 'vitest';
-import { materializeFor, RunnerError } from '../src/jobs/worker';
+import { finalizeResult, materializeFor, RunnerError } from '../src/jobs/worker';
 import { RealDataUnavailableError } from '../src/data/rows-data-port';
 import type { BacktesterDataPort } from '../src/data/reader';
 
@@ -106,5 +106,60 @@ describe('допуск в воркере', () => {
     await materializeFor(depsWith(port), claimed).catch((e) => { err = e; });
     expect(openDataset).toHaveBeenCalled();
     expect((err as Error).name).not.toBe('AdmissionRefusedError');
+  });
+});
+
+describe('допуск доезжает до РЕЗУЛЬТАТА, а не только до журнала', () => {
+  // Первая редакция 3.3в вычисляла evidence, печатала его в stdout и
+  // выбрасывала (`void admissionEv`). Требование «сохрани evidence» при этом
+  // выглядело выполненным: строка в логе есть. Но потребитель читает результат,
+  // а не stdout, — и lab физически не мог принять effective-период.
+  const admission = {
+    requestedFromMs: 0,
+    requestedToMs: 9_999,
+    effectiveFromMs: 1_000,
+    effectiveToMs: 2_000,
+    clamped: true,
+    availabilityId: `sha256:${'a'.repeat(64)}`,
+    asOfMs: 111,
+    admittedAvailabilityId: `sha256:${'b'.repeat(64)}`,
+    admittedAsOfMs: 222,
+    archiveId: 'arch-1',
+    datasetId: 'ds-1',
+  };
+
+  // Стор объявляет ровно то, что зовёт `persistRunArtifacts`. Двойник, у которого
+  // метода нет, дал бы отказ теста по чужой причине — и проверка допуска не
+  // выполнилась бы вовсе.
+  const deps = {
+    artifactStore: { write: async () => 'sha256:deadbeef' },
+  } as never;
+
+  const claimedRow = {
+    runId: 'run-fin',
+    effectiveSeed: 1,
+    datasetRef: 'BTCUSDT:1m',
+    request: { moduleRef: { id: 'm', version: '1' } },
+  } as never;
+
+  it('без допуска evidence его НЕ несёт — различие наблюдаемо', async () => {
+    const payload = { metrics: { netPnlUsd: 1 }, trades: [], equityCurve: [] } as never;
+    const fin = await finalizeResult(deps, 'momentum' as never, payload, claimedRow, 'fp');
+    expect('admission' in fin.summary.evidence).toBe(false);
+  });
+
+  it('momentum: evidence прогона несёт admission', async () => {
+    const payload = { metrics: { netPnlUsd: 1 }, trades: [], equityCurve: [] } as never;
+    // БЕЗ условного пропуска: проверка, чьё предусловие может не наступить,
+    // зелена по неверной причине. Если фикстура не доходит до результата — это
+    // отказ теста, а не повод молча ничего не проверить.
+    const fin = await finalizeResult(deps, 'momentum' as never, payload, claimedRow, 'fp', undefined, undefined, admission as never);
+    expect(fin.summary.evidence.admission).toEqual(admission);
+    // Разделяющая: запрошенное и фактическое РАЗНЫЕ, и обе идентичности тоже —
+    // иначе равенство прошло бы и на схлопнутых в одно значение полях.
+    expect(fin.summary.evidence.admission?.requestedFromMs)
+      .not.toBe(fin.summary.evidence.admission?.effectiveFromMs);
+    expect(fin.summary.evidence.admission?.availabilityId)
+      .not.toBe(fin.summary.evidence.admission?.admittedAvailabilityId);
   });
 });

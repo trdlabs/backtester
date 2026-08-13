@@ -434,7 +434,10 @@ interface Finalized {
  * of the per-branch tail — momentum uses persistRunArtifacts + the inline momentum summary; overlay
  * and strategy use persistOverlayArtifacts + toOverlaySummary. `resultHash = contentRef(payload)`.
  */
-async function finalizeResult(
+// Экспортируется РАДИ ГЕЙТА: проверять, что допуск доезжает до результата,
+// иначе пришлось бы поднимать весь путь воркера — и проверялся бы он, а не
+// то, что evidence прогона несёт допуск.
+export async function finalizeResult(
   deps: WorkerDeps,
   engine: Engine,
   payload: unknown,
@@ -442,6 +445,7 @@ async function finalizeResult(
   datasetFingerprint: string,
   evidenceRef?: ArtifactReference,
   promotion?: PromotionResult,
+  admission?: AdmissionEvidence,
 ): Promise<Finalized> {
   const resultHash = contentRef(payload);
   if (engine === 'momentum') {
@@ -459,6 +463,7 @@ async function finalizeResult(
         datasetRef: claimed.datasetRef,
         datasetFingerprint,
         ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
+        ...(admission !== undefined ? { admission } : {}),
       },
       resultHash,
     };
@@ -475,6 +480,11 @@ async function finalizeResult(
     claimed.bundleHash,
     evidenceRef,
   );
+  // Допуск дописывается ПОСЛЕ проекции: `toOverlaySummary` строит evidence из
+  // outcome, а допуск — свойство прогона, а не его исхода.
+  if (admission !== undefined) {
+    summary = { ...summary, evidence: { ...summary.evidence, admission } };
+  }
   // E2 (advisory, flag-gated): record this run as a trial and attach the Deflated Sharpe / N context.
   // Runs AFTER resultHash is fixed; trialContext lives on the summary projection ONLY (never hashed),
   // so flag-OFF is byte-identical. Momentum has no equity curve → not laddered.
@@ -985,7 +995,6 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       // eslint-disable-next-line no-console
       console.log(JSON.stringify({ evt: 'run_admitted', runId, admission: admissionEv }));
     }
-    void admissionEv;
 
     // ── DEDUP GATE ────────────────────────────────────────────────────────────
     // dedup engages only when the kill-switch is on AND a cache is wired.
@@ -1056,7 +1065,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
             // in the pre-gate to preserve strategy validation error-taxonomy — the accepted partial;
             // momentum HITs have no bundle and skip everything.)
             const payload = restamp(template, runId);
-            finalized = await finalizeResult(deps, engine, payload, claimed, dsFingerprint);
+            finalized = await finalizeResult(deps, engine, payload, claimed, dsFingerprint, undefined, undefined, admissionEv);
             dedupedFrom = hit.computeIdentity;
             dedupClass = 'hit';
           } else {
@@ -1135,7 +1144,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       }
       assertSandboxClean(sandboxRouter); // P0-1: crashed sandbox must fail, never finalize completed
       payload = outcome;
-      finalized = await finalizeResult(deps, 'overlay', outcome, claimed, dsFingerprint);
+      finalized = await finalizeResult(deps, 'overlay', outcome, claimed, dsFingerprint, undefined, undefined, admissionEv);
     } else if (claimed.request.engine === 'strategy') {
       // ===== STRATEGY PATH — kind:'strategy' lifecycle-bundle via sandbox (closes gap PR #57) =====
       // Pre-flight guards (bundle present, manifest.kind, moduleRef match) already ran above.

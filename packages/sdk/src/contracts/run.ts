@@ -313,6 +313,32 @@ export interface RunStatusView {
   readonly terminalIssues?: readonly ValidationIssue[];
 }
 
+/**
+ * Д3 (3.3в) — допуск периода к прогону.
+ *
+ * Отвечает на два разных вопроса, и поэтому идентичностей ДВЕ. `availabilityId`
+ * с `asOfMs` — на чём решили, каким состоянием индекса выдан effective-период.
+ * `admittedAvailabilityId` с `admittedAsOfMs` — чем разрешили вычисление, то
+ * есть что вернула повторная проверка уже после загрузки данных. Схлопни их в
+ * одно поле — и «на чём решили» станет неотличимо от «чем разрешили».
+ *
+ * `requested` сохраняется рядом с `effective` намеренно: тихо суженный период
+ * означал бы, что в evidence записано одно, а протестировано другое.
+ */
+export interface RunAdmissionEvidence {
+  readonly requestedFromMs: number;
+  readonly requestedToMs: number;
+  readonly effectiveFromMs: number;
+  readonly effectiveToMs: number;
+  readonly clamped: boolean;
+  readonly availabilityId: string;
+  readonly asOfMs: number;
+  readonly admittedAvailabilityId: string;
+  readonly admittedAsOfMs: number;
+  readonly archiveId: string | null;
+  readonly datasetId: string | null;
+}
+
 export interface RunEvidence {
   readonly seed: number;
   readonly contractVersion: string;
@@ -320,6 +346,14 @@ export interface RunEvidence {
   readonly datasetRef: string;
   readonly datasetFingerprint?: string;
   readonly bundleHash?: ContentHash;
+  /**
+   * Д3 (3.3в): чем разрешён период прогона. Отсутствует, когда источник данных
+   * допуска не требует (фикстура, мок) — и это НАБЛЮДАЕМОЕ различие, а не
+   * «допуск прошёл, просто пустой».
+   *
+   * Не входит в `resultHash`: тот считается по payload прогона, а не по summary.
+   */
+  readonly admission?: RunAdmissionEvidence;
 }
 
 export interface MetricDelta {
