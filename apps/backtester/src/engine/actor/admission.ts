@@ -13,7 +13,7 @@
 // single_position-пути значит подменить объявленную семантику молча: прогон завершится, числа
 // получатся, и ничто не скажет, что исполнялось не то, что объявлено.
 
-import { findDuplicateSubscriptionIds } from '@trdlabs/sdk/research-contract';
+import { HOST_SOURCE_DESCRIPTOR, findDuplicateSubscriptionIds } from '@trdlabs/sdk/research-contract';
 import type {
   ActorReadiness,
   ActorSubscriptionDescriptor,
@@ -400,7 +400,14 @@ export function admitActorMarketData(
 
   const seen = new Set<string>();
   const bindings: ActorSubscriptionBinding[] = [];
-  const subscriptions: ActorSubscriptionDescriptor[] = [];
+  // ХОСТОВЫЙ ИСТОЧНИК ОБЪЯВЛЯЕТСЯ ПЕРВЫМ И НАРАВНЕ С РЫНОЧНЫМИ (ADR-0012).
+  //
+  // Половина каталога §3.5 — филл, четыре ордерных события, срабатывание таймера — рождается внутри
+  // хоста и подписки не имеет. Пока его не было в списке, автор, сверяющий `subscriptionId` конверта
+  // со списком источников, обязан был счесть собственный филл подложным. Дескриптор берётся
+  // КАНОНИЧЕСКИЙ, из контракта: значение выбирает он, а не хост, иначе бэктестер, платформа и живая
+  // торговля выберут три разных, и один код стратегии поведёт себя в трёх средах по-разному.
+  const subscriptions: ActorSubscriptionDescriptor[] = [HOST_SOURCE_DESCRIPTOR];
 
   for (const req of requirements) {
     if (req.kind !== SUPPORTED_KIND) {

@@ -1,0 +1,41 @@
+{
+  "contract": {
+    "from": "017.4",
+    "to": "017.5"
+  },
+  "migration": {
+    "epic": "083",
+    "slice": "S1",
+    "cause": "runner.ts кладёт CONTRACT_VERSION в RunEvidence, а evidence входит в канонический payload прогона — значит бамп контракта меняет content-hash каждого прогона. Исключить contractVersion из хеша нельзя: identity прогона обязана включать версию контракта, по которому он исполнен."
+  },
+  "goldens": {
+    "overlay-baseline": {
+      "scenario": "overlay-baseline",
+      "source": "apps/backtester/test/fixtures/overlay/goldens/baseline.hash",
+      "legacy": "sha256:306d4c88cef7e714b2767d1d0b3083a0709e9a9c34dc1ef668ff97fda188c02d",
+      "active": "sha256:7a840aa36d00ab7c1a2b9f38cb6772cf515be168b018d97a48d719dbd93dd4c3",
+      "diffPaths": [
+        "/baseline/evidence/contractVersion"
+      ]
+    },
+    "overlay-variant": {
+      "scenario": "overlay-variant",
+      "source": "apps/backtester/test/fixtures/overlay/goldens/variant.hash",
+      "legacy": "sha256:65be7862a959a038bfe8ddf8ea603cc5508406e652450d67f4d0d275c61753e1",
+      "active": "sha256:e67c7d14db1b2e5ef178dd3e6f1ebf313695e3cea5516d4c565d53152c65fd9b",
+      "diffPaths": [
+        "/baseline/evidence/contractVersion",
+        "/variant/evidence/contractVersion"
+      ]
+    },
+    "bar-major": {
+      "scenario": "bar-major",
+      "source": "apps/backtester/test/helpers/bar-major-golden-hash.ts",
+      "legacy": "sha256:d484398d8322e55fda9ce7db323d7f198be74621e56b70d50fefaebeb326c43d",
+      "active": "sha256:5dce2e7aede3688197fcf9881f1354111f756913afc603ea2f4e2f57cd1b5681",
+      "diffPaths": [
+        "/evidence/contractVersion"
+      ]
+    }
+  }
+}

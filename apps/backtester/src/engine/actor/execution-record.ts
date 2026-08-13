@@ -105,6 +105,14 @@ export interface ActorOrderRecord {
   readonly side: 'long' | 'short';
   readonly intent: 'open' | 'close' | 'add';
   readonly terminalState: OrderState;
+  /**
+   * Причина СНЯТИЯ заявки хостом — слово движка (`reduce_only_flat`), а не пересказ хоста.
+   *
+   * Присутствует ⟺ заявку снял хост, а не автор. Без неё «canceled» в записи неотличимо от отмены
+   * по команде автора, а это разные факты: один означает решение стратегии, другой — что рынок
+   * ушёл из-под заявки.
+   */
+  readonly cancelReason?: string;
   readonly mode?: 'dca' | 'scale_in';
   readonly closeFraction?: number;
   readonly origin?: 'protection';

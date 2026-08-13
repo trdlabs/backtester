@@ -33,8 +33,17 @@ export const ACTIVE_CONTRACT_VERSION = '017.3';
  * 017.3 → 017.4». Следующая миграция сдвинет вторую и не тронет первую.
  */
 export const PRE_S1_CONTRACT_VERSION = '017.3';
-/** Версия, введённая 083 S1 вместе с актор-контрактом. Её эмитит свежий прогон. */
+/** Версия, введённая 083 S1 вместе с актор-контрактом. */
 export const S1_CONTRACT_VERSION = '017.4';
+
+/**
+ * Версия, под которой голдены лежали на диске до 083 S3. Численно равна `S1_CONTRACT_VERSION`, и
+ * это снова РАЗНЫЕ утверждения: та говорит «куда пришло звено 017.3 → 017.4», эта — «откуда уходит
+ * звено 017.4 → 017.5». Слить их значило бы потерять возможность сдвинуть одну, не тронув другую.
+ */
+export const PRE_S3_CONTRACT_VERSION = '017.4';
+/** Версия, введённая 083 S3 (ADR-0012/0013). Её эмитит свежий прогон. */
+export const S3_CONTRACT_VERSION = '017.5';
 
 /** Один воспроизводимый сценарий, чей canonical payload заморожен как golden. */
 export interface GoldenScenario {
@@ -268,6 +277,23 @@ export function proveContractVersionMigration(payload: unknown): MigrationProof 
  */
 export function proveS1ContractMigration(payload: unknown): MigrationProof {
   const legacyPayload = projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
+  return {
+    id: '',
+    activeHash: contentRef(payload),
+    legacyHash: contentRef(legacyPayload),
+    diffPaths: structuralDiffPaths(legacyPayload, payload),
+  };
+}
+
+/**
+ * Доказательство звена 017.4 → 017.5 (083 S3). Устроено ровно как звено S1 и по той же причине:
+ * откат ОДНОГО поля обязан вернуть хеш, лежавший на диске до миграции.
+ *
+ * `legacyHash` обязан совпасть с `active` карты 017.4 — то есть с якорем предыдущего звена.
+ * Совпал — значит переезд контракта не привёз с собой ничего, кроме строки версии.
+ */
+export function proveS3ContractMigration(payload: unknown): MigrationProof {
+  const legacyPayload = projectContractVersion(payload, S3_CONTRACT_VERSION, PRE_S3_CONTRACT_VERSION);
   return {
     id: '',
     activeHash: contentRef(payload),

@@ -19,6 +19,7 @@ import {
   applyBatch,
   applyFill,
   createSeededRng,
+  executeFill,
   matchBar,
   nextSeq,
   openFrontierTimers,
@@ -37,6 +38,7 @@ import {
   type Side,
 } from '@trdlabs/engine';
 import { createActorHost } from '@trdlabs/engine';
+import { HOST_SOURCE_DESCRIPTOR, HOST_SUBSCRIPTION_ID } from '@trdlabs/sdk/research-contract';
 import type {
   ActorCommand,
   ActorContext,
@@ -53,7 +55,6 @@ import { readinessAtBar, type ActorMarketDataAdmitted } from './admission.js';
 import {
   actorRejectionEvent,
   createActorBatchCore,
-  INTERNAL_SUBSCRIPTION_ID,
   type ActorEngineState,
   type ActorOpenOrder,
   type ActorOutboxPayload,
@@ -114,10 +115,6 @@ function restingOf(orders: readonly ActorOpenOrder[]): readonly RestingOrder[] {
     orderId: o.clientOrderId,
     kind: o.type === 'stop_market' ? 'stop' : o.type,
     side: o.side,
-    // БАЗОВЫЙ размер — та единица, в которой это поле объявлено движком. Прежняя редакция клала
-    // сюда нотионал и переводила его в базу уже после матча: движок получал число не в своей
-    // единице, и это молчало ровно до тех пор, пока цена была близка к сотне.
-    qty: o.qtyBase,
     ...(o.triggerPrice !== undefined ? { triggerPrice: o.triggerPrice } : {}),
     placedAtTsUs: o.placedAtTsUs,
   }));
@@ -196,7 +193,6 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
     readiness: readinessAtBar(0, tradingFrom),
     tradingState: input.tradingState ?? 'normal',
     ledger: EMPTY_LEDGER,
-    lastSeenClose: null,
     openOrders: [],
     timers: [],
     notes: [],
@@ -244,45 +240,63 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
       const match = matchBar(restingOf(state.openOrders), bar, positionSideOf(state.ledger));
       if (match !== null) {
         const order = state.openOrders.find((o) => o.clientOrderId === match.orderId)!;
-        // ПРОСКАЛЬЗЫВАНИЕ ПРИМЕНЯЕТСЯ, А НЕ ТОЛЬКО ОБЪЯВЛЯЕТСЯ. Прежняя редакция клала `slippageBps`
-        // в журнал и считала филл по цене матча: запись утверждала расход, которого не было, и
-        // прогон показывал прибыль лучше настоящей. Сдвиг всегда ПРОТИВ инициатора — покупка выше,
-        // продажа ниже: проскальзывание, играющее в пользу, это не издержка, а подарок.
         const baseOpen = match.price;
-        const slipFactor = input.costs.slippageBps / 10_000;
-        const price = order.side === 'buy' ? baseOpen * (1 + slipFactor) : baseOpen * (1 - slipFactor);
-        // REDUCEONLY СВЕРХ ОСТАТКА НЕ ПЕРЕВОРАЧИВАЕТ ПОЗИЦИЮ.
+
+        // ВТОРАЯ ФАЗА ИСПОЛНЕНИЯ — ЦЕЛИКОМ ДВИЖКОВАЯ. Хост НЕ считает здесь ни одной денежной
+        // величины и не выбирает ни одной экономической ветки: размер, нотионал, комиссию, цену
+        // после проскальзывания и сам факт клампа возвращает `executeFill`. Собственная арифметика
+        // в этом месте расходилась бы с бухгалтерией движка в последних разрядах, а расхождение
+        // здесь выглядит как движение рынка, а не как ошибка.
         //
-        // Проверка размера стоит ЗДЕСЬ, а не в `validate`, и это не удобство: между подачей и
-        // срабатыванием позиция живёт своей жизнью. Стоп, поставленный на полную позицию, застаёт
-        // её уже частично закрытой — валидация на момент ПОДАЧИ пропустила бы его законно, а
-        // исполнение на полный размер открыло бы противоположную позицию, которую автор не просил.
-        // Биржа клампит в этот же момент и по той же причине.
-        const remaining = Math.abs(state.ledger.qty);
-        const stillReduces =
-          !order.reduceOnly || (order.side === 'buy' ? -1 : 1) === Math.sign(state.ledger.qty);
-        const qty = order.reduceOnly ? Math.min(match.qty, remaining) : match.qty;
-        if (order.reduceOnly && (!stillReduces || qty <= 0)) {
-          // Сокращать больше нечего — заявка СНИМАЕТСЯ, а не исполняется на нулевой размер:
-          // нулевой филл движок отвергает броском, а тишина оставила бы заявку в книге навсегда.
+        // ОГРАНИЧЕНИЕ РАЗМЕРА даёт хост, и это его знание, а не экономика: сколько позиции осталось
+        // сократить. Направление сокращения — тоже факт хоста; заявка в сторону позиции сокращать
+        // не может, и остаток для неё равен нулю.
+        const reduces = (order.side === 'buy' ? -1 : 1) === Math.sign(state.ledger.qty);
+        const sizeCap = order.reduceOnly ? (reduces ? Math.abs(state.ledger.qty) : 0) : null;
+        const outcome = executeFill(
+          order.qtyUsd,
+          baseOpen,
+          input.costs.slippageBps,
+          // Сдвиг ПРОТИВ инициатора: покупка исполняется выше, продажа ниже. Проскальзывание,
+          // играющее в пользу, — не издержка, а подарок.
+          order.side === 'buy' ? 1 : -1,
+          sizeCap,
+          input.costs.feeBps,
+        );
+
+        if (outcome.kind === 'canceled') {
+          // Сокращать нечего: позицию закрыла другая заявка между подачей этой и её срабатыванием.
+          // Заявка СНИМАЕТСЯ — ни филла, ни движения бухгалтерии. Причина записана словом движка.
           state = {
             ...state,
             openOrders: state.openOrders.filter((o) => o.clientOrderId !== order.clientOrderId),
           };
           advanceOrder(orderRecords, order.clientOrderId, { kind: 'cancel_request' });
           advanceOrder(orderRecords, order.clientOrderId, { kind: 'cancel_complete' });
+          // Причина записывается СЛОВОМ ДВИЖКА. Без неё `canceled` в записи неотличимо от отмены
+          // по команде автора, а это разные факты: одно — решение стратегии, другое — что рынок
+          // ушёл из-под заявки.
+          const tracked = orderRecords.get(order.clientOrderId);
+          if (tracked !== undefined) {
+            orderRecords.set(order.clientOrderId, {
+              ...tracked,
+              record: { ...tracked.record, cancelReason: outcome.reason },
+            });
+          }
           seed.push({
             businessTsUs: frontierUs,
             phase: 'execution',
-            stableSubscriptionId: INTERNAL_SUBSCRIPTION_ID,
+            stableSubscriptionId: HOST_SUBSCRIPTION_ID,
             sourceSequence: 0,
             payload: {
-              subscriptionId: INTERNAL_SUBSCRIPTION_ID,
+              subscriptionId: HOST_SUBSCRIPTION_ID,
               event: { kind: 'order.canceled', clientOrderId: order.clientOrderId },
             },
           });
         } else {
-        const fee = Math.abs(qty * price) * (input.costs.feeBps / 10_000);
+        const price = outcome.executionPrice;
+        const qty = outcome.filledSize;
+        const fee = outcome.fee;
         const fillId = `${input.actorId}-fill-${fillCounter}`;
         fillCounter += 1;
         const fill: Fill = {
@@ -353,10 +367,10 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
         seed.push({
           businessTsUs: frontierUs,
           phase: 'execution',
-          stableSubscriptionId: INTERNAL_SUBSCRIPTION_ID,
+          stableSubscriptionId: HOST_SUBSCRIPTION_ID,
           sourceSequence: 0,
           payload: {
-            subscriptionId: INTERNAL_SUBSCRIPTION_ID,
+            subscriptionId: HOST_SUBSCRIPTION_ID,
             event: {
               kind: 'fill',
               clientOrderId: order.clientOrderId,
@@ -381,10 +395,10 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
         seed.push({
           businessTsUs: frontierUs,
           phase: 'timers',
-          stableSubscriptionId: INTERNAL_SUBSCRIPTION_ID,
+          stableSubscriptionId: HOST_SUBSCRIPTION_ID,
           sourceSequence: i,
           payload: {
-            subscriptionId: INTERNAL_SUBSCRIPTION_ID,
+            subscriptionId: HOST_SUBSCRIPTION_ID,
             event: { kind: 'timer.fired', timerId: t.timerId, dueTsUs: t.dueTsUs },
           },
         });
@@ -428,13 +442,6 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
             subscriptionId: scheduled.payload.subscriptionId,
             event: scheduled.payload.event,
           } as ActorTimelineEntry['envelope'];
-
-          // Цена считается УВИДЕННОЙ ровно в момент доставки её события — не раньше. Взять закрытие
-          // текущего бара из ленты значило бы дать автору узнать его через размер собственной
-          // заявки до того, как свеча ему доставлена.
-          if (scheduled.payload.event.kind === 'market.candle.closed') {
-            state = { ...state, lastSeenClose: scheduled.payload.event.candle.value.close };
-          }
 
           const ctx = buildContext(state, frontierUs, rngSource, positionView);
           const commands: readonly ActorCommand[] = await input.executor.executeActorEvent(
@@ -531,8 +538,17 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
 /**
  * Одна открытая заявка В ФОРМЕ КОНТРАКТА (`OpenOrderView`), разложенная по виду.
  *
- * Вид несёт свою цену: `limit` — `price`, `stop_market` — `stopPrice`, `market` — никакую. Отсюда
- * же берётся и `qty`: базовый размер зафиксирован при подаче, а не сочиняется здесь.
+ * Вид несёт свою цену: `limit` — `price`, `stop_market` — `stopPrice`, `market` — никакую.
+ *
+ * ЕДИНИЦА ЗАЯВКИ — НОТИОНАЛ (ADR-0013). `filledQtyUsd: 0` — факт, а не заглушка: частичных
+ * исполнений в этом симуляторе нет, заявка либо стоит целиком, либо покидает книгу. Остаток
+ * вычисляется как `qtyUsd − filledQtyUsd`, и никакой цены для этого не требуется.
+ *
+ * `estimatedQty` НЕ ЗАПОЛНЯЕТСЯ намеренно. Оценка базового размера потребовала бы цены пересчёта,
+ * а у стоящей заявки такой цены нет: она появится только в момент исполнения. Поле объявлено
+ * необязательным ровно для этого случая, и честный ответ здесь — не давать числа вовсе. Прежняя
+ * редакция фиксировала размер при подаче по последней увиденной цене — это и была та временная
+ * конверсия, которую срез снимает.
  */
 function openOrderViewOf(o: ActorOpenOrder): OpenOrderView {
   const base = {
@@ -540,11 +556,7 @@ function openOrderViewOf(o: ActorOpenOrder): OpenOrderView {
     side: o.side,
     status: 'accepted' as const,
     qtyUsd: o.qtyUsd,
-    qty: o.qtyBase,
-    // Частичных исполнений в этом симуляторе нет: заявка либо стоит целиком, либо покидает книгу.
-    // Ноль здесь — ФАКТ, в отличие от нуля в `qty` прежней редакции, где он означал «неизвестно» и
-    // читался контрактом как «исполнена целиком» (`qty - filledQty === 0`).
-    filledQty: 0,
+    filledQtyUsd: 0,
     ...(o.reduceOnly ? { reduceOnly: true as const } : {}),
     createdTs: o.placedAtTsUs,
   };

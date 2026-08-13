@@ -15,6 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { CONTRACT_VERSION } from '@trading/research-contracts/research';
+import { HOST_SOURCE_DESCRIPTOR, HOST_SUBSCRIPTION_ID } from '@trdlabs/sdk/research-contract';
 import type {
   ActorSubscriptionDescriptor,
   MarketDataRequirement,
@@ -84,14 +85,21 @@ describe('поддерживаемая форма проходит и НАЗЫВ
     // `subscriptionId` обязан быть канонической ссылкой на элемент этого же списка (контракт).
     // Назначать его в двух местах значило бы дать им разойтись: «проверено» относилось бы к одному
     // списку, «доставлено» — к другому.
+    // Первым идёт ХОСТОВЫЙ источник — канонический дескриптор контракта (ADR-0012). Без него автор,
+    // сверяющий `subscriptionId` конверта со списком, обязан был бы счесть собственный филл
+    // подложным: филлы, ордерные события и таймеры подписки не имеют.
     expect(admitted([supported()]).subscriptions).toEqual([
+      HOST_SOURCE_DESCRIPTOR,
       { subscriptionId: subscriptionIdFor('req-candles'), kind: 'candles', requirementId: 'req-candles' },
     ]);
+    // Значение выбирает КОНТРАКТ, а не хост: локально придуманная строка снова развела бы хосты.
+    expect(admitted([supported()]).subscriptions[0]!.subscriptionId).toBe(HOST_SUBSCRIPTION_ID);
   });
 
   it('несколько свечных требований — каждое со своим идентификатором', () => {
     const out = admitted([supported(), supported({ id: 'req-second' })]);
     expect(out.subscriptions.map((s) => s.subscriptionId)).toEqual([
+      HOST_SUBSCRIPTION_ID,
       subscriptionIdFor('req-candles'),
       subscriptionIdFor('req-second'),
     ]);
@@ -117,6 +125,8 @@ describe('допуск отдаёт РАЗРЕШЁННЫЙ вход, а не с�
       revisions: 'final_only',
     });
     expect(binding!.lookback).toBe(7);
+    expect(binding!.descriptor.kind).toBe('candles');
+    if (binding!.descriptor.kind === 'host') throw new Error('binding не может ссылаться на хостовый источник');
     expect(binding!.descriptor.requirementId).toBe('req-candles');
   });
 
@@ -171,8 +181,11 @@ describe('допуск отдаёт РАЗРЕШЁННЫЙ вход, а не с�
     // Не «равные», а те же самые. Равенство содержимого сегодня ничего не обещает про завтра:
     // два одинаковых объекта — это два места, где значение может разойтись.
     const out = admitted([supported({ id: 'a' }), supported({ id: 'b' })]);
-    expect(out.subscriptions).toHaveLength(2);
-    out.subscriptions.forEach((s, i) => expect(s).toBe(out.bindings[i]!.descriptor));
+    // Хостовый источник + два рыночных. Он идёт первым и binding'а не имеет: требования манифеста
+    // у него нет по построению, а значит и связывать не с чем.
+    expect(out.subscriptions).toHaveLength(3);
+    expect(out.subscriptions[0]).toBe(HOST_SOURCE_DESCRIPTOR);
+    out.subscriptions.slice(1).forEach((s, i) => expect(s).toBe(out.bindings[i]!.descriptor));
   });
 
   it('САМ массив подписок заморожен: push и splice не проходят', () => {
@@ -186,7 +199,8 @@ describe('допуск отдаёт РАЗРЕШЁННЫЙ вход, а не с�
       mutable.push({ subscriptionId: 'sub-подложенная', kind: 'candles', requirementId: 'x' }),
     ).toThrow(TypeError);
     expect(() => mutable.splice(0, 1)).toThrow(TypeError);
-    expect(out.subscriptions).toHaveLength(1);
+    // Хостовый источник + одно рыночное требование.
+    expect(out.subscriptions).toHaveLength(2);
   });
 
   it('массив bindings заморожен тоже', () => {

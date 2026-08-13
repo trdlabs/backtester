@@ -214,6 +214,87 @@ describe('1. reduceOnly ТОЛЬКО сокращает — сверх оста�
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 1b. Исход исполнения обрабатывается ИСЧЕРПЫВАЮЩЕ, но не переигрывается
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('1b. снятие по reduce_only_flat: заявка закрыта, бухгалтерия не тронута', () => {
+  /**
+   * Хост обязан РАЗОБРАТЬ оба исхода `executeFill` и не принимать при этом собственного
+   * экономического решения. Проверяется именно второе: при снятии не появляется ни филла, ни
+   * движения ledger'а — то есть хост не «дорешал» за движок, что раз заявка сработала, то что-то
+   * исполнить всё-таки надо.
+   */
+  const twoReduceOnly = () =>
+    run((e, _c, bar) => {
+      if (e.kind !== 'market.candle.closed') return [];
+      if (bar === 0) return [place({ clientOrderId: 'in', side: 'buy', qtyUsd: 1000 })];
+      if (bar === 2) {
+        return [
+          place({ clientOrderId: 'out1', side: 'sell', qtyUsd: 1000, reduceOnly: true }),
+          place({ clientOrderId: 'out2', side: 'sell', qtyUsd: 1000, reduceOnly: true }),
+        ];
+      }
+      return [];
+    });
+
+  it('снятая заявка НЕ порождает филла и НЕ двигает ledger', async () => {
+    const { record } = await twoReduceOnly();
+    // Вход и один выход. Второй reduceOnly доживает до следующего бара уже при flat.
+    expect(fills(record).map((f) => f.orderId)).toEqual(['in', 'out1']);
+    // Позиция закрыта первым выходом — и снятие второго её не тронуло ни на разряд.
+    expect(record.finalLedger.qty).toBe(0);
+    const afterFirstExit = fills(record)[1]!;
+    expect(record.finalLedger.realizedPnl).toBe(
+      record.journal
+        .filter((j): j is ActorJournalFill => j.kind === 'fill')
+        .reduce((acc, f) => acc, record.finalLedger.realizedPnl),
+    );
+    expect(afterFirstExit.qty).toBeGreaterThan(0);
+  });
+
+  it('снятая заявка доезжает до записи прогона как canceled, а не исчезает', async () => {
+    const { record } = await twoReduceOnly();
+    const canceled = record.orders.find((o) => o.orderId === 'out2');
+    expect(canceled?.terminalState).toBe('canceled');
+  });
+
+  it('причина снятия записана СЛОВОМ ДВИЖКА, а не пересказана хостом', async () => {
+    // Хост не изобретает формулировку: `reduce_only_flat` — значение, вернувшееся из операции.
+    // Без причины `canceled` неотличимо от отмены по команде автора, а это разные факты.
+    const { record } = await twoReduceOnly();
+    const canceled = record.orders.find((o) => o.orderId === 'out2');
+    expect(canceled?.cancelReason).toBe('reduce_only_flat');
+    // У исполнившейся заявки причины снятия НЕТ — поле не заполняется «на всякий случай».
+    expect(record.orders.find((o) => o.orderId === 'out1')?.cancelReason).toBeUndefined();
+  });
+
+  it('автор узнаёт о снятии событием от КАНОНИЧЕСКОГО хостового источника', async () => {
+    const { seen } = await twoReduceOnly();
+    const canceledSeen = seen.find(
+      (s) => s.event.kind === 'order.canceled' && s.event.clientOrderId === 'out2',
+    );
+    expect(canceledSeen).toBeDefined();
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: при живой позиции второй reduceOnly ИСПОЛНЯЕТСЯ', async () => {
+    // Иначе «снимается» зеленело бы у раннера, не исполняющего вторую заявку никогда.
+    const { record } = await run((e, _c, bar) => {
+      if (e.kind !== 'market.candle.closed') return [];
+      if (bar === 0) return [place({ clientOrderId: 'in', side: 'buy', qtyUsd: 4000 })];
+      if (bar === 2) {
+        return [
+          place({ clientOrderId: 'out1', side: 'sell', qtyUsd: 1000, reduceOnly: true }),
+          place({ clientOrderId: 'out2', side: 'sell', qtyUsd: 1000, reduceOnly: true }),
+        ];
+      }
+      return [];
+    });
+    expect(fills(record).map((f) => f.orderId)).toEqual(['in', 'out1', 'out2']);
+    expect(record.finalLedger.qty).toBeGreaterThan(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 2. Цена в событии `fill` — цена ИСПОЛНЕНИЯ
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -381,12 +462,15 @@ describe('3b. ctx.orders.open() — заявка называет свой ви�
     expect(view.price).toBe(50);
     expect(view.status).toBe('accepted');
     expect(view.qtyUsd).toBe(1000);
-    // Нотионал переведён по последней УВИДЕННОЙ цене: 1000 USD при закрытии 100 = 10 базовых.
-    expect(view.qty).toBe(10);
-    expect(view.filledQty).toBe(0);
-    // Остаток заявки ВЫЧИСЛИМ. Прежняя редакция отдавала qty=0, и по контракту это читалось как
-    // «исполнена целиком» — то есть автор видел заявку, которой уже нет.
-    expect(view.qty - view.filledQty).toBeGreaterThan(0);
+    // ЕДИНИЦА ЗАЯВКИ — НОТИОНАЛ (ADR-0013). Остаток вычислим БЕЗ всякой цены, и предикат
+    // частичного исполнения живёт в той же единице.
+    expect(view.filledQtyUsd).toBe(0);
+    expect(view.qtyUsd - view.filledQtyUsd).toBe(1000);
+    // Базовых величин у стоящей заявки НЕТ: цены пересчёта не существует до исполнения, и честный
+    // ответ — не давать числа вовсе. Прежняя редакция подставляла размер по последней увиденной
+    // цене — это и была снятая временная конверсия.
+    expect(view.estimatedQty).toBeUndefined();
+    expect(view.filledQty).toBeUndefined();
     expect(view.createdTs).toBe(timestampUsFromMillis(T0));
   });
 
@@ -400,7 +484,8 @@ describe('3b. ctx.orders.open() — заявка называет свой ви�
     expect(view.type).toBe('stop_market');
     if (view.type !== 'stop_market') throw new Error('вид заявки потерян');
     expect(view.stopPrice).toBe(100_000);
-    expect(view.qty).toBe(10);
+    expect(view.qtyUsd).toBe(1000);
+    expect(view.estimatedQty).toBeUndefined();
   });
 
   it('reduceOnly доезжает до вида заявки', async () => {
@@ -414,7 +499,8 @@ describe('3b. ctx.orders.open() — заявка называет свой ви�
     });
     const view = seen.filter((s) => s.orders.some((o) => o.clientOrderId === 'ro')).pop()!.orders.find((o) => o.clientOrderId === 'ro')!;
     expect(view.reduceOnly).toBe(true);
-    expect(view.qty).toBe(5);
+    expect(view.qtyUsd).toBe(500);
+    expect(view.filledQtyUsd).toBe(0);
   });
 
   it('исполненная заявка ИСЧЕЗАЕТ из открытых', async () => {

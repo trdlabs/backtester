@@ -213,7 +213,12 @@ describe('сквозной actor-прогон на прямом исполнит
     expect(created[0]!.symbol).toBe('BTCUSDT');
     expect(created[0]!.seed).toBe(11);
     // Подписки уехали автору те самые, что разрешил допуск.
-    expect(created[0]!.subscriptions.map((s) => s.requirementId)).toEqual(['req-candles']);
+    // Источники: хостовый КАНОНИЧЕСКИЙ плюс разрешённые рыночные. Правило автора одно и без
+    // исключений — идентификатор конверта всегда есть в этом списке.
+    expect(created[0]!.subscriptions.map((s) => s.kind)).toEqual(['host', 'candles']);
+    expect(
+      created[0]!.subscriptions.filter((s) => s.kind !== 'host').map((s) => s.requirementId),
+    ).toEqual(['req-candles']);
     expect(seen.filter((s) => s.kind === 'market.candle.closed')).toHaveLength(BAR_COUNT);
     // lookback=0 → торговые права с первого события, прогрева нет.
     expect(seen.every((s) => s.readiness === 'ready')).toBe(true);

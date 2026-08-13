@@ -21,6 +21,7 @@ import {
   type Applied,
   type BatchCore,
 } from '@trdlabs/engine';
+import { HOST_SUBSCRIPTION_ID } from '@trdlabs/sdk/research-contract';
 import type {
   ActorCommand,
   ActorPlaceCommand,
@@ -35,22 +36,17 @@ import type {
 export interface ActorOpenOrder {
   readonly clientOrderId: string;
   readonly side: OrderSide;
-  /** Запрошенный нотионал в USD — ПРОСЬБА автора (`ActorPlaceCommand.qtyUsd`). */
-  readonly qtyUsd: number;
   /**
-   * Размер в БАЗОВОЙ валюте, зафиксированный В МОМЕНТ ПОДАЧИ по последней цене, которую автор
-   * УЖЕ ВИДЕЛ (`lastSeenClose`).
+   * Запрошенный нотионал в USD — ПРОСЬБА автора и ЕДИНСТВЕННЫЙ размер, который у заявки есть, пока
+   * она стоит (ADR-0013).
    *
-   * Прежняя редакция откладывала перевод до цены исполнения и до тех пор несла нотионал под именем
-   * `qty` — в том числе внутрь движковой `RestingOrder`, у которой это поле объявлено базовым
-   * размером. Две беды сразу: движок получал число не в своей единице, а `ctx.orders.open()` не мог
-   * назвать размер заявки вовсе и подставлял ноль — по контракту это читается как «исполнена
-   * целиком» (`qty - filledQty === 0`).
-   *
-   * Цена берётся ПОСЛЕДНЯЯ УВИДЕННАЯ АВТОРОМ, а не текущего бара: закрытие бара, который автору
-   * ещё не доставлен, дало бы ему заглянуть вперёд через размер собственной заявки.
+   * Базового размера здесь нет намеренно. Он не существует до цены исполнения, а цена исполнения —
+   * до матча и сдвига на проскальзывание. Прежняя редакция фиксировала его при подаче по последней
+   * увиденной цене и тем самым закрепляла семантику, которой никто не выбирал; временная конверсия
+   * снята вместе с полем `lastSeenClose`, а размер считает движок в момент исполнения
+   * (`executeFill`).
    */
-  readonly qtyBase: number;
+  readonly qtyUsd: number;
   readonly type: 'market' | 'limit' | 'stop_market';
   readonly triggerPrice?: number;
   /** Frontier подачи. Нужен и анти-лукахеду движка, и записи прогона. */
@@ -73,15 +69,6 @@ export interface ActorEngineState {
   readonly readiness: ActorReadiness;
   readonly tradingState: TradingState;
   readonly ledger: Ledger;
-  /**
-   * Последняя цена закрытия, КОТОРУЮ УВИДЕЛ АВТОР, — единица перевода нотионала в базовый размер.
-   *
-   * `null` до первого доставленного бара: перевести нотионал нечем, и подстановка любой цены здесь
-   * была бы выдуманным размером. Структурно это состояние сегодня недостижимо (первое событие
-   * frontier'а 0 — свеча: филлов и таймеров до первой команды взяться неоткуда), поэтому отказ
-   * ниже — защита от будущего frontier'а, начинающегося не со свечи, а не наблюдаемый гейт.
-   */
-  readonly lastSeenClose: number | null;
   readonly openOrders: readonly ActorOpenOrder[];
   readonly timers: readonly ScheduledTimer[];
   /** Заметки команды `annotate` — единственный её эффект, и он обязан быть наблюдаем. */
@@ -104,15 +91,18 @@ export function triggerPriceOf(command: ActorPlaceCommand): number | null {
 /** Событие outbox'а несёт ГОТОВОЕ входное событие: раннеру нечего додумывать по строке `kind`. */
 export interface ActorOutboxPayload {
   readonly event: ActorInputEvent;
-  /** Подписка, от имени которой доставляется каскадное событие (внутренние — служебная подписка). */
+  /**
+   * Источник, от имени которого доставляется событие. У порождённых хостом — КАНОНИЧЕСКИЙ
+   * `HOST_SUBSCRIPTION_ID` контракта (ADR-0012), а не выбранная хостом строка.
+   */
   readonly subscriptionId: string;
 }
 
-/** Идентификатор служебной подписки внутренних событий: они приходят не из ленты. */
-export const INTERNAL_SUBSCRIPTION_ID = 'sub-internal';
-
 function outbox(event: ActorInputEvent, businessTsUs: TimestampUs): OutboxEvent {
-  const payload: ActorOutboxPayload = { event, subscriptionId: INTERNAL_SUBSCRIPTION_ID };
+  // Хостовые события несут канонический идентификатор источника. Прежде здесь стояло придуманное
+  // `'sub-internal'`: значение, которого нет в `ActorInit.subscriptions`, автор обязан был счесть
+  // подложным, а второй хост выбрал бы своё — и один код стратегии повёл бы себя по-разному.
+  const payload: ActorOutboxPayload = { event, subscriptionId: HOST_SUBSCRIPTION_ID };
   return { kind: event.kind, businessTsUs, payload };
 }
 
@@ -198,14 +188,6 @@ export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState
           if (!Number.isFinite(command.qtyUsd) || command.qtyUsd <= 0) {
             return { ok: false, reason: `place отклонена: qtyUsd обязан быть положительным, получено ${command.qtyUsd}` };
           }
-          if (state.lastSeenClose === null || !(state.lastSeenClose > 0)) {
-            return {
-              ok: false,
-              reason:
-                'place отклонена: нотионал не во что переводить — автору не доставлено ни одной ' +
-                'цены, а подставить её за него хост не вправе',
-            };
-          }
           return { ok: true };
         }
         case 'cancel': {
@@ -237,20 +219,12 @@ export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState
       switch (command.kind) {
         case 'place': {
           const trigger = triggerPriceOf(command);
-          // Инвариант, а не гейт: `validate` уже отвергла команду без увиденной цены. Бросок здесь
-          // означал бы, что `applyBatch` применил невалидированную команду.
-          const mark = state.lastSeenClose;
-          if (mark === null || !(mark > 0)) {
-            throw new Error('actor place: применение без увиденной цены — нарушен порядок validate/apply');
-          }
           const order: ActorOpenOrder = {
             clientOrderId: command.clientOrderId,
             side: command.side,
+            // Нотионал и только он. Базовый размер появится в момент исполнения и посчитает его
+            // движок (`executeFill`) — здесь его не существует, и подставлять нечего.
             qtyUsd: command.qtyUsd,
-            // Нотионал → базовый размер ПО УВИДЕННОЙ ЦЕНЕ и один раз навсегда. Дальше по прогону
-            // движется только цена исполнения; размер заявки от неё не зависит, иначе автор не мог
-            // бы знать, чем он торгует, до того, как это уже произошло.
-            qtyBase: command.qtyUsd / mark,
             type: command.type,
             // `limit` несёт `price`, `stop_market` — `stopPrice`. Разные поля контракта, и путать
             // их нельзя: у стопа лимитной цены нет вовсе.

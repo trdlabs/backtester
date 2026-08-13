@@ -11,13 +11,16 @@ export * from './historical.js';
  *  репозитории тут нет — `verify_083_e1_contract_anchor` был разовой ратификацией 017.3 на стороне
  *  платформы, а не звеном этой цепочки.
  *
- *  083 E1 перевёл на '017.3'; 083 S1 — на '017.4' (актор-контракт). 017.1/017.2/017.3 манифесты
- *  остаются валидными (append-only SUPPORTED_CONTRACT_VERSIONS).
+ *  083 E1 перевёл на '017.3'; 083 S1 — на '017.4' (актор-контракт); 083 S3 — на '017.5'
+ *  (ADR-0012/0013: источники событий закрытым списком, единица заявки — нотионал).
+ *  017.1–017.4 манифесты остаются валидными (append-only SUPPORTED_CONTRACT_VERSIONS), но
+ *  actor-surface под 017.4 больше не покрывается — порог `EVENT_DRIVEN_MIN_CONTRACT_VERSION`
+ *  подвинулся вместе с формой.
  *
  *  Смена этой строки перебазирует КАЖДЫЙ committed result-голден: `runner.ts` кладёт её в
  *  `RunEvidence`, а evidence входит в канонический payload прогона. Двигать её в отрыве от
- *  доказательства миграции (`contract-017-4-migration.test.ts`) нельзя. */
-export const CONTRACT_VERSION = '017.4';
+ *  доказательства миграции (`contract-017-5-migration.test.ts`) нельзя. */
+export const CONTRACT_VERSION = '017.5';
 
 /** The platform's lifted 017 contract version (parity anchor). Root CONTRACT_VERSION must equal it. */
 export { CONTRACT_VERSION as PLATFORM_CONTRACT_VERSION } from './research/catalogs.js';
