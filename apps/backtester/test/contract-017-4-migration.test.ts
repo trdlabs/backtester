@@ -1,7 +1,21 @@
-// Доказательство миграции result-голденов 017.3 → 017.4 (083 S1) — голова цепи.
+// Доказательство миграции result-голденов 017.3 → 017.4 (083 S1) — ИСТОРИЧЕСКОЕ звено.
 //
 // Полная цепь на сегодня:
 //   017.2 --[017-migration]--> 017.3 --[f3-engine-migration]--> Ф3 --[ЭТА КАРТА]--> 017.4
+//        --[017-5-migration]--> 017.5
+//
+// ЗВЕНО ПЕРЕСТАЛО БЫТЬ ГОЛОВОЙ (083 S3), и это меняет два его утверждения, а не одно:
+//
+//   • про ДИСК — файл голдена держит `active` головы, а не этого звена. Прежняя редакция сверяла
+//     диск со своим `active`; утверждение было истинным ровно пока звено было последним;
+//   • про ВХОД — свежий прогон эмитит головную версию, поэтому доказательство нормализует его к
+//     СВОЕЙ эпохе (внутри `proveS1ContractMigration`). Без этого откат `017.4 → 017.3` не совпал
+//     бы ни с одним узлом, и звено молча перестало бы утверждать что-либо: `legacy` сравнялся бы
+//     с `active`, а diff опустел.
+//
+// Само доказательство при этом остаётся ЖИВЫМ, а не сводится к сверке карт: сценарии по-прежнему
+// прогоняются, и равенство «откат одного поля возвращает 017.3-якорь» проверяется на свежих
+// числах. Историческое звено — это про право записи и про эпоху входа, а не про отказ от проверки.
 //
 // Перебазировать замороженный хеш легко и потому опасно: «прогнал, вставил новое значение» прячет
 // любую регрессию, случившуюся в том же коммите. Здесь перебазировка обязана себя доказать.
@@ -29,6 +43,7 @@ import {
   readCommittedGolden,
   structuralDiffPaths,
 } from './helpers/golden-scenarios.js';
+import { assertOwnsGoldenFiles, chainAnchors } from './helpers/migration-chain.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -44,13 +59,8 @@ const hashMap = JSON.parse(
   readFileSync(resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json'), 'utf8'),
 ) as { contract: { from: string; to: string }; goldens: Record<string, Entry> };
 
-/** Предыдущее звено цепи: Ф3, переезд исполнительного ядра на `@trdlabs/engine`. */
-const f3HashMap = JSON.parse(
-  readFileSync(
-    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json'),
-    'utf8',
-  ),
-) as { goldens: Record<string, Entry> };
+/** Чтение карты звена. Передаётся в `chainAnchors`, чтобы у помощника не было доступа к диску. */
+const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
 
 describe('017.3 → 017.4 golden migration proof', () => {
   it('mapping fixture records the ratified version pair', () => {
@@ -77,15 +87,35 @@ describe('017.3 → 017.4 golden migration proof', () => {
       it('the chain is unbroken: this link starts where Ф3 ended', () => {
         // Звено начинается ровно там, где кончилось предыдущее. Без этой сцепки карта могла бы
         // ссылаться на любое значение, и «доказательство» стало бы самоссылкой.
-        expect(hashMap.goldens[scenario.id].legacy).toBe(f3HashMap.goldens[scenario.id].active);
+        const anchors = chainAnchors(REPO_ROOT, scenario.id, readJson);
+        const mine = anchors.findIndex((a) => a.id === '017-4-migration');
+        expect(hashMap.goldens[scenario.id].legacy).toBe(anchors[mine - 1]!.active);
       });
 
-      it('the committed golden on disk IS the 017.4 hash recorded here', async () => {
+      it('the 017.4 hash recorded here is where the NEXT link starts — the disk moved on', async () => {
         const proof = proveS1ContractMigration(await scenario.run());
         expect(proof.activeHash).toBe(hashMap.goldens[scenario.id].active);
+
+        // ЭТО ЗВЕНО БОЛЬШЕ НЕ ГОЛОВА. 083 S3 перебазировал committed-голдены под 017.5, и файл на
+        // диске равен `active` НОВОЙ головы, а не 017.4-хешу. Прежняя редакция сверяла диск со
+        // своим `active` — утверждение, истинное ровно пока звено было последним, и ставшее
+        // неправдой при полностью целой цепи.
+        //
+        // Историческое звено удерживает две вещи: свой `active` есть `legacy` следующего звена, а
+        // на диске лежит `active` головы. Обе берутся из объявленной цепи.
+        const anchors = chainAnchors(REPO_ROOT, scenario.id, readJson);
+        const mine = anchors.findIndex((a) => a.id === '017-4-migration');
+        expect(hashMap.goldens[scenario.id].active).toBe(anchors[mine + 1]!.legacy);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          hashMap.goldens[scenario.id].active,
+          anchors[anchors.length - 1]!.active,
         );
+      });
+
+      it('this link no longer owns the golden files: writing from here is refused', () => {
+        // Право записи выводится из объявленной цепи, а не помнится автором дериватора. Гейт
+        // проверяется ЗДЕСЬ, потому что дериватор запускают руками и редко: отказ, который никто
+        // не исполняет, ничем не отличается от отсутствующего.
+        expect(() => assertOwnsGoldenFiles('017-4-migration')).toThrow(/больше не голова цепи/);
       });
     });
   }

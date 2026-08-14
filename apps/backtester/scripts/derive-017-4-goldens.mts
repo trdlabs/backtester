@@ -1,15 +1,25 @@
 // 083 S1 — перебазировка committed result-голденов под контракт 017.4, ПОД ДОКАЗАТЕЛЬСТВОМ.
 //
-// Голова цепи миграций. Полная цепь на сегодня:
+// ИСТОРИЧЕСКОЕ ЗВЕНО (с 083 S3), режим — ПРОВЕРКА КАРТА-К-КАРТЕ. Полная цепь на сегодня:
 //
 //   017.2 --[derive_goldens.mjs]--> 017.3 --[derive-f3-goldens.mts]--> Ф3 --[ЭТОТ СКРИПТ]--> 017.4
+//        --[derive-017-5-goldens.mts]--> 017.5
+//
+// ЧТО ИЗМЕНИЛОСЬ, КОГДА ЗВЕНО ПЕРЕСТАЛО БЫТЬ ГОЛОВОЙ. Файлы голденов держат `active` головы, а не
+// этого звена, поэтому якорь больше НЕ читается с диска: сравнение с ним сравнивало бы величины
+// разных эпох и докладывало бы дрейф на полностью целой цепи. Якорь берётся из карты предыдущего
+// звена, а замыкание вперёд — из карты следующего.
 //
 // Для каждого сценария скрипт:
-//   1. прогоняет его под 017.4;
-//   2. откатывает в результате ровно одно поле — `evidence.contractVersion` — обратно к 017.3;
-//   3. ТРЕБУЕТ, чтобы хеш этой проекции совпал с тем, что лежит на диске СЕЙЧАС. Не совпал —
-//      скрипт падает и не пишет ничего: значит вместе с версией контракта уехало что-то ещё, и
-//      перебазировка спрятала бы регрессию вместо того, чтобы её показать.
+//   1. прогоняет его и НОРМАЛИЗУЕТ результат к собственной эпохе (внутри `proveS1ContractMigration`);
+//   2. откатывает в нём ровно одно поле — `evidence.contractVersion` — обратно к 017.3;
+//   3. ТРЕБУЕТ, чтобы хеш этой проекции совпал с `active` Ф3-карты, чтобы `active` совпал с
+//      записанным в своей карте, и чтобы он же был `legacy` следующего звена. Не совпало —
+//      скрипт падает: значит вместе с версией контракта уехало что-то ещё.
+//
+// ЗАПИСЬ ОТСЮДА ЗАПРЕЩЕНА и остаётся запрещённой: `--write` доходит до `assertOwnsGoldenFiles` и
+// бросает. Проверочный режим при этом осмыслен и потому сохранён целиком — историческое звено
+// перестаёт владеть файлами, но не перестаёт доказывать свой переход.
 //
 // Почему без проекций, в отличие от двух звеньев выше. Те ведутся на до-Ф3 форме, потому что их
 // якоря заморожены в той эпохе. Здесь якорь — файл голдена, а в нём после Ф3 лежит хеш ПОЛНОГО
@@ -33,7 +43,6 @@ import {
   PRE_S1_CONTRACT_VERSION,
   S1_CONTRACT_VERSION,
   proveS1ContractMigration,
-  readCommittedGolden,
 } from '../test/helpers/golden-scenarios.js';
 import { assertOwnsGoldenFiles } from '../test/helpers/migration-chain.js';
 
@@ -42,6 +51,10 @@ const MAP_PATH = resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migrati
 const F3_MAP_PATH = resolve(
   REPO_ROOT,
   'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json',
+);
+const NEXT_MAP_PATH = resolve(
+  REPO_ROOT,
+  'apps/backtester/test/fixtures/017-5-migration/hash-map.json',
 );
 const WRITE = process.argv.includes('--write');
 
@@ -64,6 +77,11 @@ const f3Map = JSON.parse(readFileSync(F3_MAP_PATH, 'utf8')) as {
   goldens: Record<string, { active: string }>;
 };
 
+/** Следующее звено цепи: 083 S3, бамп 017.4 → 017.5. Его `legacy` обязан быть нашим `active`. */
+const nextMap = JSON.parse(readFileSync(NEXT_MAP_PATH, 'utf8')) as {
+  goldens: Record<string, { legacy: string }>;
+};
+
 const priorMap = (() => {
   try {
     return JSON.parse(readFileSync(MAP_PATH, 'utf8')) as {
@@ -80,34 +98,52 @@ let failed = 0;
 
 for (const scenario of GOLDEN_SCENARIOS) {
   const proof = proveS1ContractMigration(await scenario.run());
-  const committed = readCommittedGolden(REPO_ROOT, scenario.goldenSource);
   const recorded = priorMap?.goldens?.[scenario.id];
 
-  // Повторный прогон после записи: на диске уже новое значение, поэтому якорь берётся из карты.
-  // Без этой ветки скрипт был бы одноразовым и на второй запуск сообщал бы о несуществующем дрейфе.
-  const alreadyRebased = recorded !== undefined && committed === recorded.active;
-  const anchor = alreadyRebased ? recorded.legacy : committed;
-
-  // Цепь обязана быть замкнута ЯВНО: якорь этого звена — то же самое значение, что `active`
-  // предыдущего. Если это перестало быть так, звенья разъехались, и молча переписывать голден
-  // нельзя, даже когда откат сошёлся сам с собой.
+  // ЯКОРЬ БЕРЁТСЯ ИЗ КАРТЫ ПРЕДЫДУЩЕГО ЗВЕНА, А НЕ С ДИСКА. Пока звено было головой, файл голдена
+  // и был его `active`, и сверка с диском имела смысл. С появлением 017.5 на диске лежит `active`
+  // НОВОЙ головы: сравнение с ним сравнивало бы величины разных эпох и давало бы ложный дрейф на
+  // полностью целой цепи.
+  //
+  // Историческое звено проверяется КАРТА-К-КАРТЕ: пришло оттуда, куда пришёл предшественник, и
+  // ушло туда, откуда уходит преемник. Файлов голденов оно не касается вовсе.
   const f3Active = f3Map.goldens?.[scenario.id]?.active;
-  const chained = f3Active !== undefined && anchor === f3Active;
+  const anchor = f3Active;
+  const chained = anchor !== undefined;
 
-  const equivalent = proof.legacyHash === anchor;
+  // Замыкание ВПЕРЁД: `active` этого звена обязан быть `legacy` следующего. Без него звено могло
+  // бы «доказать» переход, который в цепи никем не подхвачен.
+  const nextLegacy = nextMap.goldens?.[scenario.id]?.legacy;
+
+  const equivalent = anchor !== undefined && proof.legacyHash === anchor;
   const onlyVersion =
     proof.diffPaths.length > 0 &&
     proof.diffPaths.every((p) => p.endsWith('/evidence/contractVersion'));
 
-  console.log(`${scenario.id}:${alreadyRebased ? ' (already rebased — verifying against the map)' : ''}`);
-  console.log(`  pre-S1 anchor : ${anchor}`);
-  console.log(`  rolled back   : ${proof.legacyHash} ${equivalent ? '✓ equivalent' : '✗ DRIFTED'}`);
-  console.log(`  new active    : ${proof.activeHash}`);
-  console.log(`  diffPaths     : ${proof.diffPaths.join(', ') || '(none)'}`);
+  console.log(`${scenario.id}: (historical link — verifying map-to-map, goldens untouched)`);
+  console.log(`  anchor (Ф3 active) : ${anchor ?? '(нет записи)'}`);
+  console.log(`  rolled back        : ${proof.legacyHash} ${equivalent ? '✓ equivalent' : '✗ DRIFTED'}`);
+  console.log(`  active             : ${proof.activeHash}`);
+  console.log(`  next link legacy   : ${nextLegacy ?? '(нет записи)'}`);
+  console.log(`  diffPaths          : ${proof.diffPaths.join(', ') || '(none)'}`);
 
   if (!chained) {
     console.error(
-      `  ✗ ${scenario.id}: якорь ${anchor} != active Ф3-карты ${f3Active ?? '(нет записи)'} — цепь миграций разорвана`,
+      `  ✗ ${scenario.id}: у Ф3-карты нет записи сценария — цепь миграций разорвана назад`,
+    );
+    failed += 1;
+    continue;
+  }
+  if (recorded !== undefined && proof.activeHash !== recorded.active) {
+    console.error(
+      `  ✗ ${scenario.id}: active ${proof.activeHash} != записанного в карте ${recorded.active} — звено сдвинулось`,
+    );
+    failed += 1;
+    continue;
+  }
+  if (nextLegacy !== proof.activeHash) {
+    console.error(
+      `  ✗ ${scenario.id}: active ${proof.activeHash} != legacy следующего звена ${nextLegacy ?? '(нет записи)'} — цепь миграций разорвана вперёд`,
     );
     failed += 1;
     continue;
@@ -160,9 +196,9 @@ if (!WRITE) {
   process.exit(0);
 }
 
-// Сегодня это звено — голова, и проверка проходит. Она стоит здесь не «на всякий случай»: когда
-// цепь вырастет ещё раз, достаточно будет дописать строку в MIGRATION_CHAIN, и этот скрипт начнёт
-// отказываться от записи файлов САМ, без правки своего кода. Ровно того механизма не хватало
+// ЗДЕСЬ ЭТОТ ВЫЗОВ ТЕПЕРЬ БРОСАЕТ, и именно ради этого он и был поставлен заранее. Цепь выросла на
+// звено 017-5, право записи перешло к нему — а код этого скрипта править не пришлось: владелец
+// выводится из MIGRATION_CHAIN, а не помнится автором. Ровно того механизма не хватало
 // derive-f3-goldens, и он молча откатывал голдены на эпоху назад.
 assertOwnsGoldenFiles('017-4-migration');
 

@@ -59,7 +59,15 @@
 // поток диспетчеризации со своей проекцией и своими гардами (`timeline.ts`). Он не расширяет
 // legacy-форму и потому ничего в ней не двигает.
 
-import type { CloseAnnotation, Fill, FillSide, Ledger, OrderState, RiskDecision } from '@trdlabs/engine';
+import type {
+  CloseAnnotation,
+  Fill,
+  FillOutcome,
+  FillSide,
+  Ledger,
+  OrderState,
+  RiskDecision,
+} from '@trdlabs/engine';
 import type { ActorSubscriptionDescriptor, TimestampUs } from '@trdlabs/sdk/research-contract';
 
 import type { ActorTimeline } from './timeline.js';
@@ -106,13 +114,19 @@ export interface ActorOrderRecord {
   readonly intent: 'open' | 'close' | 'add';
   readonly terminalState: OrderState;
   /**
-   * Причина СНЯТИЯ заявки хостом — слово движка (`reduce_only_flat`), а не пересказ хоста.
+   * Причина СНЯТИЯ заявки хостом — слово движка, а не пересказ хоста.
    *
    * Присутствует ⟺ заявку снял хост, а не автор. Без неё «canceled» в записи неотличимо от отмены
    * по команде автора, а это разные факты: один означает решение стратегии, другой — что рынок
    * ушёл из-под заявки.
+   *
+   * ТИП ВЫВЕДЕН ИЗ `canceled`-ЧЛЕНА `FillOutcome`, а не объявлен `string` и не скопирован именем
+   * союза. Разница проверяемая: `string` принял бы любое слово, включая пересказ хоста и опечатку,
+   * а копия имени пережила бы РАСШИРЕНИЕ союза молча — движок 0.17.0 добавил второе слово к
+   * прежнему единственному, и запись, объявленная старым союзом, продолжала бы компилироваться,
+   * теряя новую причину на границе. Здесь источник один: что вернул `executeFill`, то и записано.
    */
-  readonly cancelReason?: string;
+  readonly cancelReason?: Extract<FillOutcome, { readonly kind: 'canceled' }>['reason'];
   readonly mode?: 'dca' | 'scale_in';
   readonly closeFraction?: number;
   readonly origin?: 'protection';

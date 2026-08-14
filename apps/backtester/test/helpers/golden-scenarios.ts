@@ -200,15 +200,55 @@ export function projectToLegacyContractVersion(payload: unknown): unknown {
 }
 
 /**
+ * Эпохи контракта В ПОРЯДКЕ ПОЯВЛЕНИЯ. Нормализация свежего прогона к прошлой эпохе идёт ПО ЭТОЙ
+ * цепи, звено за звеном.
+ *
+ * Список объявлен ОДИН раз и именно как список, а не как пара «откуда/куда» внутри нормализатора.
+ * Причина проверена дорого: пока нормализация была одним шагом `017.4 → 017.3`, бамп до 017.5
+ * оборвал её молча — свежий прогон перестал совпадать с `from`, проекция возвращала payload
+ * нетронутым, и ТРИ исторических звена разом потеряли свои якоря. Здесь следующий бамп — одна
+ * строка в этом массиве, и ни одно доказательство править не нужно.
+ */
+const CONTRACT_EPOCHS: readonly string[] = [
+  LEGACY_CONTRACT_VERSION,
+  ACTIVE_CONTRACT_VERSION,
+  S1_CONTRACT_VERSION,
+  S3_CONTRACT_VERSION,
+];
+
+/**
+ * Откатить `evidence.contractVersion` свежего прогона вниз по цепи эпох до `epoch`.
+ *
+ * Спуск ПОШАГОВЫЙ, а не одним прыжком «голова → цель». Разница не косметическая: прыжок
+ * сопоставляется только с головной версией и оставил бы нетронутым payload, замороженный на
+ * промежуточной эпохе, — то есть ровно те исторические якоря, ради которых нормализация и нужна.
+ * Идемпотентна: узел, уже стоящий на целевой версии, ни с одним шагом не совпадёт.
+ */
+export function normalizeContractVersionTo(payload: unknown, epoch: string): unknown {
+  const target = CONTRACT_EPOCHS.indexOf(epoch);
+  if (target < 0) {
+    throw new Error(
+      `normalizeContractVersionTo: эпоха '${epoch}' не объявлена в CONTRACT_EPOCHS ` +
+        `(${CONTRACT_EPOCHS.join(' → ')}). Нормализовать к необъявленной версии нельзя: ` +
+        `спуск не знал бы, через какие звенья идти.`,
+    );
+  }
+  let out = payload;
+  for (let i = CONTRACT_EPOCHS.length - 1; i > target; i -= 1) {
+    out = projectContractVersion(out, CONTRACT_EPOCHS[i]!, CONTRACT_EPOCHS[i - 1]!);
+  }
+  return out;
+}
+
+/**
  * Нормализация свежего прогона к эпохе 017.3 — общий вход обоих ИСТОРИЧЕСКИХ доказательств.
  *
- * Их якоря заморожены тогда, когда в evidence стояла 017.3. Свежий прогон эмитит 017.4, и без
- * нормализации каждый такой якорь уезжал бы вместе с версией при каждом следующем бампе — то есть
- * звенья цепи протухали бы молча, продолжая «проходить». Идемпотентна: payload, уже стоящий на
- * 017.3, не меняется (сопоставление идёт по `from`).
+ * Их якоря заморожены тогда, когда в evidence стояла 017.3. Свежий прогон эмитит головную версию
+ * цепи, и без нормализации каждый такой якорь уезжал бы вместе с версией при каждом следующем
+ * бампе. Идемпотентна: payload, уже стоящий на 017.3, не меняется.
  */
 export function atPreS1Contract(payload: unknown): unknown {
-  return projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
+  return normalizeContractVersionTo(payload, PRE_S1_CONTRACT_VERSION);
 }
 
 /** Все JSON-pointer пути, по которым два canonical payload'а различаются. */
@@ -276,12 +316,25 @@ export function proveContractVersionMigration(payload: unknown): MigrationProof 
  * Совпал — значит весь payload, кроме одной строки версии, байт-в-байт прежний.
  */
 export function proveS1ContractMigration(payload: unknown): MigrationProof {
-  const legacyPayload = projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
+  // 083 S3: это звено БОЛЬШЕ НЕ ГОЛОВА, и его вход нормализуется к собственной эпохе — ровно по
+  // той же причине, по которой нормализуются два звена выше. Оба якоря звена (`legacy` = 017.3,
+  // `active` = 017.4) заморожены тогда, когда свежий прогон эмитил 017.4; теперь он эмитит 017.5,
+  // и без нормализации откат `017.4 → 017.3` не совпал бы НИ С ОДНИМ узлом. Проекция вернула бы
+  // payload нетронутым, `legacyHash` сравнялся бы с `activeHash`, а diff опустел — то есть звено
+  // не «немного ошиблось бы», а перестало утверждать что-либо вовсе.
+  //
+  // Нормализация стоит ЗДЕСЬ, а не у вызывающих: так её нельзя забыть ни в тесте, ни в дериваторе.
+  const atOwnEpoch = normalizeContractVersionTo(payload, S1_CONTRACT_VERSION);
+  const legacyPayload = projectContractVersion(
+    atOwnEpoch,
+    S1_CONTRACT_VERSION,
+    PRE_S1_CONTRACT_VERSION,
+  );
   return {
     id: '',
-    activeHash: contentRef(payload),
+    activeHash: contentRef(atOwnEpoch),
     legacyHash: contentRef(legacyPayload),
-    diffPaths: structuralDiffPaths(legacyPayload, payload),
+    diffPaths: structuralDiffPaths(legacyPayload, atOwnEpoch),
   };
 }
 
