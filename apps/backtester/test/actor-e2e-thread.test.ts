@@ -62,10 +62,48 @@ const DATASET = 'actor-thread-1m';
 const FROM = '2023-11-14T22:13:00.000Z';
 const TO = '2023-11-14T22:33:00.000Z';
 
+interface ReaderFixture {
+  readonly candleVenue?: string;
+  readonly rows: readonly {
+    readonly minute_ts: number;
+    readonly open: number;
+    readonly high: number;
+    readonly low: number;
+    readonly close: number;
+  }[];
+}
+
+/** Та же фикстура, что кормит очередь: один источник на обе дороги, расходиться нечему. */
+const readFixture = (): ReaderFixture =>
+  JSON.parse(
+    readFileSync(resolve(HERE, `../fixtures/candles/${DATASET}.json`), 'utf8'),
+  ) as ReaderFixture;
+
+const fixtureVenue = (): string => {
+  const declared = readFixture().candleVenue;
+  if (declared === undefined) throw new Error(`фикстура ${DATASET} не объявляет candleVenue`);
+  return declared;
+};
+
+const fixtureBars = () =>
+  readFixture().rows.map((r) => ({
+    ts: r.minute_ts,
+    open: r.open,
+    high: r.high,
+    low: r.low,
+    close: r.close,
+    volume: 0,
+  }));
+
 async function runThroughQueue(
   runId: string,
   opts: { readonly barLoopThread: boolean },
-): Promise<{ status: string; terminalCode: string | null }> {
+): Promise<{
+  status: string;
+  terminalCode: string | null;
+  issueCodes: readonly string[];
+  firstMessage: string;
+}> {
   __resetTapeCachesForTest();
   const bundle = loadBundle('event-driven-probe.bundle.json');
   const app = await buildTestApp(
@@ -100,7 +138,16 @@ async function runThroughQueue(
     expect(await app.drain()).toBe(1);
     const row = await app.store.get(runId);
     expect(row, `строка ${runId} не найдена`).toBeDefined();
-    return { status: row!.status, terminalCode: row!.terminalCode ?? null };
+    // `terminalCode` — ГРУБАЯ величина: `validation_error` склеивает несовместимые причины отказа.
+    // Строить на нём утверждение о том, ЧТО именно закрыло путь, нельзя — ровно эту ошибку и
+    // допустила первая редакция файла. Различает причины только `terminalIssues`.
+    const issues = (row!.terminalIssues ?? []) as readonly { code: string; message: string }[];
+    return {
+      status: row!.status,
+      terminalCode: row!.terminalCode ?? null,
+      issueCodes: issues.map((i) => i.code),
+      firstMessage: issues[0]?.message ?? '',
+    };
   } finally {
     await app.dispose();
   }
@@ -142,6 +189,19 @@ describe('БЛОКЕР: риск-контур закрывает actor-путь 
   });
 });
 
+// РИСК-БЛОКЕР ЗДЕСЬ НЕ ДОКАЗЫВАЕТСЯ, и это осознанно.
+//
+// Прод-дорога до него не доходит: путь закрывается раньше, на способности исполнителя (см. набор
+// ниже). Доказать его можно только через actor-capable исполнителя — но такое доказательство
+// утверждало бы «DEFAULT_RISK отвергает actor-прогон», то есть ровно то состояние, которое
+// СЛЕДУЮЩИЙ подсрез S3 (actor-семантика DEFAULT_RISK: clamp/reject/riskDecisions) отменяет по
+// построению. Проба прожила бы один срез и была бы удалена вместе с ним.
+//
+// Поэтому доказательство переносится в risk-срез, где оно становится ПОЗИТИВНЫМ: не «отвергает»,
+// а «клампит, отклоняет и записывает riskDecisions». Там же `actor-e2e-direct` обязан переехать с
+// самодельного NO_LIMITS на настоящий DEFAULT_RISK — сейчас он зелен на конфигурации, в которую
+// прод попасть не может.
+
 describe.runIf(THREAD_SEAM_LOADS)('прод-дорога: обе транспортные ветки дают ОДИН исход', () => {
   // Паритет по терминальному исходу проверяется на том состоянии, в котором система находится
   // СЕЙЧАС. Он содержателен и в таком виде: транспорт не вправе менять исход, и если поток начнёт
@@ -155,9 +215,16 @@ describe.runIf(THREAD_SEAM_LOADS)('прод-дорога: обе транспо�
     expect(thread).toEqual(direct);
   });
 
-  it('исход именно тот, который предписан блокером, а не любой отказ', async () => {
-    // Без этой пробы «одинаково» прошло бы и на двух одинаково СЛОМАННЫХ дорогах.
+  it('причина — ИМЕННО отсутствие actor lifecycle у исполнителя, а не что-нибудь', async () => {
+    // ЭТА ПРОБА ЗАМЕНЯЕТ ВАКУУМНУЮ. Прежняя редакция утверждала `terminalCode: 'validation_error'`
+    // и называла это «исход, предписанный риск-блокером». Утверждение проходило и не значило
+    // ничего: `validation_error` склеивает несовместимые причины, а риск-контур до проверки даже
+    // не доходит — путь закрывается РАНЬШЕ, на способности исполнителя.
     const thread = await runThroughQueue('thr-blocked', { barLoopThread: true });
-    expect(thread).toEqual({ status: 'failed', terminalCode: 'validation_error' });
+    expect(thread.issueCodes).toEqual(['unsupported_lifecycle']);
+    expect(thread.firstMessage).toMatch(/не умеет lifecycle актора/);
+    // Риск здесь НЕ участвует — и это проверяется явно, чтобы проба не начала однажды доказывать
+    // чужую причину под тем же грубым кодом.
+    expect(thread.firstMessage).not.toMatch(/профиль риска/);
   });
 });
