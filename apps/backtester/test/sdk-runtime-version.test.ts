@@ -11,5 +11,5 @@ import { SDK_VERSION } from '@trdlabs/sdk';
 import { expect, test } from 'vitest';
 
 test('в рантайме загружена ожидаемая версия @trdlabs/sdk', () => {
-  expect(SDK_VERSION).toBe('0.15.0');
+  expect(SDK_VERSION).toBe('0.19.0');
 });

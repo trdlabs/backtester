@@ -35,6 +35,9 @@ export const ACTIVE_CONTRACT_VERSION = '017.3';
 export const PRE_S1_CONTRACT_VERSION = '017.3';
 /** Версия, введённая 083 S1 вместе с актор-контрактом. Её эмитит свежий прогон. */
 export const S1_CONTRACT_VERSION = '017.4';
+/** Голова цепи после Д3: контракт с preflight. Звено `017.4 → 017.5`. */
+export const PRE_D3_CONTRACT_VERSION = '017.4';
+export const D3_CONTRACT_VERSION = '017.5';
 
 /** Один воспроизводимый сценарий, чей canonical payload заморожен как golden. */
 export interface GoldenScenario {
@@ -202,6 +205,21 @@ export function atPreS1Contract(payload: unknown): unknown {
   return projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
 }
 
+/**
+ * Нормализация свежего прогона к эпохе 017.4 — общий вход ОБОИХ исторических звеньев.
+ *
+ * Та же причина, по которой существует `atPreS1Contract`, только на одно звено позже. Якоря
+ * звеньев 017.2→017.3 и 017.3→017.4 заморожены в эпохах, где в evidence стояли 017.3 и 017.4;
+ * свежий прогон эмитит 017.5, и без этой нормализации оба якоря уехали бы вместе с версией, а
+ * звенья продолжали бы «проходить», ничего не утверждая.
+ *
+ * Стоит ЗДЕСЬ, а не у вызывающих: так её нельзя забыть ни в тесте, ни в дериваторе. Снятие
+ * нормализации обязано КРАСНИТЬ старые звенья — это проверяется отдельно.
+ */
+export function atPreD3Contract(payload: unknown): unknown {
+  return projectContractVersion(payload, D3_CONTRACT_VERSION, PRE_D3_CONTRACT_VERSION);
+}
+
 /** Все JSON-pointer пути, по которым два canonical payload'а различаются. */
 export function structuralDiffPaths(a: unknown, b: unknown, base = ''): readonly string[] {
   if (Array.isArray(a) && Array.isArray(b)) {
@@ -242,7 +260,7 @@ export function proveContractVersionMigration(payload: unknown): MigrationProof 
   // прогон эмитит 017.4, и без нормализации оба хеша уехали бы вместе с версией, а звено молча
   // перестало бы что-либо доказывать. Нормализация стоит ЗДЕСЬ, а не у вызывающих: так её нельзя
   // забыть ни в тесте, ни в дериваторе.
-  const activePayload = projectToPreF3Shape(atPreS1Contract(payload));
+  const activePayload = projectToPreF3Shape(atPreS1Contract(atPreD3Contract(payload)));
   const legacyPayload = projectToLegacyContractVersion(activePayload);
   return {
     id: '',
@@ -267,7 +285,24 @@ export function proveContractVersionMigration(payload: unknown): MigrationProof 
  * Совпал — значит весь payload, кроме одной строки версии, байт-в-байт прежний.
  */
 export function proveS1ContractMigration(payload: unknown): MigrationProof {
-  const legacyPayload = projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
+  // Нормализация к 017.4 — по той же причине, что и в звене выше: якоря этого
+  // звена заморожены в эпохе 017.4, а свежий прогон эмитит 017.5.
+  const atS1 = atPreD3Contract(payload);
+  const legacyPayload = projectContractVersion(atS1, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
+  return {
+    id: '',
+    activeHash: contentRef(atS1),
+    legacyHash: contentRef(legacyPayload),
+    diffPaths: structuralDiffPaths(legacyPayload, atS1),
+  };
+}
+
+/**
+ * Звено Д3: `017.4 → 017.5`. Свежий payload И ЕСТЬ active — нормализовать его здесь нечем и
+ * незачем, эта версия и есть голова цепи.
+ */
+export function proveD3ContractMigration(payload: unknown): MigrationProof {
+  const legacyPayload = atPreD3Contract(payload);
   return {
     id: '',
     activeHash: contentRef(payload),
@@ -300,7 +335,10 @@ export function proveEngineExtraction(payload: unknown): ExtractionProof {
   // `legacy`, то есть исторический якорь донорского значения, и доказательство эквивалентности
   // извлечения превратилось бы в самоссылку. Нормализация внутри функции по той же причине, что
   // и у соседа: вызывающий не должен иметь возможности её пропустить.
-  const at0173 = atPreS1Contract(payload);
+  // Д3: и к 017.4 — по той же причине на одно звено позже. Свежий прогон эмитит 017.5, и без
+  // этого шага уехали бы ОБА якоря Ф3-звена, включая исторический `legacy`. Исторические хеши
+  // Ф3 при этом НЕ меняются — меняется только то, к какой эпохе приводится свежий payload.
+  const at0173 = atPreS1Contract(atPreD3Contract(payload));
   const preF3Payload = projectToPreF3Shape(at0173);
   return {
     activeHash: contentRef(at0173),

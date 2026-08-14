@@ -32,6 +32,7 @@ export const MIGRATION_CHAIN: readonly MigrationLink[] = [
   { id: '017-migration', map: 'apps/backtester/test/fixtures/017-migration/hash-map.json' },
   { id: 'f3-engine-migration', map: 'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json' },
   { id: '017-4-migration', map: 'apps/backtester/test/fixtures/017-4-migration/hash-map.json' },
+  { id: '017-5-migration', map: 'apps/backtester/test/fixtures/017-5-migration/hash-map.json' },
 ];
 
 /** Голова цепи — единственное звено, которому разрешено писать в файлы голденов. */
