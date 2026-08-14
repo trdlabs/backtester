@@ -46,6 +46,15 @@ import type { BarLoopThreadPool } from '../engine/thread/thread-pool';
 import type { SandboxExecutorDeps } from '../engine/sandbox/sandbox-executor';
 import { toOverlaySummary } from './overlay-summary';
 import { RunnerError } from '../runner/errors';
+import {
+  AdmissionRefusedError,
+  admitWindow,
+  admissionEvidence,
+  confirmWindowStillAdmitted,
+  type AdmissionDecision,
+  type AdmissionEvidence,
+  type AdmissionSource,
+} from '../data/availability-admission';
 import { boundedErrorDetail } from './bounded-error-detail.js';
 import { RealDataUnavailableError } from '../data/rows-data-port';
 import { TrustedMomentumExecutor, type ModuleExecutor } from '../runner/module-executor';
@@ -425,7 +434,10 @@ interface Finalized {
  * of the per-branch tail — momentum uses persistRunArtifacts + the inline momentum summary; overlay
  * and strategy use persistOverlayArtifacts + toOverlaySummary. `resultHash = contentRef(payload)`.
  */
-async function finalizeResult(
+// Экспортируется РАДИ ГЕЙТА: проверять, что допуск доезжает до результата,
+// иначе пришлось бы поднимать весь путь воркера — и проверялся бы он, а не
+// то, что evidence прогона несёт допуск.
+export async function finalizeResult(
   deps: WorkerDeps,
   engine: Engine,
   payload: unknown,
@@ -433,6 +445,7 @@ async function finalizeResult(
   datasetFingerprint: string,
   evidenceRef?: ArtifactReference,
   promotion?: PromotionResult,
+  admission?: AdmissionEvidence,
 ): Promise<Finalized> {
   const resultHash = contentRef(payload);
   if (engine === 'momentum') {
@@ -450,6 +463,7 @@ async function finalizeResult(
         datasetRef: claimed.datasetRef,
         datasetFingerprint,
         ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
+        ...(admission !== undefined ? { admission } : {}),
       },
       resultHash,
     };
@@ -466,6 +480,11 @@ async function finalizeResult(
     claimed.bundleHash,
     evidenceRef,
   );
+  // Допуск дописывается ПОСЛЕ проекции: `toOverlaySummary` строит evidence из
+  // outcome, а допуск — свойство прогона, а не его исхода.
+  if (admission !== undefined) {
+    summary = { ...summary, evidence: { ...summary.evidence, admission } };
+  }
   // E2 (advisory, flag-gated): record this run as a trial and attach the Deflated Sharpe / N context.
   // Runs AFTER resultHash is fixed; trialContext lives on the summary projection ONLY (never hashed),
   // so flag-OFF is byte-identical. Momentum has no equity curve → not laddered.
@@ -708,6 +727,12 @@ interface Materialized {
   /** E4b: server-derived dataset timeframe, frozen alongside coverage (same descriptor). The completeness
    *  guard builds its grid from this and requires request.timeframe to equal it. */
   datasetTimeframe?: string | null;
+  /**
+   * Д3 3.3в — решение первой проверки допуска. `undefined`, когда источник данных
+   * допуска не поддерживает (мок, файловая фикстура): у них нет доступного
+   * интервала, и требовать его значило бы запретить локальные прогоны вовсе.
+   */
+  admission?: AdmissionDecision;
 }
 
 /**
@@ -716,7 +741,57 @@ interface Materialized {
  * usage is identical. Called ONCE before any sandbox/engine work so the dedup gate can key on the
  * datasetFingerprint before deciding to run the engine.
  */
-async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materialized> {
+/**
+ * Д3 3.3в — допуск периода. Источник, умеющий preflight, обязан его пройти.
+ *
+ * Порт БЕЗ preflight (мок, файловая фикстура) допуск не проходит вовсе: у него
+ * нет доступного интервала, и требовать его значило бы запретить локальные
+ * прогоны. Различие наблюдаемо в evidence: там, где допуска не было, нет и
+ * блока `admission`, — а не «допуск прошёл, просто пустой».
+ */
+function admissionSourceOf(dataPort: BacktesterDataPort): AdmissionSource | undefined {
+  const maybe = dataPort as Partial<AdmissionSource>;
+  return typeof maybe.preflight === 'function' ? (maybe as AdmissionSource) : undefined;
+}
+
+/** Период задания, переписанный на EFFECTIVE. Ниже по коду окно ровно одно. */
+function withEffectivePeriod(claimed: JobRow, decision: AdmissionDecision): JobRow {
+  return {
+    ...claimed,
+    request: {
+      ...claimed.request,
+      period: {
+        from: new Date(decision.effectiveFromMs).toISOString(),
+        to: new Date(decision.effectiveToMs).toISOString(),
+      },
+    },
+  };
+}
+
+export async function materializeFor(deps: WorkerDeps, claimedIn: JobRow): Promise<Materialized> {
+  // ПЕРВАЯ ПРОВЕРКА идёт до всего: загружать данные, на которые может не быть
+  // права, нельзя. Дальше по функции живёт ТОЛЬКО effective-период — и лента, и
+  // ключ кэша, и engineRequest берут его, потому что переписан сам `claimed`.
+  const source = admissionSourceOf(deps.dataPort);
+  // FAIL-CLOSED. Источник, объявивший себя настоящим, обязан уметь допуск. Его
+  // отсутствие — не «платформа разрешила», а «платформа не успела вынести
+  // решение»: дефект проводки или несовместимый SDK. Молчаливый пропуск здесь
+  // означал бы прогон вообще без допуска, и снаружи он выглядел бы законным.
+  //
+  // Код отдельный от `rejected_admission` намеренно: там решение вынесено и оно
+  // отрицательное, здесь решения нет вовсе, и чинят это разные люди.
+  if (deps.dataPort.requiresAdmission === true && source === undefined) {
+    throw new RunnerError(
+      'admission_unavailable',
+      'источник данных объявлен настоящим, но не умеет preflight — допуск периода невозможен',
+    );
+  }
+  let admission: AdmissionDecision | undefined;
+  if (source !== undefined) {
+    const { tsFrom, tsTo } = periodMs(claimedIn.request.period);
+    admission = await admitWindow(source, tsFrom, tsTo);
+  }
+  const claimed = admission === undefined ? claimedIn : withEffectivePeriod(claimedIn, admission);
   const engine = engineOf(claimed);
   const runId = claimed.runId;
   if (engine === 'overlay' || engine === 'strategy') {
@@ -783,6 +858,7 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
     }
     return {
       engine, datasetFingerprint: dsFingerprint, engineRequest, marketTape,
+      ...(admission !== undefined ? { admission } : {}),
       ...(materialization.columns !== undefined ? { columns: materialization.columns } : {}),
       ...(coverage !== undefined ? { coverage } : {}),
       ...(datasetTimeframe !== undefined ? { datasetTimeframe } : {}),
@@ -822,7 +898,7 @@ async function materializeFor(deps: WorkerDeps, claimed: JobRow): Promise<Materi
     seed: claimed.effectiveSeed,
     metrics: claimed.request.metrics,
   };
-  return { engine, datasetFingerprint: dsFingerprint, engineRequest, dataset };
+  return { engine, datasetFingerprint: dsFingerprint, engineRequest, dataset, ...(admission !== undefined ? { admission } : {}) };
 }
 
 /** Claim and run one queued job. Returns the (now terminal) row, or undefined if the queue was empty. */
@@ -901,6 +977,25 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
     const engine = materialized.engine;
     if (deps.obs) tMaterialized = deps.clock();
 
+    // ВТОРАЯ ПРОВЕРКА ДОПУСКА. Стоит ДО dedup-гейта, и это не перестраховка.
+    //
+    // Попадание в кэш выглядит как «ничего не считаем», но на деле оно
+    // ПЕРЕШТАМПОВЫВАЕТ кэшированный шаблон под новый `runId` и вызывает
+    // `finalizeResult` — то есть создаёт РЕЗУЛЬТАТ НОВОГО логического прогона.
+    // Пропустив проверку на этом пути, мы выдали бы новый прогон на данных, право
+    // на которые могло быть отозвано, — и он выглядел бы законным.
+    //
+    // Место при этом остаётся правильным по существу: данные уже загружены
+    // (`materializeFor` отработал), а ни один результат ещё не создан.
+    let admissionEv: AdmissionEvidence | undefined;
+    if (materialized.admission !== undefined) {
+      const src = admissionSourceOf(deps.dataPort)!;
+      const confirmation = await confirmWindowStillAdmitted(src, materialized.admission);
+      admissionEv = admissionEvidence(materialized.admission, confirmation);
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ evt: 'run_admitted', runId, admission: admissionEv }));
+    }
+
     // ── DEDUP GATE ────────────────────────────────────────────────────────────
     // dedup engages only when the kill-switch is on AND a cache is wired.
     // Evidence runs (curatedBaselineRef set) MUST always compute fresh: the signed evidenceRef is produced
@@ -970,7 +1065,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
             // in the pre-gate to preserve strategy validation error-taxonomy — the accepted partial;
             // momentum HITs have no bundle and skip everything.)
             const payload = restamp(template, runId);
-            finalized = await finalizeResult(deps, engine, payload, claimed, dsFingerprint);
+            finalized = await finalizeResult(deps, engine, payload, claimed, dsFingerprint, undefined, undefined, admissionEv);
             dedupedFrom = hit.computeIdentity;
             dedupClass = 'hit';
           } else {
@@ -1049,7 +1144,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       }
       assertSandboxClean(sandboxRouter); // P0-1: crashed sandbox must fail, never finalize completed
       payload = outcome;
-      finalized = await finalizeResult(deps, 'overlay', outcome, claimed, dsFingerprint);
+      finalized = await finalizeResult(deps, 'overlay', outcome, claimed, dsFingerprint, undefined, undefined, admissionEv);
     } else if (claimed.request.engine === 'strategy') {
       // ===== STRATEGY PATH — kind:'strategy' lifecycle-bundle via sandbox (closes gap PR #57) =====
       // Pre-flight guards (bundle present, manifest.kind, moduleRef match) already ran above.
@@ -1204,7 +1299,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       }
 
       payload = outcome;
-      finalized = await finalizeResult(deps, 'strategy', outcome, claimed, dsFingerprint, evidenceRef, promotionResult);
+      finalized = await finalizeResult(deps, 'strategy', outcome, claimed, dsFingerprint, evidenceRef, promotionResult, admissionEv);
     } else {
       // ===== MOMENTUM PATH — unchanged (golden eff10116… must not move) =====
       executor = await workerInternals.executorFor(deps, claimed);
@@ -1230,7 +1325,7 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
         ...(claimed.bundleHash !== undefined ? { bundleHash: claimed.bundleHash } : {}),
       });
       payload = result;
-      finalized = await finalizeResult(deps, 'momentum', result, claimed, dsFingerprint);
+      finalized = await finalizeResult(deps, 'momentum', result, claimed, dsFingerprint, undefined, undefined, admissionEv);
     }
 
       if (deps.obs) tEngineDone = deps.clock();
@@ -1286,7 +1381,16 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
       ...(dedupedFrom !== undefined ? { dedupedFrom } : {}),
     }, deps.lease?.workerId);
   } catch (err) {
-    const code = err instanceof RunnerError
+    // Д3 3.3в: отказ допуска — СВОЙ терминальный код, а не `runner_failure`.
+    //
+    // Retry в воркере идёт по истечению lease, а не по отказу, поэтому терминальный
+    // переход и есть non-retryable: повтор того же периода в тех же условиях дал бы
+    // тот же ответ. Неизвестные 503, таймауты и обрывы транспорта сюда не попадают —
+    // они приходят как `RealDataUnavailableError` и остаются на прежнем пути, где
+    // ретраями занимается SDK-клиент.
+    const code = err instanceof AdmissionRefusedError
+      ? 'rejected_admission'
+      : err instanceof RunnerError
       ? err.code
       : err instanceof RealDataUnavailableError
       ? 'missing_dataset'

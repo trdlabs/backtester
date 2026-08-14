@@ -83,6 +83,9 @@ describe('право записи в файлы голденов', () => {
     // Регрессия 083 S1 ровно здесь: до этого гейта derive-f3-goldens --write успешно откатывал
     // все три голдена в эпоху Ф3.
     expect(() => assertOwnsGoldenFiles('f3-engine-migration')).toThrow(/не голова цепи/);
+    // Прежняя голова стала историческим звеном — и потеряла право записи ТЕМ ЖЕ механизмом,
+    // без правки своего кода. Ради этого реестр и заведён.
+    expect(() => assertOwnsGoldenFiles('017-4-migration')).toThrow(/не голова цепи/);
     expect(() => assertOwnsGoldenFiles('f3-engine-migration')).toThrow(/017-5-migration/);
   });
 

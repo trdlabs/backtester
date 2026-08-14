@@ -1,22 +1,16 @@
-// Доказательство миграции result-голденов 017.4 → 017.5 (083 S3) — голова цепи.
+// Доказательство миграции result-голденов 017.4 → 017.5 (Д3 3.3в).
 //
-// Полная цепь на сегодня:
-//   017.2 --[017-migration]--> 017.3 --[f3-engine-migration]--> Ф3 --[017-4-migration]--> 017.4
-//        --[ЭТА КАРТА]--> 017.5
+// Голова цепи. Утверждает ровно три вещи, и каждая проверяема:
+//   1. `legacy` этого звена — committed-голден ПРЕДЫДУЩЕЙ эпохи: он равен `active` предыдущего
+//      звена, и цепь замкнута явно, а не «по построению». На диске его больше нет — с момента
+//      перебазировки файл содержит `active` ЭТОГО звена. Путать две величины нельзя: ровно на
+//      такой путанице предыдущий дериватор сравнивал проекцию с полным payload'ом;
+//   2. `active` равен свежему 017.5-прогону — и он же лежит в файле голдена;
+//   3. единственное расхождение — `evidence.contractVersion`.
 //
-// Перебазировать замороженный хеш легко и потому опасно: «прогнал, вставил новое значение» прячет
-// любую регрессию, случившуюся в том же коммите. Здесь перебазировка обязана себя доказать.
-//
-// Для каждого голдена: берём СВЕЖИЙ прогон под 017.5, откатываем в нём ровно
-// `evidence.contractVersion` — и требуем, чтобы хеш совпал с тем, что лежал на диске ДО этой
-// миграции. Совпал — значит весь остальной payload байт-в-байт прежний, движок не сдвинулся.
-// Плюс structural diff обязан состоять ТОЛЬКО из путей `…/evidence/contractVersion`: без этого
-// хеш мог бы сойтись случайно, а diff это покажет.
-//
-// В отличие от трёх звеньев выше это ведётся на ПОЛНОМ payload'е, без проекций: на диске лежит
-// хеш полного payload'а, и сравнивать надо величину той же природы. Голова — единственное звено,
-// которому нормализация входа не нужна: свежий прогон уже эмитит её версию.
-
+// Причина сдвига измерена лестницей опубликованных пар engine/SDK (0.10/0.15 → 0.15/0.19): после
+// нормализации версии соседние ступени дают побайтно одинаковый payload. То есть перебазировка
+// вызвана строкой версии, а не дрейфом движка.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -24,10 +18,10 @@ import { fileURLToPath } from 'node:url';
 
 import {
   GOLDEN_SCENARIOS,
-  PRE_S3_CONTRACT_VERSION,
-  S3_CONTRACT_VERSION,
+  PRE_D3_CONTRACT_VERSION,
+  D3_CONTRACT_VERSION,
   projectContractVersion,
-  proveS3ContractMigration,
+  proveD3ContractMigration,
   readCommittedGolden,
   structuralDiffPaths,
 } from './helpers/golden-scenarios.js';
@@ -44,14 +38,11 @@ interface Entry {
 
 const hashMap = JSON.parse(
   readFileSync(resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-5-migration/hash-map.json'), 'utf8'),
-) as {
-  contract: { from: string; to: string };
-  migration: { epic: string; slice: string; cause: string };
-  goldens: Record<string, Entry>;
-};
+) as { contract: { from: string; to: string }; goldens: Record<string, Entry> };
 
-/** Предыдущее звено цепи: 083 S1, бамп контракта 017.3 → 017.4. */
-const priorHashMap = JSON.parse(
+/** Предыдущее звено цепи: 083 S1, бамп контракта 017.3 → 017.4. Ф3 (переезд исполнительного ядра
+ *  на `@trdlabs/engine`) — звено ПЕРЕД ним, а не это. */
+const prevHashMap = JSON.parse(
   readFileSync(
     resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json'),
     'utf8',
@@ -60,45 +51,34 @@ const priorHashMap = JSON.parse(
 
 describe('017.4 → 017.5 golden migration proof', () => {
   it('mapping fixture records the ratified version pair', () => {
-    expect(hashMap.contract).toEqual({ from: PRE_S3_CONTRACT_VERSION, to: S3_CONTRACT_VERSION });
+    expect(hashMap.contract).toEqual({ from: PRE_D3_CONTRACT_VERSION, to: D3_CONTRACT_VERSION });
     expect(Object.keys(hashMap.goldens).sort()).toEqual(GOLDEN_SCENARIOS.map((s) => s.id).sort());
-  });
-
-  it('the fixture names ITS OWN slice, not the one it was copied from', () => {
-    // Звено заводилось копией предыдущего, и метаданные приехали вместе с формой: карта 017.4 →
-    // 017.5 объявляла себя срезом S1. Хеши от этого не портятся — портится ПРОВЕНАНС: запись
-    // «почему голдены сдвинулись» указывала на чужую причину, и читатель, пришедший через год,
-    // получил бы уверенный неверный ответ. Гейт стоит здесь потому, что копирование следующего
-    // звена — самый вероятный способ завести это поле снова.
-    expect(hashMap.migration.epic).toBe('083');
-    expect(hashMap.migration.slice).toBe('S3');
-    expect(hashMap.migration.cause).toMatch(/083 S3/);
   });
 
   for (const scenario of GOLDEN_SCENARIOS) {
     describe(scenario.id, () => {
       it('rolling back evidence.contractVersion reproduces the 017.4 golden exactly', async () => {
-        const proof = proveS3ContractMigration(await scenario.run());
+        const proof = proveD3ContractMigration(await scenario.run());
         // Если это падает — вместе с версией контракта уехало что-то ещё, и перебазировка хеша
         // скрыла бы регрессию движка.
         expect(proof.legacyHash).toBe(hashMap.goldens[scenario.id].legacy);
       });
 
       it('differs from the 017.4 projection ONLY at evidence.contractVersion', async () => {
-        const proof = proveS3ContractMigration(await scenario.run());
+        const proof = proveD3ContractMigration(await scenario.run());
         expect(proof.diffPaths.length).toBeGreaterThan(0);
         for (const path of proof.diffPaths) expect(path).toMatch(/\/evidence\/contractVersion$/);
         expect([...proof.diffPaths].sort()).toEqual([...hashMap.goldens[scenario.id].diffPaths].sort());
       });
 
-      it('the chain is unbroken: this link starts where 017.4 ended', () => {
+      it('the chain is unbroken: this link starts where the 017.4 link ended', () => {
         // Звено начинается ровно там, где кончилось предыдущее. Без этой сцепки карта могла бы
         // ссылаться на любое значение, и «доказательство» стало бы самоссылкой.
-        expect(hashMap.goldens[scenario.id].legacy).toBe(priorHashMap.goldens[scenario.id].active);
+        expect(hashMap.goldens[scenario.id].legacy).toBe(prevHashMap.goldens[scenario.id].active);
       });
 
       it('the committed golden on disk IS the 017.5 hash recorded here', async () => {
-        const proof = proveS3ContractMigration(await scenario.run());
+        const proof = proveD3ContractMigration(await scenario.run());
         expect(proof.activeHash).toBe(hashMap.goldens[scenario.id].active);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
           hashMap.goldens[scenario.id].active,
@@ -107,29 +87,42 @@ describe('017.4 → 017.5 golden migration proof', () => {
     });
   }
 
-  it('017.1–017.4 compatibility is preserved: append-only, prior manifests still valid', async () => {
+  it('SUPPORTED_CONTRACT_VERSIONS stays append-only — membership, NOT validity of old manifests', async () => {
     const { SUPPORTED_CONTRACT_VERSIONS } = await import('@trading/research-contracts/research');
-    // Перебазировка голденов НЕ означает отказ от прежних версий: манифесты 017.1–017.4 обязаны
-    // остаться валидными. 017.3 перечислен ЯВНО: список копировался от звена к звену, и в этой
-    // копии он выпал — версия между «первыми двумя» и `PRE_S3` не покрывалась ничем, хотя
-    // append-only обязан держать её наравне с остальными.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(
-      expect.arrayContaining([
-        '017.1',
-        '017.2',
-        '017.3',
-        PRE_S3_CONTRACT_VERSION,
-        S3_CONTRACT_VERSION,
-      ]),
+    const { EVENT_DRIVEN_MIN_CONTRACT_VERSION, LIFECYCLE_FIELD_MIN_CONTRACT_VERSION } = await import(
+      '@trdlabs/sdk/research-contract'
     );
+
+    // Перебазировка голденов не выбрасывает прежние версии из набора.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(
+      expect.arrayContaining(['017.1', '017.2', PRE_D3_CONTRACT_VERSION, D3_CONTRACT_VERSION]),
+    );
+
+    // ПРИНАДЛЕЖНОСТЬ НАБОРУ НЕОБХОДИМА, НО НЕ ДОСТАТОЧНА, и «манифесты 017.1–017.4 остаются
+    // валидными» было бы неправдой. Валидность определяет ПАРА (версия, форма):
+    //
+    //   форма манифеста                            | минимальная версия
+    //   ───────────────────────────────────────────┼────────────────────────────────────
+    //   поля `lifecycle` нет (⇒ single_position)   | любая из набора, начиная с 017.1
+    //   `lifecycle` объявлен явно, любое значение  | 017.3 (LIFECYCLE_FIELD_MIN)
+    //   `lifecycle: 'event_driven'`                | 017.5 (EVENT_DRIVEN_MIN)
+    //
+    // Второй порог поднят вместе с этим контрактом, и в этом всё различие: 017.4 из набора не
+    // ушёл, но манифест, объявляющий под ним `event_driven`, отклоняется
+    // `unsupported_contract_version` — версия работает по назначению, а не ломается. Фикстура
+    // `event-driven-probe` переведена на 017.5 именно поэтому, а не «чтобы позеленело».
+    //
+    // Пороги проверяются, а не пересказываются: подвинь их SDK молча — покраснеет здесь.
+    expect(LIFECYCLE_FIELD_MIN_CONTRACT_VERSION).toBe('017.3');
+    expect(EVENT_DRIVEN_MIN_CONTRACT_VERSION).toBe(D3_CONTRACT_VERSION);
   });
 
   it('the projection is not vacuous: it actually rolls the version back', () => {
     // Проверка проверки. Если бы проекция ничего не меняла, все утверждения выше проходили бы ни
-    // о чём — ровно тот guard, что стоит у трёх соседних пруфов.
-    const payload = { evidence: { contractVersion: S3_CONTRACT_VERSION, seed: 1 } };
-    const rolled = projectContractVersion(payload, S3_CONTRACT_VERSION, PRE_S3_CONTRACT_VERSION);
-    expect(rolled).toEqual({ evidence: { contractVersion: PRE_S3_CONTRACT_VERSION, seed: 1 } });
+    // о чём — ровно тот guard, что стоит у двух соседних пруфов.
+    const payload = { evidence: { contractVersion: D3_CONTRACT_VERSION, seed: 1 } };
+    const rolled = projectContractVersion(payload, D3_CONTRACT_VERSION, PRE_D3_CONTRACT_VERSION);
+    expect(rolled).toEqual({ evidence: { contractVersion: PRE_D3_CONTRACT_VERSION, seed: 1 } });
     expect(structuralDiffPaths(rolled, payload)).toEqual(['/evidence/contractVersion']);
   });
 });

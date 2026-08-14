@@ -33,17 +33,11 @@ export const ACTIVE_CONTRACT_VERSION = '017.3';
  * 017.3 → 017.4». Следующая миграция сдвинет вторую и не тронет первую.
  */
 export const PRE_S1_CONTRACT_VERSION = '017.3';
-/** Версия, введённая 083 S1 вместе с актор-контрактом. */
+/** Версия, введённая 083 S1 вместе с актор-контрактом. Её эмитит свежий прогон. */
 export const S1_CONTRACT_VERSION = '017.4';
-
-/**
- * Версия, под которой голдены лежали на диске до 083 S3. Численно равна `S1_CONTRACT_VERSION`, и
- * это снова РАЗНЫЕ утверждения: та говорит «куда пришло звено 017.3 → 017.4», эта — «откуда уходит
- * звено 017.4 → 017.5». Слить их значило бы потерять возможность сдвинуть одну, не тронув другую.
- */
-export const PRE_S3_CONTRACT_VERSION = '017.4';
-/** Версия, введённая 083 S3 (ADR-0012/0013). Её эмитит свежий прогон. */
-export const S3_CONTRACT_VERSION = '017.5';
+/** Голова цепи после Д3: контракт с preflight. Звено `017.4 → 017.5`. */
+export const PRE_D3_CONTRACT_VERSION = '017.4';
+export const D3_CONTRACT_VERSION = '017.5';
 
 /** Один воспроизводимый сценарий, чей canonical payload заморожен как golden. */
 export interface GoldenScenario {
@@ -200,55 +194,30 @@ export function projectToLegacyContractVersion(payload: unknown): unknown {
 }
 
 /**
- * Эпохи контракта В ПОРЯДКЕ ПОЯВЛЕНИЯ. Нормализация свежего прогона к прошлой эпохе идёт ПО ЭТОЙ
- * цепи, звено за звеном.
+ * Нормализация свежего прогона к эпохе 017.3 — общий вход обоих ИСТОРИЧЕСКИХ доказательств.
  *
- * Список объявлен ОДИН раз и именно как список, а не как пара «откуда/куда» внутри нормализатора.
- * Причина проверена дорого: пока нормализация была одним шагом `017.4 → 017.3`, бамп до 017.5
- * оборвал её молча — свежий прогон перестал совпадать с `from`, проекция возвращала payload
- * нетронутым, и ТРИ исторических звена разом потеряли свои якоря. Здесь следующий бамп — одна
- * строка в этом массиве, и ни одно доказательство править не нужно.
+ * Их якоря заморожены тогда, когда в evidence стояла 017.3. Свежий прогон эмитит 017.4, и без
+ * нормализации каждый такой якорь уезжал бы вместе с версией при каждом следующем бампе — то есть
+ * звенья цепи протухали бы молча, продолжая «проходить». Идемпотентна: payload, уже стоящий на
+ * 017.3, не меняется (сопоставление идёт по `from`).
  */
-const CONTRACT_EPOCHS: readonly string[] = [
-  LEGACY_CONTRACT_VERSION,
-  ACTIVE_CONTRACT_VERSION,
-  S1_CONTRACT_VERSION,
-  S3_CONTRACT_VERSION,
-];
-
-/**
- * Откатить `evidence.contractVersion` свежего прогона вниз по цепи эпох до `epoch`.
- *
- * Спуск ПОШАГОВЫЙ, а не одним прыжком «голова → цель». Разница не косметическая: прыжок
- * сопоставляется только с головной версией и оставил бы нетронутым payload, замороженный на
- * промежуточной эпохе, — то есть ровно те исторические якоря, ради которых нормализация и нужна.
- * Идемпотентна: узел, уже стоящий на целевой версии, ни с одним шагом не совпадёт.
- */
-export function normalizeContractVersionTo(payload: unknown, epoch: string): unknown {
-  const target = CONTRACT_EPOCHS.indexOf(epoch);
-  if (target < 0) {
-    throw new Error(
-      `normalizeContractVersionTo: эпоха '${epoch}' не объявлена в CONTRACT_EPOCHS ` +
-        `(${CONTRACT_EPOCHS.join(' → ')}). Нормализовать к необъявленной версии нельзя: ` +
-        `спуск не знал бы, через какие звенья идти.`,
-    );
-  }
-  let out = payload;
-  for (let i = CONTRACT_EPOCHS.length - 1; i > target; i -= 1) {
-    out = projectContractVersion(out, CONTRACT_EPOCHS[i]!, CONTRACT_EPOCHS[i - 1]!);
-  }
-  return out;
+export function atPreS1Contract(payload: unknown): unknown {
+  return projectContractVersion(payload, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
 }
 
 /**
- * Нормализация свежего прогона к эпохе 017.3 — общий вход обоих ИСТОРИЧЕСКИХ доказательств.
+ * Нормализация свежего прогона к эпохе 017.4 — общий вход ОБОИХ исторических звеньев.
  *
- * Их якоря заморожены тогда, когда в evidence стояла 017.3. Свежий прогон эмитит головную версию
- * цепи, и без нормализации каждый такой якорь уезжал бы вместе с версией при каждом следующем
- * бампе. Идемпотентна: payload, уже стоящий на 017.3, не меняется.
+ * Та же причина, по которой существует `atPreS1Contract`, только на одно звено позже. Якоря
+ * звеньев 017.2→017.3 и 017.3→017.4 заморожены в эпохах, где в evidence стояли 017.3 и 017.4;
+ * свежий прогон эмитит 017.5, и без этой нормализации оба якоря уехали бы вместе с версией, а
+ * звенья продолжали бы «проходить», ничего не утверждая.
+ *
+ * Стоит ЗДЕСЬ, а не у вызывающих: так её нельзя забыть ни в тесте, ни в дериваторе. Снятие
+ * нормализации обязано КРАСНИТЬ старые звенья — это проверяется отдельно.
  */
-export function atPreS1Contract(payload: unknown): unknown {
-  return normalizeContractVersionTo(payload, PRE_S1_CONTRACT_VERSION);
+export function atPreD3Contract(payload: unknown): unknown {
+  return projectContractVersion(payload, D3_CONTRACT_VERSION, PRE_D3_CONTRACT_VERSION);
 }
 
 /** Все JSON-pointer пути, по которым два canonical payload'а различаются. */
@@ -291,7 +260,7 @@ export function proveContractVersionMigration(payload: unknown): MigrationProof 
   // прогон эмитит 017.4, и без нормализации оба хеша уехали бы вместе с версией, а звено молча
   // перестало бы что-либо доказывать. Нормализация стоит ЗДЕСЬ, а не у вызывающих: так её нельзя
   // забыть ни в тесте, ни в дериваторе.
-  const activePayload = projectToPreF3Shape(atPreS1Contract(payload));
+  const activePayload = projectToPreF3Shape(atPreS1Contract(atPreD3Contract(payload)));
   const legacyPayload = projectToLegacyContractVersion(activePayload);
   return {
     id: '',
@@ -316,37 +285,24 @@ export function proveContractVersionMigration(payload: unknown): MigrationProof 
  * Совпал — значит весь payload, кроме одной строки версии, байт-в-байт прежний.
  */
 export function proveS1ContractMigration(payload: unknown): MigrationProof {
-  // 083 S3: это звено БОЛЬШЕ НЕ ГОЛОВА, и его вход нормализуется к собственной эпохе — ровно по
-  // той же причине, по которой нормализуются два звена выше. Оба якоря звена (`legacy` = 017.3,
-  // `active` = 017.4) заморожены тогда, когда свежий прогон эмитил 017.4; теперь он эмитит 017.5,
-  // и без нормализации откат `017.4 → 017.3` не совпал бы НИ С ОДНИМ узлом. Проекция вернула бы
-  // payload нетронутым, `legacyHash` сравнялся бы с `activeHash`, а diff опустел — то есть звено
-  // не «немного ошиблось бы», а перестало утверждать что-либо вовсе.
-  //
-  // Нормализация стоит ЗДЕСЬ, а не у вызывающих: так её нельзя забыть ни в тесте, ни в дериваторе.
-  const atOwnEpoch = normalizeContractVersionTo(payload, S1_CONTRACT_VERSION);
-  const legacyPayload = projectContractVersion(
-    atOwnEpoch,
-    S1_CONTRACT_VERSION,
-    PRE_S1_CONTRACT_VERSION,
-  );
+  // Нормализация к 017.4 — по той же причине, что и в звене выше: якоря этого
+  // звена заморожены в эпохе 017.4, а свежий прогон эмитит 017.5.
+  const atS1 = atPreD3Contract(payload);
+  const legacyPayload = projectContractVersion(atS1, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
   return {
     id: '',
-    activeHash: contentRef(atOwnEpoch),
+    activeHash: contentRef(atS1),
     legacyHash: contentRef(legacyPayload),
-    diffPaths: structuralDiffPaths(legacyPayload, atOwnEpoch),
+    diffPaths: structuralDiffPaths(legacyPayload, atS1),
   };
 }
 
 /**
- * Доказательство звена 017.4 → 017.5 (083 S3). Устроено ровно как звено S1 и по той же причине:
- * откат ОДНОГО поля обязан вернуть хеш, лежавший на диске до миграции.
- *
- * `legacyHash` обязан совпасть с `active` карты 017.4 — то есть с якорем предыдущего звена.
- * Совпал — значит переезд контракта не привёз с собой ничего, кроме строки версии.
+ * Звено Д3: `017.4 → 017.5`. Свежий payload И ЕСТЬ active — нормализовать его здесь нечем и
+ * незачем, эта версия и есть голова цепи.
  */
-export function proveS3ContractMigration(payload: unknown): MigrationProof {
-  const legacyPayload = projectContractVersion(payload, S3_CONTRACT_VERSION, PRE_S3_CONTRACT_VERSION);
+export function proveD3ContractMigration(payload: unknown): MigrationProof {
+  const legacyPayload = atPreD3Contract(payload);
   return {
     id: '',
     activeHash: contentRef(payload),
@@ -379,7 +335,10 @@ export function proveEngineExtraction(payload: unknown): ExtractionProof {
   // `legacy`, то есть исторический якорь донорского значения, и доказательство эквивалентности
   // извлечения превратилось бы в самоссылку. Нормализация внутри функции по той же причине, что
   // и у соседа: вызывающий не должен иметь возможности её пропустить.
-  const at0173 = atPreS1Contract(payload);
+  // Д3: и к 017.4 — по той же причине на одно звено позже. Свежий прогон эмитит 017.5, и без
+  // этого шага уехали бы ОБА якоря Ф3-звена, включая исторический `legacy`. Исторические хеши
+  // Ф3 при этом НЕ меняются — меняется только то, к какой эпохе приводится свежий payload.
+  const at0173 = atPreS1Contract(atPreD3Contract(payload));
   const preF3Payload = projectToPreF3Shape(at0173);
   return {
     activeHash: contentRef(at0173),

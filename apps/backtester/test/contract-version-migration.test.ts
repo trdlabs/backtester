@@ -27,7 +27,6 @@ import {
   readCommittedGolden,
   structuralDiffPaths,
 } from './helpers/golden-scenarios.js';
-import { chainAnchors } from './helpers/migration-chain.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -39,8 +38,29 @@ interface HashMapEntry {
   readonly diffPaths: readonly string[];
 }
 
-/** Чтение карты звена. Передаётся в `chainAnchors`, чтобы у помощника не было доступа к диску. */
-const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
+/** Карта следующего звена цепи миграций: Ф3, переезд исполнительного ядра на `@trdlabs/engine`. */
+const f3HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, HashMapEntry> };
+
+/** Карта головы цепи: 083 S1, бамп контракта 017.3 → 017.4. Её `active` и лежит на диске. */
+const s1HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, HashMapEntry> };
+
+/** Голова цепи после Д3: бамп контракта 017.4 → 017.5. Её `active` и лежит на диске. */
+const d3HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-5-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, HashMapEntry> };
 
 const hashMap = JSON.parse(
   readFileSync(resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-migration/hash-map.json'), 'utf8'),
@@ -73,27 +93,21 @@ describe('017.2 → 017.3 golden migration proof', () => {
         const proof = proveContractVersionMigration(await scenario.run());
         const recorded = hashMap.goldens[scenario.id];
         expect(proof.activeHash).toBe(recorded.active);
-
-        // Дальше committed-голдены перебазировались ещё несколько раз, поэтому файл на диске давно
-        // НЕ равен 017.3-хешу. Чтобы это доказательство не протухло, а осталось звеном цепи, оно
-        // сцепляется со следующими звеньями — и цепь проверяется ЦЕЛИКОМ, а не до ближайшего
-        // соседа: иначе её середина могла бы разъехаться незамеченной, пока концы сходятся.
+        // Ф3 (переезд на `@trdlabs/engine`) перебазировала committed-голдены ещё раз, поэтому файл
+        // на диске больше НЕ равен 017.3-хешу. Чтобы это доказательство не протухло, а осталось
+        // звеном цепи, оно сцепляется со следующими звеньями. Разрыв в любом месте — падение
+        // здесь, а не тихий дрейф.
         //
-        // Состав и порядок звеньев берутся из `MIGRATION_CHAIN`, а НЕ выписываются здесь. Прежняя
-        // редакция читала карту соседа по зашитому пути и сверяла диск с ЕГО `active`; появление
-        // 017.5 сделало соседа не головой, и утверждение про диск стало неправдой, хотя сама цепь
-        // не рвалась. Теперь добавление звена — одна строка в объявлении цепи.
-        const anchors = chainAnchors(REPO_ROOT, scenario.id, readJson);
-        expect(anchors[0]!.active).toBe(recorded.active);
-        for (let i = 0; i + 1 < anchors.length; i += 1) {
-          // Звено названо В САМОМ утверждении: «не равно» без имён отправило бы читателя искать,
-          // какой именно стык разъехался, — а гейт это уже знает.
-          expect(`${anchors[i]!.id} → ${anchors[i]!.active}`).toBe(
-            `${anchors[i]!.id} → ${anchors[i + 1]!.legacy}`,
-          );
-        }
+        // 083 S1 добавил четвёртое звено, и файл на диске уехал ещё раз: теперь там 017.4-хеш.
+        // Цепь проверяется ЦЕЛИКОМ, а не только до ближайшего соседа: иначе её середина могла бы
+        // разъехаться незамеченной, пока концы сходятся.
+        expect(recorded.active).toBe(f3HashMap.goldens[scenario.id].legacy);
+        expect(f3HashMap.goldens[scenario.id].active).toBe(s1HashMap.goldens[scenario.id].legacy);
+        // Д3 добавил пятое звено (017.4 → 017.5): файл на диске уехал ещё раз. Цепь по-прежнему
+        // проверяется ЦЕЛИКОМ — до головы, а не до ближайшего соседа.
+        expect(s1HashMap.goldens[scenario.id].active).toBe(d3HashMap.goldens[scenario.id].legacy);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          anchors[anchors.length - 1]!.active,
+          d3HashMap.goldens[scenario.id].active,
         );
       });
     });

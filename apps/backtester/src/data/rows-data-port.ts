@@ -13,6 +13,7 @@
 import {
   HistoricalClient,
   type CanonicalRowV2,
+  type PreflightResult,
 } from '@trdlabs/sdk/historical';
 import type {
   DatasetDescriptor,
@@ -134,7 +135,22 @@ export class RowsReader implements HistoricalDatasetReader {
 // ── RowsDataPort ──────────────────────────────────────────────────────────────
 
 export class RowsDataPort implements BacktesterDataPort {
+  /** Настоящие данные платформы ⇒ допуск периода обязателен. */
+  readonly requiresAdmission = true;
+
   private readonly client: HistoricalClient;
+
+  /**
+   * Д3 3.3в — допуск периода. Метод объявлен БЕЗУСЛОВНО: установленный SDK
+   * (0.19.0, точный пин движка) его умеет, и делать вид, что это ещё вопрос,
+   * значило бы оставить настоящему источнику данных законный путь без допуска.
+   *
+   * Отсутствие `preflight` воркер читает как «источник допуска не поддерживает»
+   * и проверку пропускает — так живут мок и файловая фикстура. Для порта,
+   * объявившего `requiresAdmission`, такой путь недопустим, и здесь он не
+   * выразим: свойство есть всегда, а не «если повезло с версией».
+   */
+  readonly preflight: (fromMs: number, toMs: number) => Promise<PreflightResult>;
 
   constructor(opts: RowsDataPortOptions) {
     this.client = new HistoricalClient({
@@ -150,6 +166,11 @@ export class RowsDataPort implements BacktesterDataPort {
       ...(opts.maxRows !== undefined ? { maxRows: opts.maxRows } : {}),
       ...(opts.operationDeadlineMs !== undefined ? { operationDeadlineMs: opts.operationDeadlineMs } : {}),
     });
+    // Делегирование, а не собственный HTTP: классификацию ответа допуска по
+    // тройке «статус + код + форма тела» владеет клиент SDK, и вторая её
+    // реализация здесь разошлась бы с первой ровно в тех углах, ради которых
+    // она и написана.
+    this.preflight = (fromMs, toMs) => this.client.preflight(fromMs, toMs);
   }
 
   async listDatasets(): Promise<DatasetDescriptor[]> {

@@ -36,7 +36,6 @@ import {
   readCommittedGolden,
   structuralDiffPaths,
 } from './helpers/golden-scenarios.js';
-import { chainAnchors } from './helpers/migration-chain.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -66,8 +65,21 @@ const hashMap = JSON.parse(
   goldens: Record<string, Entry>;
 };
 
-/** Чтение карты звена. Передаётся в `chainAnchors`, чтобы у помощника не было доступа к диску. */
-const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
+/** Карта следующего звена цепи: 083 S1, бамп контракта 017.3 → 017.4. */
+const s1HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, Entry> };
+
+/** Голова цепи: Д3, бамп 017.4 → 017.5. Её `active` и лежит на диске. */
+const d3HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-5-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, Entry> };
 
 /**
  * Только эти пути имеют право разойтись. Список закрыт и привязан к КОНТЕЙНЕРУ: `synthetic`
@@ -120,20 +132,18 @@ describe('Ф3 extraction-equivalence: backtester on @trdlabs/engine', () => {
       it('the post-Ф3 hash is where the next link of the chain starts', async () => {
         const proof = proveEngineExtraction(await scenario.run());
         expect(proof.activeHash).toBe(hashMap.goldens[scenario.id].active);
-        // Последующие звенья перебазировали committed-голдены ещё раз, поэтому файл на диске
-        // больше НЕ равен пост-Ф3 хешу: это доказательство ведётся на нормализованном к 017.3
-        // payload'е, а на диске лежит хеш прогона под ГОЛОВНОЙ версией контракта. Сравнивать их
-        // напрямую — сравнивать величины разной природы. Вместо этого сцепка: пост-Ф3 хеш обязан
-        // быть `legacy` следующего звена, а на диске лежит `active` головы цепи.
-        //
-        // И то и другое берётся из объявленной цепи, а не из зашитого здесь пути к соседу: пока
-        // сосед был головой, разница не проявлялась, а с появлением 017.5 зашитое утверждение про
-        // диск стало неправдой при неразорванной цепи.
-        const anchors = chainAnchors(REPO_ROOT, scenario.id, readJson);
-        const mine = anchors.findIndex((a) => a.id === 'f3-engine-migration');
-        expect(hashMap.goldens[scenario.id].active).toBe(anchors[mine + 1]!.legacy);
+        // 083 S1 перебазировал committed-голдены под 017.4, поэтому файл на диске больше НЕ равен
+        // пост-Ф3 хешу: это доказательство ведётся на нормализованном к 017.3 payload'е, а на
+        // диске лежит хеш прогона под 017.4. Сравнивать их напрямую — сравнивать величины разной
+        // природы. Вместо этого сцепка: пост-Ф3 хеш обязан быть `legacy` следующего звена, и уже
+        // его `active` лежит на диске.
+        expect(hashMap.goldens[scenario.id].active).toBe(s1HashMap.goldens[scenario.id].legacy);
+        // Д3 добавил пятое звено (017.4 → 017.5), и файл на диске уехал ещё раз. Маршрут до диска
+        // идёт ЧЕРЕЗ оба звена: разрыв в любом месте — падение здесь, а не тихий дрейф. Сами
+        // хеши Ф3-карты при этом неизменны: они историческая величина, а не текущее состояние.
+        expect(s1HashMap.goldens[scenario.id].active).toBe(d3HashMap.goldens[scenario.id].legacy);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          anchors[anchors.length - 1]!.active,
+          d3HashMap.goldens[scenario.id].active,
         );
       });
     });

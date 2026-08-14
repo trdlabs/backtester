@@ -1,27 +1,25 @@
-// 083 S3 — перебазировка committed result-голденов под контракт 017.5, ПОД ДОКАЗАТЕЛЬСТВОМ.
+// Д3 3.3в — перебазировка committed result-голденов под контракт 017.5, ПОД ДОКАЗАТЕЛЬСТВОМ.
 //
 // Голова цепи миграций. Полная цепь на сегодня:
 //
-//   017.2 --[derive_goldens.mjs]--> 017.3 --[derive-f3-goldens.mts]--> Ф3
-//        --[derive-017-4-goldens.mts]--> 017.4 --[ЭТОТ СКРИПТ]--> 017.5
+//   017.2 --> 017.3 --> Ф3 --> 017.4 --[ЭТОТ СКРИПТ]--> 017.5
 //
 // Для каждого сценария скрипт:
 //   1. прогоняет его под 017.5;
-//   2. откатывает в результате ровно одно поле — `evidence.contractVersion` — обратно к 017.4;
-//   3. ТРЕБУЕТ, чтобы хеш этой проекции совпал с тем, что лежит на диске СЕЙЧАС. Не совпал —
-//      скрипт падает и не пишет ничего: значит вместе с версией контракта уехало что-то ещё, и
-//      перебазировка спрятала бы регрессию вместо того, чтобы её показать.
+//   2. откатывает ровно одно поле — evidence.contractVersion — обратно к 017.4;
+//   3. ТРЕБУЕТ, чтобы хеш этой проекции совпал с committed-голденом ПРЕДЫДУЩЕЙ эпохи и чтобы это
+//      же значение было `active` предыдущего звена. Не совпало — ничего не пишется. До первой
+//      записи этим якорем и является файл на диске; после записи файл содержит уже `active`, и
+//      якорь берётся из карты (ветка `alreadyRebased` ниже) — иначе повторный прогон сообщал бы
+//      о дрейфе, которого нет.
 //
-// Почему без проекций, в отличие от трёх звеньев выше. Те ведутся каждое на форме СВОЕЙ эпохи,
-// потому что их якоря там заморожены. Здесь якорь — файл голдена, а в нём после Ф3 лежит хеш
-// ПОЛНОГО payload'а. Сверять с ним проекцию нельзя: это величины разной природы, и такая проверка
-// не может пройти ни при каких значениях (эту ошибку уже ловили — см. «ПОПРАВКА ПОСЛЕ Ф3» в шапке
-// `derive_goldens.mjs`).
+// Причина сдвига измерена ОТДЕЛЬНО, лестницей опубликованных пар engine/SDK от 0.10/0.15 до
+// 0.15/0.19: после нормализации contractVersion соседние ступени дают ПОБАЙТНО одинаковый payload,
+// то есть пять минорных версий движка не изменили полезную нагрузку вовсе. Единственная разница на
+// всём пути — строка версии. Хеш при этом использовался как финальная проверка, а не как средство
+// локализации: «хеши разошлись» не называет ни одного поля.
 //
-// `--reanchor` здесь СОЗНАТЕЛЬНО НЕ РЕАЛИЗОВАН. У соседних скриптов он существует для случая
-// «арифметика изменилась намеренно и доказана вне скрипта». Здесь арифметика не менялась вовсе:
-// сдвинулась одна строка, и её сдвиг доказуем откатом. Флаг, который тут нечем оправдать, — это
-// приглашение обойти гейт в следующий раз, когда доказательство не сойдётся.
+// --reanchor СОЗНАТЕЛЬНО НЕ РЕАЛИЗОВАН — по той же причине, что и у предыдущего звена.
 //
 // Запуск: pnpm exec tsx apps/backtester/scripts/derive-017-5-goldens.mts [--write]
 
@@ -31,16 +29,16 @@ import { fileURLToPath } from 'node:url';
 
 import {
   GOLDEN_SCENARIOS,
-  PRE_S3_CONTRACT_VERSION,
-  S3_CONTRACT_VERSION,
-  proveS3ContractMigration,
+  PRE_D3_CONTRACT_VERSION,
+  D3_CONTRACT_VERSION,
+  proveD3ContractMigration,
   readCommittedGolden,
 } from '../test/helpers/golden-scenarios.js';
 import { assertOwnsGoldenFiles } from '../test/helpers/migration-chain.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const MAP_PATH = resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-5-migration/hash-map.json');
-const PRIOR_MAP_PATH = resolve(
+const PREV_MAP_PATH = resolve(
   REPO_ROOT,
   'apps/backtester/test/fixtures/017-4-migration/hash-map.json',
 );
@@ -61,7 +59,7 @@ interface Entry {
   readonly diffPaths: readonly string[];
 }
 
-const priorLinkMap = JSON.parse(readFileSync(PRIOR_MAP_PATH, 'utf8')) as {
+const prevMap = JSON.parse(readFileSync(PREV_MAP_PATH, 'utf8')) as {
   goldens: Record<string, { active: string }>;
 };
 
@@ -80,7 +78,7 @@ const goldens: Record<string, Entry> = {};
 let failed = 0;
 
 for (const scenario of GOLDEN_SCENARIOS) {
-  const proof = proveS3ContractMigration(await scenario.run());
+  const proof = proveD3ContractMigration(await scenario.run());
   const committed = readCommittedGolden(REPO_ROOT, scenario.goldenSource);
   const recorded = priorMap?.goldens?.[scenario.id];
 
@@ -92,8 +90,8 @@ for (const scenario of GOLDEN_SCENARIOS) {
   // Цепь обязана быть замкнута ЯВНО: якорь этого звена — то же самое значение, что `active`
   // предыдущего. Если это перестало быть так, звенья разъехались, и молча переписывать голден
   // нельзя, даже когда откат сошёлся сам с собой.
-  const priorActive = priorLinkMap.goldens?.[scenario.id]?.active;
-  const chained = priorActive !== undefined && anchor === priorActive;
+  const prevActive = prevMap.goldens?.[scenario.id]?.active;
+  const chained = prevActive !== undefined && anchor === prevActive;
 
   const equivalent = proof.legacyHash === anchor;
   const onlyVersion =
@@ -101,14 +99,14 @@ for (const scenario of GOLDEN_SCENARIOS) {
     proof.diffPaths.every((p) => p.endsWith('/evidence/contractVersion'));
 
   console.log(`${scenario.id}:${alreadyRebased ? ' (already rebased — verifying against the map)' : ''}`);
-  console.log(`  pre-S3 anchor : ${anchor}`);
+  console.log(`  pre-D3 anchor : ${anchor}`);
   console.log(`  rolled back   : ${proof.legacyHash} ${equivalent ? '✓ equivalent' : '✗ DRIFTED'}`);
   console.log(`  new active    : ${proof.activeHash}`);
   console.log(`  diffPaths     : ${proof.diffPaths.join(', ') || '(none)'}`);
 
   if (!chained) {
     console.error(
-      `  ✗ ${scenario.id}: якорь ${anchor} != active карты 017.4 ${priorActive ?? '(нет записи)'} — цепь миграций разорвана`,
+      `  ✗ ${scenario.id}: якорь ${anchor} != active карты 017.4 ${prevActive ?? '(нет записи)'} — цепь миграций разорвана`,
     );
     failed += 1;
     continue;
@@ -145,12 +143,12 @@ if (failed > 0) {
 }
 
 const mapping = {
-  contract: { from: PRE_S3_CONTRACT_VERSION, to: S3_CONTRACT_VERSION },
+  contract: { from: PRE_D3_CONTRACT_VERSION, to: D3_CONTRACT_VERSION },
   migration: {
-    epic: '083',
-    slice: 'S3',
+    epic: 'Д3',
+    slice: '3.3в',
     cause:
-      'Механизм тот же, что у 017.3 → 017.4: runner.ts кладёт CONTRACT_VERSION в RunEvidence, evidence входит в канонический payload прогона, поэтому бамп контракта меняет content-hash КАЖДОГО прогона. Исключить contractVersion из хеша нельзя: identity прогона обязана включать версию контракта, по которому он исполнен. Повод для бампа здесь другой — 083 S3 переписал актор-поверхность контракта: канонический хостовый источник событий вместо выдуманного потребителем идентификатора подписки (ADR-0012) и нотионал-первичный вид заявки, где базовый размер помечен как необязательная оценка (ADR-0013). Ни одно число прогона при этом не сдвинулось, и это доказывается откатом одной строки версии.',
+      'Контракт поднялся 017.4 → 017.5 (SDK 0.19.0): CONTRACT_VERSION входит в RunEvidence, а evidence — в канонический payload, поэтому бамп версии меняет content-hash каждого прогона. Лестница пар engine/SDK показала, что ничего кроме этой строки не изменилось.',
   },
   goldens,
 };
