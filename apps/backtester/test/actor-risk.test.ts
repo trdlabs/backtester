@@ -238,6 +238,7 @@ describe('RE-ВАЛИДАЦИЯ В МОМЕНТ ИСПОЛНЕНИЯ: обход
 
   async function runStepped(
     script: (event: ActorInputEvent, barSeen: number) => readonly ActorCommand[],
+    feeBps = 0,
   ): Promise<ActorExecutionRecord> {
     let barSeen = 0;
     const executor: ActorLifecycleExecutor = {
@@ -265,7 +266,7 @@ describe('RE-ВАЛИДАЦИЯ В МОМЕНТ ИСПОЛНЕНИЯ: обход
       params: {},
       admission,
       bars: tape,
-      costs: { feeBps: 0, slippageBps: 0, initialEquity: EQUITY },
+      costs: { feeBps, slippageBps: 0, initialEquity: EQUITY },
       risk: { profile: ACTOR_DEFAULT_RISK, initialEquity: EQUITY },
     });
   }
@@ -321,6 +322,60 @@ describe('RE-ВАЛИДАЦИЯ В МОМЕНТ ИСПОЛНЕНИЯ: обход
     // ГЛАВНОЕ: позиция осталась ЛОНГОМ. Знак не перевернулся — значит ноль не пересекали.
     expect(record.finalLedger.qty).toBeGreaterThan(0);
     expect(record.finalLedger.qty).toBeCloseTo(10, 10);
+  });
+
+  it('ОТМЕНА СВЯЗАНА С ПРИЧИНОЙ: обе половины факта лежат в ОДНОЙ записи', async () => {
+    // Прежде идентификатор был у ордера, причина — у вердикта, и ни одна запись не содержала
+    // обоих. Связать их можно было только сопоставлением двух списков по номеру frontier'а, то
+    // есть догадкой «наверное, отменили именно эту» — она ломается на первом же frontier'е, где
+    // снято больше одной заявки.
+    const record = await runStepped((event, bar) => {
+      if (event.kind !== 'market.candle.closed') return [];
+      if (bar === 1) return [place({ clientOrderId: 'pending', side: 'buy', type: 'stop_market', stopPrice: 150, qtyUsd: 1000 })];
+      if (bar === 2) return [place({ clientOrderId: 'opener', side: 'buy', qtyUsd: 1000 })];
+      return [];
+    });
+
+    const cancelled = record.orders.find((o) => o.orderId === 'pending')!;
+    expect(cancelled.terminalState).toBe('canceled');
+    expect(cancelled.cancelReason).toBe('resting_add_not_permitted');
+    // Опенер отменён не был — иначе причина выше «прилипала» бы ко всем заявкам подряд.
+    expect(record.orders.find((o) => o.orderId === 'opener')!.cancelReason).toBeUndefined();
+
+    // И событие отмены адресовано ИМЕННО этой заявке: автор закрывает своё ожидание по номеру.
+    const canceledIds = record.timeline
+      .map((e) => e.envelope.event)
+      .filter((ev): ev is typeof ev & { clientOrderId: string } => ev.kind === 'order.canceled')
+      .map((ev) => ev.clientOrderId);
+    expect(canceledIds).toEqual(['pending']);
+  });
+
+  it('FLAT, НО EQUITY УПАЛА: ждущая заявка клампится по ТЕКУЩЕМУ потолку', async () => {
+    // Позиции нет — ни наращивания, ни пересечения нуля быть не может, и на этом соблазн
+    // остановиться велик. Но потолок считается ОТ EQUITY: убыточная сделка её уменьшила, а заявка
+    // несёт СТАРЫЙ нотионал, принятый при прежнем капитале. Без пересчёта она открыла бы позицию
+    // больше, чем профиль разрешает СЕЙЧАС.
+    const record = await runStepped((event, bar) => {
+      if (event.kind !== 'market.candle.closed') return [];
+      // Ждущая заявка на весь капитал, принята при equity 10 000.
+      if (bar === 1) return [place({ clientOrderId: 'pending', side: 'buy', type: 'stop_market', stopPrice: 150, qtyUsd: 10_000 })];
+      // Сделка в убыток: вход и выход по одной цене, но с комиссией — equity уменьшается.
+      if (bar === 2) return [place({ clientOrderId: 'in', side: 'buy', qtyUsd: 1000 })];
+      if (bar === 3) return [place({ clientOrderId: 'out', side: 'sell', qtyUsd: 5000, reduceOnly: true })];
+      return [];
+    }, 50);
+
+    // К моменту срабатывания позиция закрыта (flat), но equity уже НЕ 10 000.
+    const clamp = record.riskDecisions.find((d) => d.action === 'clamp');
+    expect(clamp?.decisionKind).toBe('resting');
+    expect(clamp?.reason).toBe('resting_notional_clamped');
+    // Клампнуто СТРОГО ниже запрошенного — то есть потолок пересчитан, а не взят стартовым.
+    expect(clamp!.clamped![0]!.to).toBeLessThan(10_000);
+    // Заявка не снята: профиль разрешает открыть, но меньше.
+    expect(record.orders.find((o) => o.orderId === 'pending')!.cancelReason).toBeUndefined();
+    expect(record.journal.filter((j) => j.kind === 'fill').map((f) => (f.kind === 'fill' ? f.orderId : ''))).toContain(
+      'pending',
+    );
   });
 
   it('ПОЛОЖИТЕЛЬНЫЙ: ждущая reduceOnly-заявка исполняется и закрывает позицию', async () => {

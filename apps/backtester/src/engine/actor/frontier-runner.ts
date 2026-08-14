@@ -61,8 +61,9 @@ import {
   type ActorOutboxPayload,
   type ActorRiskBinding,
 } from './engine-state.js';
-import { orderIntentOf, parseRiskRefusal } from './risk.js';
+import { flatEquityOf, orderIntentOf, parseRiskRefusal } from './risk.js';
 import type {
+  ActorCancelReason,
   ActorCloseAnnotation,
   ActorEquitySample,
   ActorExecutionRecord,
@@ -157,6 +158,41 @@ interface QueuedPayload extends ActorOutboxPayload {
 interface TrackedOrder {
   readonly record: ActorOrderRecord;
   readonly state: OrderState;
+}
+
+/**
+ * Снять ждущую заявку решением РИСКА и записать причину В САМУ ЗАПИСЬ заявки.
+ *
+ * Причина пишется здесь, а не только в `riskDecisions`, потому что иначе ни одна запись не
+ * содержит обоих фактов сразу: у ордера есть идентификатор без причины, у вердикта — причина без
+ * идентификатора. Связать их можно было бы лишь сопоставлением двух списков по номеру frontier'а —
+ * то есть догадкой, которая ломается на первом же frontier'е с двумя событиями.
+ */
+function cancelRestingByRisk(
+  tracked: Map<string, TrackedOrder>,
+  orderId: string,
+  reason: ActorCancelReason,
+): void {
+  advanceOrder(tracked, orderId, { kind: 'cancel_request' });
+  advanceOrder(tracked, orderId, { kind: 'cancel_complete' });
+  const current = tracked.get(orderId);
+  if (current !== undefined) {
+    tracked.set(orderId, { ...current, record: { ...current.record, cancelReason: reason } });
+  }
+}
+
+/** Событие отмены от ХОСТА — то же, что уезжает автору при снятии движком. */
+function hostCancelEvent(clientOrderId: string, frontierUs: TimestampUs): FrontierEvent<QueuedPayload> {
+  return {
+    businessTsUs: frontierUs,
+    phase: 'execution',
+    stableSubscriptionId: HOST_SUBSCRIPTION_ID,
+    sourceSequence: 0,
+    payload: {
+      subscriptionId: HOST_SUBSCRIPTION_ID,
+      event: { kind: 'order.canceled', clientOrderId },
+    },
+  };
 }
 
 /** Двинуть автомат заявки движковым `transition` и обновить её терминальное состояние. */
@@ -277,26 +313,56 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
             ...state,
             openOrders: state.openOrders.filter((o) => o.clientOrderId !== resting.clientOrderId),
           };
-          advanceOrder(orderRecords, resting.clientOrderId, { kind: 'cancel_request' });
-          advanceOrder(orderRecords, resting.clientOrderId, { kind: 'cancel_complete' });
-          riskDecisions.push({
-            barIndex: index,
-            decisionKind: 'resting',
-            action: 'reject',
-            reason,
-          });
-          seed.push({
-            businessTsUs: frontierUs,
-            phase: 'execution',
-            stableSubscriptionId: HOST_SUBSCRIPTION_ID,
-            sourceSequence: 0,
-            payload: {
-              subscriptionId: HOST_SUBSCRIPTION_ID,
-              event: { kind: 'order.canceled', clientOrderId: resting.clientOrderId },
-            },
-          });
+          cancelRestingByRisk(orderRecords, resting.clientOrderId, reason);
+          riskDecisions.push({ barIndex: index, decisionKind: 'resting', action: 'reject', reason });
+          seed.push(hostCancelEvent(resting.clientOrderId, frontierUs));
           // Матч снят: исполнять больше нечего, и ни одна строка ниже не выполнится.
           match = null;
+        } else if (!resting.reduceOnly) {
+          // ── FLAT, НО EQUITY УЖЕ ДРУГАЯ ──────────────────────────────────────
+          //
+          // Позиции нет, значит ни наращивания, ни пересечения нуля быть не может — и на этом
+          // соблазн остановиться велик. Но потолок экспозиции считается ОТ EQUITY, а equity между
+          // подачей и срабатыванием меняется: убыточная сделка её уменьшает. Заявка, принятая при
+          // equity E1, срабатывает при E2 < E1 со СТАРЫМ нотионалом — то есть открывает позицию
+          // больше, чем профиль разрешает СЕЙЧАС.
+          //
+          // Проверка на подаче этого не ловит по той же причине, что и add/flip: она отвечала на
+          // вопрос о другом моменте времени. Поэтому потолок пересчитывается здесь, и вердикт тот
+          // же, что у подачи, — accept / clamp / reject.
+          const exposure = input.risk.profile.exposureLimits;
+          if (exposure !== undefined) {
+            const equity = flatEquityOf(state, input.risk.initialEquity);
+            const ceiling = exposure.maxPositionNotionalPct * equity;
+            if (ceiling <= 0) {
+              const reason = 'resting_exposure_ceiling_exhausted';
+              state = {
+                ...state,
+                openOrders: state.openOrders.filter((o) => o.clientOrderId !== resting.clientOrderId),
+              };
+              cancelRestingByRisk(orderRecords, resting.clientOrderId, reason);
+              riskDecisions.push({ barIndex: index, decisionKind: 'resting', action: 'reject', reason });
+              seed.push(hostCancelEvent(resting.clientOrderId, frontierUs));
+              match = null;
+            } else if (resting.qtyUsd > ceiling) {
+              // Заявка НЕ снимается: профиль разрешает открыть, но меньше. Клампится ровно так же,
+              // как клампилась бы на подаче, — и в книге остаётся уже урезанный размер, потому что
+              // исполняться будет он.
+              state = {
+                ...state,
+                openOrders: state.openOrders.map((o) =>
+                  o.clientOrderId === resting.clientOrderId ? { ...o, qtyUsd: ceiling } : o,
+                ),
+              };
+              riskDecisions.push({
+                barIndex: index,
+                decisionKind: 'resting',
+                action: 'clamp',
+                reason: 'resting_notional_clamped',
+                clamped: [{ field: 'qtyUsd', from: resting.qtyUsd, to: ceiling }],
+              });
+            }
+          }
         }
       }
 

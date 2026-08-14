@@ -106,6 +106,25 @@ export interface ActorFrontierRecord {
  * (см. `ORDER_STATUS_BY_STATE`). Записывать сюда уже суженное значение значило бы потерять
  * различие «отвергнута» и «отменена» до того, как кто-либо решил, что оно не нужно.
  */
+/**
+ * Причины, по которым заявку снял ХОСТ, а не автор. Два происхождения, и оба типизированы:
+ *
+ *   • движковые — исход `executeFill` для reduceOnly-заявки, потерявшей предмет сокращения;
+ *   • риск-контурные — re-валидация ждущей заявки в момент исполнения (наращивание, пересечение
+ *     нуля, исчерпанный потолок).
+ *
+ * ЗАЧЕМ ОБЪЕДИНЁННЫЙ ТИП, А НЕ `string`. Отмена по риску прежде оставляла в записи заявки ровно
+ * `terminalState: 'canceled'` — идентификатор был у ордера, причина у вердикта, и НИ ОДНА запись не
+ * содержала обоих фактов. Связать их можно было только сопоставлением двух списков по номеру
+ * frontier'а, то есть догадкой: «наверное, отменили именно эту». Здесь причина живёт в самой
+ * записи заявки, а `string` принял бы и пересказ, и опечатку.
+ */
+export type ActorCancelReason =
+  | Extract<FillOutcome, { readonly kind: 'canceled' }>['reason']
+  | 'resting_add_not_permitted'
+  | 'resting_opposite_requires_reduce_only'
+  | 'resting_exposure_ceiling_exhausted';
+
 export interface ActorOrderRecord {
   readonly orderId: string;
   /** Номер frontier'а, на котором заявка подана. */
@@ -126,7 +145,7 @@ export interface ActorOrderRecord {
    * прежнему единственному, и запись, объявленная старым союзом, продолжала бы компилироваться,
    * теряя новую причину на границе. Здесь источник один: что вернул `executeFill`, то и записано.
    */
-  readonly cancelReason?: Extract<FillOutcome, { readonly kind: 'canceled' }>['reason'];
+  readonly cancelReason?: ActorCancelReason;
   readonly mode?: 'dca' | 'scale_in';
   readonly closeFraction?: number;
   readonly origin?: 'protection';
