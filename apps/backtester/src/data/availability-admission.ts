@@ -18,40 +18,17 @@
 // другой архив, второго — другую методику агрегации, и в обоих случаях это уже
 // не те данные, на которые выдавалось разрешение.
 
-// Форма ответа допуска объявлена ЗДЕСЬ временно.
+// ФОРМА ОТВЕТА ДОПУСКА ПРИХОДИТ ИЗ SDK и здесь не переобъявляется.
 //
-// Публичные типы приедут из SDK, но пин SDK в этом репозитории определяет НЕ он:
-// версию контракта задаёт `@trdlabs/engine` (срез S3, `engine-pin-single-sdk`), и
-// приложение обязано упереться в его точный пин. Пока движок пинит 0.15.0, где
-// `preflight` ещё нет, импорт типа сделал бы модуль несобираемым.
-//
-// Снимается это выпуском engine против SDK 0.16.0 — после него импорт из SDK
-// возвращается, а объявление ниже удаляется.
-export interface PreflightSuccessWire {
-  readonly ok: true;
-  readonly requestedFromMs: number;
-  readonly requestedToMs: number;
-  readonly effectiveFromMs: number;
-  readonly effectiveToMs: number;
-  readonly availableFromMs: number;
-  readonly availableToMs: number;
-  readonly earliestAvailableDay: string;
-  readonly lastContiguousClosedDay: string;
-  readonly archiveId: string | null;
-  readonly datasetId: string | null;
-  readonly availabilityId: string;
-  readonly asOfMs: number;
-  readonly clamped: boolean;
-}
-
-export interface PreflightRejectWire {
-  readonly ok: false;
-  readonly code: string;
-  readonly message: string;
-  readonly availabilityState: string;
-}
-
-export type PreflightResult = PreflightSuccessWire | PreflightRejectWire;
+// Локальная копия жила тут ровно столько, сколько пин SDK держал движок: версию
+// контракта задаёт `@trdlabs/engine` (срез S3, `engine-pin-single-sdk`), а
+// приложение обязано упереться в его точный пин, и на engine 0.10.0 / SDK 0.15.0
+// `preflight` ещё не существовало. С переездом на 0.15.0 / 0.19.0 копия удалена,
+// и не «для чистоты»: две структурно похожие формы расходятся молча. У SDK `code`
+// — замкнутый union `PreflightRejectCode`, а не `string`, и есть `status`, по
+// которому видно, кто виноват — запрос, момент или сервис. Копия не знала ни
+// того, ни другого и приняла бы чужой код за законный отказ.
+import type { PreflightRejectCode, PreflightResult } from '@trdlabs/sdk/historical';
 
 /** Источник допуска. Порт бэктестера предоставляет ровно это и ничего больше. */
 export interface AdmissionSource {
@@ -98,8 +75,10 @@ export class AdmissionRefusedError extends Error {
   constructor(
     readonly code: AdmissionRefusalCode,
     message: string,
-    /** Код отказа платформы, если отказала она. */
-    readonly platformCode?: string,
+    /** Код отказа платформы, если отказала она. Замкнутый union из SDK, а не
+     *  свободная строка: пять кодов чинят пять разных людей, и «какой-то текст
+     *  приехал» не помогает ни одному из них. */
+    readonly platformCode?: PreflightRejectCode,
   ) {
     super(`admission refused (${code}): ${message}`);
     this.name = 'AdmissionRefusedError';

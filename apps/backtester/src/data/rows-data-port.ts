@@ -13,6 +13,7 @@
 import {
   HistoricalClient,
   type CanonicalRowV2,
+  type PreflightResult,
 } from '@trdlabs/sdk/historical';
 import type {
   DatasetDescriptor,
@@ -140,16 +141,16 @@ export class RowsDataPort implements BacktesterDataPort {
   private readonly client: HistoricalClient;
 
   /**
-   * Д3 3.3в — допуск периода. Метод существует ТОЛЬКО если установленный SDK его
-   * умеет: возможность обнаруживается у клиента, а не объявляется наперёд.
+   * Д3 3.3в — допуск периода. Метод объявлен БЕЗУСЛОВНО: установленный SDK
+   * (0.19.0, точный пин движка) его умеет, и делать вид, что это ещё вопрос,
+   * значило бы оставить настоящему источнику данных законный путь без допуска.
    *
-   * Так сделано потому, что пин SDK в этом репозитории пока `^0.15.0`, где
-   * `preflight` ещё нет. Объяви метод безусловно — и он бросал бы на каждом
-   * прогоне; а отсутствие свойства воркер читает как «источник допуска не
-   * поддерживает» и honestly пропускает проверку вместо ложного отказа.
-   * После бампа пина на 0.16.0 допуск включится сам, без правок здесь.
+   * Отсутствие `preflight` воркер читает как «источник допуска не поддерживает»
+   * и проверку пропускает — так живут мок и файловая фикстура. Для порта,
+   * объявившего `requiresAdmission`, такой путь недопустим, и здесь он не
+   * выразим: свойство есть всегда, а не «если повезло с версией».
    */
-  readonly preflight?: (fromMs: number, toMs: number) => Promise<unknown>;
+  readonly preflight: (fromMs: number, toMs: number) => Promise<PreflightResult>;
 
   constructor(opts: RowsDataPortOptions) {
     this.client = new HistoricalClient({
@@ -165,15 +166,11 @@ export class RowsDataPort implements BacktesterDataPort {
       ...(opts.maxRows !== undefined ? { maxRows: opts.maxRows } : {}),
       ...(opts.operationDeadlineMs !== undefined ? { operationDeadlineMs: opts.operationDeadlineMs } : {}),
     });
-    // Возможность спрашивается У КЛИЕНТА, а не выводится из номера версии в
-    // package.json: пин — это то, что объявлено, а установленный пакет — то, что
-    // есть на самом деле, и расходятся они регулярно.
-    const maybe = this.client as unknown as {
-      preflight?: (fromMs: number, toMs: number) => Promise<unknown>;
-    };
-    if (typeof maybe.preflight === 'function') {
-      this.preflight = (fromMs, toMs) => maybe.preflight!(fromMs, toMs);
-    }
+    // Делегирование, а не собственный HTTP: классификацию ответа допуска по
+    // тройке «статус + код + форма тела» владеет клиент SDK, и вторая её
+    // реализация здесь разошлась бы с первой ровно в тех углах, ради которых
+    // она и написана.
+    this.preflight = (fromMs, toMs) => this.client.preflight(fromMs, toMs);
   }
 
   async listDatasets(): Promise<DatasetDescriptor[]> {
