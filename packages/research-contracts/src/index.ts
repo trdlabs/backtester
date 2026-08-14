@@ -12,8 +12,12 @@ export * from './historical.js';
  *  платформы, а не звеном этой цепочки.
  *
  *  083 E1 перевёл на '017.3'; 083 S1 — на '017.4' (актор-контракт); Д3 3.3в — на '017.5' вместе с
- *  SDK 0.19.0 (preflight). 017.1/017.2/017.3/017.4 манифесты
- *  остаются валидными (append-only SUPPORTED_CONTRACT_VERSIONS).
+ *  SDK 0.19.0 (preflight). Прежние версии из набора не уходят (append-only
+ *  SUPPORTED_CONTRACT_VERSIONS) — но это ПРИНАДЛЕЖНОСТЬ НАБОРУ, а не обещание, что любой старый
+ *  манифест по-прежнему валиден: у формы манифеста собственный порог версии. Явное поле
+ *  `lifecycle` требует ≥ 017.3, `lifecycle: 'event_driven'` — ≥ 017.5, поэтому `event_driven`
+ *  под 017.4 отклоняется `unsupported_contract_version`. Матрица целиком и её проверка —
+ *  `contract-017-5-migration.test.ts`.
  *
  *  Смена этой строки перебазирует КАЖДЫЙ committed result-голден: `runner.ts` кладёт её в
  *  `RunEvidence`, а evidence входит в канонический payload прогона. Двигать её в отрыве от

@@ -1,9 +1,11 @@
 // Доказательство миграции result-голденов 017.4 → 017.5 (Д3 3.3в).
 //
 // Голова цепи. Утверждает ровно три вещи, и каждая проверяема:
-//   1. `legacy` этого звена равен committed-голдену на диске И `active` предыдущего звена —
-//      цепь замкнута явно, а не «по построению»;
-//   2. `active` равен свежему 017.5-прогону;
+//   1. `legacy` этого звена — committed-голден ПРЕДЫДУЩЕЙ эпохи: он равен `active` предыдущего
+//      звена, и цепь замкнута явно, а не «по построению». На диске его больше нет — с момента
+//      перебазировки файл содержит `active` ЭТОГО звена. Путать две величины нельзя: ровно на
+//      такой путанице предыдущий дериватор сравнивал проекцию с полным payload'ом;
+//   2. `active` равен свежему 017.5-прогону — и он же лежит в файле голдена;
 //   3. единственное расхождение — `evidence.contractVersion`.
 //
 // Причина сдвига измерена лестницей опубликованных пар engine/SDK (0.10/0.15 → 0.15/0.19): после
@@ -38,7 +40,8 @@ const hashMap = JSON.parse(
   readFileSync(resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-5-migration/hash-map.json'), 'utf8'),
 ) as { contract: { from: string; to: string }; goldens: Record<string, Entry> };
 
-/** Предыдущее звено цепи: Ф3, переезд исполнительного ядра на `@trdlabs/engine`. */
+/** Предыдущее звено цепи: 083 S1, бамп контракта 017.3 → 017.4. Ф3 (переезд исполнительного ядра
+ *  на `@trdlabs/engine`) — звено ПЕРЕД ним, а не это. */
 const prevHashMap = JSON.parse(
   readFileSync(
     resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json'),
@@ -68,7 +71,7 @@ describe('017.4 → 017.5 golden migration proof', () => {
         expect([...proof.diffPaths].sort()).toEqual([...hashMap.goldens[scenario.id].diffPaths].sort());
       });
 
-      it('the chain is unbroken: this link starts where Ф3 ended', () => {
+      it('the chain is unbroken: this link starts where the 017.4 link ended', () => {
         // Звено начинается ровно там, где кончилось предыдущее. Без этой сцепки карта могла бы
         // ссылаться на любое значение, и «доказательство» стало бы самоссылкой.
         expect(hashMap.goldens[scenario.id].legacy).toBe(prevHashMap.goldens[scenario.id].active);
@@ -84,13 +87,34 @@ describe('017.4 → 017.5 golden migration proof', () => {
     });
   }
 
-  it('017.1–017.4 compatibility is preserved: append-only, prior manifests still valid', async () => {
+  it('SUPPORTED_CONTRACT_VERSIONS stays append-only — membership, NOT validity of old manifests', async () => {
     const { SUPPORTED_CONTRACT_VERSIONS } = await import('@trading/research-contracts/research');
-    // Перебазировка голденов НЕ означает отказ от прежних версий: манифесты 017.1/017.2/017.4
-    // обязаны остаться валидными.
+    const { EVENT_DRIVEN_MIN_CONTRACT_VERSION, LIFECYCLE_FIELD_MIN_CONTRACT_VERSION } = await import(
+      '@trdlabs/sdk/research-contract'
+    );
+
+    // Перебазировка голденов не выбрасывает прежние версии из набора.
     expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(
       expect.arrayContaining(['017.1', '017.2', PRE_D3_CONTRACT_VERSION, D3_CONTRACT_VERSION]),
     );
+
+    // ПРИНАДЛЕЖНОСТЬ НАБОРУ НЕОБХОДИМА, НО НЕ ДОСТАТОЧНА, и «манифесты 017.1–017.4 остаются
+    // валидными» было бы неправдой. Валидность определяет ПАРА (версия, форма):
+    //
+    //   форма манифеста                            | минимальная версия
+    //   ───────────────────────────────────────────┼────────────────────────────────────
+    //   поля `lifecycle` нет (⇒ single_position)   | любая из набора, начиная с 017.1
+    //   `lifecycle` объявлен явно, любое значение  | 017.3 (LIFECYCLE_FIELD_MIN)
+    //   `lifecycle: 'event_driven'`                | 017.5 (EVENT_DRIVEN_MIN)
+    //
+    // Второй порог поднят вместе с этим контрактом, и в этом всё различие: 017.4 из набора не
+    // ушёл, но манифест, объявляющий под ним `event_driven`, отклоняется
+    // `unsupported_contract_version` — версия работает по назначению, а не ломается. Фикстура
+    // `event-driven-probe` переведена на 017.5 именно поэтому, а не «чтобы позеленело».
+    //
+    // Пороги проверяются, а не пересказываются: подвинь их SDK молча — покраснеет здесь.
+    expect(LIFECYCLE_FIELD_MIN_CONTRACT_VERSION).toBe('017.3');
+    expect(EVENT_DRIVEN_MIN_CONTRACT_VERSION).toBe(D3_CONTRACT_VERSION);
   });
 
   it('the projection is not vacuous: it actually rolls the version back', () => {
