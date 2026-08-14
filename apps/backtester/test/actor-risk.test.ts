@@ -373,9 +373,15 @@ describe('RE-ВАЛИДАЦИЯ В МОМЕНТ ИСПОЛНЕНИЯ: обход
     expect(clamp!.clamped![0]!.to).toBeLessThan(10_000);
     // Заявка не снята: профиль разрешает открыть, но меньше.
     expect(record.orders.find((o) => o.orderId === 'pending')!.cancelReason).toBeUndefined();
-    expect(record.journal.filter((j) => j.kind === 'fill').map((f) => (f.kind === 'fill' ? f.orderId : ''))).toContain(
-      'pending',
-    );
+    // ГЛАВНОЕ: исполнен ИМЕННО клампнутый размер, а не запрошенный.
+    //
+    // Мутация «кламп не применяется к книге» сперва не красила ничего: проба смотрела только на
+    // наличие вердикта, и заявка, вставшая исходными 10 000, проходила её с записью «клампнуто».
+    // Вердикт без применения — это отчёт о том, чего не произошло.
+    const pendingFill = record.journal.find((j) => j.kind === 'fill' && j.orderId === 'pending');
+    expect(pendingFill).toBeDefined();
+    if (pendingFill?.kind !== 'fill') throw new Error('ожидался филл ждущей заявки');
+    expect(pendingFill.qty * pendingFill.price).toBeCloseTo(clamp!.clamped![0]!.to, 6);
   });
 
   it('ПОЛОЖИТЕЛЬНЫЙ: ждущая reduceOnly-заявка исполняется и закрывает позицию', async () => {
