@@ -27,7 +27,7 @@ import type {
   ActorLifecycleExecutor,
 } from '../src/engine/actor/execution-handle.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
-import { formatRiskRefusal, parseRiskRefusal } from '../src/engine/actor/risk.js';
+import { evaluateActorPlace, formatRiskRefusal, parseRiskRefusal } from '../src/engine/actor/risk.js';
 import { ACTOR_DEFAULT_RISK } from './helpers/actor-risk.js';
 
 const MINUTE_MS = 60_000;
@@ -372,6 +372,50 @@ describe('риск-отказ ведёт себя как всякий rejection 
     )!.frontier;
     const deniedAt = record.timeline.find((e) => e.envelope.event.kind === 'order.denied')!.frontier;
     expect(deniedAt).toBe(rejectedAt);
+  });
+});
+
+describe('негодное значение профиля громко бросает, а не тихо выключает лимит', () => {
+  // Эти пробы существуют потому, что мутация ИХ ОТСУТСТВИЯ ничего не красила: снятый бросок
+  // проходил мимо всех гейтов. Причина — гейт совместимости отвергает такой профиль раньше, и до
+  // `evaluateActorPlace` он в прод-сценарии не доходит. Защита инварианта, которую ничто не
+  // проверяет, — это не защита, а комментарий: она молча исчезнет при первом же рефакторинге.
+  const flat = {
+    frontierIndex: 0,
+    frontierUs: timestampUsFromMillis(T0),
+    readiness: 'ready',
+    tradingState: 'normal',
+    ledger: { qty: 0, avgPrice: 0, realizedPnl: 0, openedAtUs: null, fills: [] },
+    openOrders: [],
+    timers: [],
+    notes: [],
+    riskDecisions: [],
+  } as unknown as Parameters<typeof evaluateActorPlace>[1];
+
+  const cmd = { kind: 'place', type: 'market', side: 'buy', qtyUsd: 100, clientOrderId: 'x' } as never;
+
+  it('NaN в потолке: бросок, а не молчаливый пропуск блока размера', () => {
+    // Раньше здесь стояло `if (… && Number.isFinite(pct))` — и профиль с NaN пропускал проверку
+    // размера ЦЕЛИКОМ. Прогон шёл без потолка, а профиль выглядел строгим.
+    expect(() =>
+      evaluateActorPlace(cmd, flat, { id: 'r', version: '1', exposureLimits: { maxPositionNotionalPct: Number.NaN } }, 10_000),
+    ).toThrow(/миновал гейт совместимости/);
+  });
+
+  it('отрицательный потолок: тоже бросок', () => {
+    expect(() =>
+      evaluateActorPlace(cmd, flat, { id: 'r', version: '1', exposureLimits: { maxPositionNotionalPct: -1 } }, 10_000),
+    ).toThrow(/миновал гейт совместимости/);
+  });
+
+  it('дробный maxConcurrentPositions: бросок — сравнение с ним не отвергло бы ничего', () => {
+    expect(() =>
+      evaluateActorPlace(cmd, flat, { id: 'r', version: '1', maxConcurrentPositions: Number.NaN }, 10_000),
+    ).toThrow(/миновал гейт совместимости/);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: годный профиль не бросает', () => {
+    expect(() => evaluateActorPlace(cmd, flat, ACTOR_DEFAULT_RISK, 10_000)).not.toThrow();
   });
 });
 
