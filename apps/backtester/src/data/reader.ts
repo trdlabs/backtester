@@ -18,6 +18,15 @@ const BATCH = 256;
 
 /** The backtester's data port: list datasets + open a reader bound to one dataset. */
 export interface BacktesterDataPort {
+  /**
+   * Д3 3.3в — источник НАСТОЯЩИХ данных платформы, для которого допуск периода
+   * обязателен. Фикстуры и мок его не ставят: у них нет доступного интервала, и
+   * спрашивать разрешение не у кого.
+   *
+   * Отсутствие допуска у источника, объявившего себя настоящим, — терминальная
+   * ошибка конфигурации, а не разрешение считать.
+   */
+  readonly requiresAdmission?: boolean;
   listDatasets(): Promise<DatasetDescriptor[]>;
   /** Returns a reader bound to `datasetRef`, or undefined when the dataset is unknown. */
   openDataset(datasetRef: string): Promise<HistoricalDatasetReader | undefined>;
