@@ -376,7 +376,12 @@ describe('ИНТЕГРАЦИЯ: запись раннера проходит с�
           return [{ kind: 'place', type: 'market', clientOrderId: 'in', side: 'buy', qtyUsd: 1000 } as ActorCommand];
         }
         if (step === 4) {
-          return [{ kind: 'place', type: 'market', clientOrderId: 'out', side: 'sell', qtyUsd: 1000 } as ActorCommand];
+          // `reduceOnly` — потому что это выход, а с риск-среза выходом считается только он:
+          // непомеченная встречная заявка отвергается на подаче, и сделки бы не возникло вовсе.
+          // Предмет пробы (сведение канона с решёткой леджера) от метки не зависит.
+          return [
+            { kind: 'place', type: 'market', clientOrderId: 'out', side: 'sell', qtyUsd: 1000, reduceOnly: true } as ActorCommand,
+          ];
         }
         return [];
       },

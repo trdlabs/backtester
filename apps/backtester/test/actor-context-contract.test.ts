@@ -148,16 +148,26 @@ describe('1. reduceOnly ТОЛЬКО сокращает — сверх оста�
     expect(fills(record)[1]!.qty).toBe(fills(record)[0]!.qty);
   });
 
-  it('ПРОВЕРКА ПРОВЕРКИ: та же заявка БЕЗ reduceOnly переворачивает позицию', async () => {
-    // Иначе «не переворачивает» зеленело бы у раннера, который просто не исполняет вторую заявку.
+  it('та же заявка БЕЗ reduceOnly вообще не доходит до исполнения — её отвергает риск', async () => {
+    // ПРОБА ПЕРЕВЕРНУЛАСЬ ВМЕСТЕ С ПРАВИЛОМ. Прежде она доказывала, что без метки заявка
+    // ПЕРЕВОРАЧИВАЕТ позицию, и служила проверкой проверки для клампа: раз без метки переворот
+    // происходит, значит с меткой его предотвращает именно кламп, а не бездействие раннера.
+    //
+    // Риск-срез закрыл эту дорогу: непомеченная встречная заявка отвергается на подаче, потому что
+    // её нотионал МОЖЕТ превысить позицию, а размер в базовой валюте до исполнения неизвестен.
+    // Переворот одной заявкой стал невыразим — и проверка проверки для клампа теперь другая: выше
+    // утверждается, что исполнен ИМЕННО остаток (`fills[1].qty === fills[0].qty`), то есть вторая
+    // заявка исполнилась, а не была проигнорирована.
     const { record } = await run((e, _c, bar) => {
       if (e.kind !== 'market.candle.closed') return [];
       if (bar === 0) return [place({ clientOrderId: 'in', side: 'buy', qtyUsd: 1000 })];
       if (bar === 2) return [place({ clientOrderId: 'out', side: 'sell', qtyUsd: 2000 })];
       return [];
     });
-    expect(fills(record)).toHaveLength(2);
-    expect(record.finalLedger.qty).toBeLessThan(0);
+    // Исполнен только вход: встречная не создала ни филла, ни движения экспозиции.
+    expect(fills(record)).toHaveLength(1);
+    expect(record.finalLedger.qty).toBeGreaterThan(0);
+    expect(record.riskDecisions.map((d) => d.reason)).toEqual(['opposite_side_requires_reduce_only']);
   });
 
   it('reduceOnly, которому уже нечего сокращать, СНИМАЕТСЯ, а не исполняется на ноль', async () => {
@@ -186,22 +196,21 @@ describe('1. reduceOnly ТОЛЬКО сокращает — сверх оста�
     ).toBe(true);
   });
 
-  it('ПРОВЕРКА ПРОВЕРКИ: две такие же заявки БЕЗ reduceOnly исполняются обе', async () => {
+  it('ПРОВЕРКА ПРОВЕРКИ: две частичные reduceOnly-заявки исполняются обе', async () => {
+    // Предмет тот же, что и раньше: снятие выше вызвано ИМЕННО отсутствием предмета сокращения, а
+    // не тем, что раннер не умеет исполнять две заявки подряд. Раньше это показывали двумя
+    // непомеченными продажами, вторая из которых переворачивала позицию; теперь такая заявка
+    // отвергается на подаче, поэтому обе половины помечены и каждая забирает свою долю.
     const { record } = await run((e, _c, bar) => {
       if (e.kind !== 'market.candle.closed') return [];
       if (bar === 0) return [place({ clientOrderId: 'in', side: 'buy', qtyUsd: 1000 })];
-      if (bar === 2) {
-        return [
-          place({ clientOrderId: 'out1', side: 'sell', qtyUsd: 1000 }),
-          place({ clientOrderId: 'out2', side: 'sell', qtyUsd: 1000 }),
-        ];
-      }
+      if (bar === 2) return [place({ clientOrderId: 'out1', side: 'sell', qtyUsd: 500, reduceOnly: true })];
+      if (bar === 3) return [place({ clientOrderId: 'out2', side: 'sell', qtyUsd: 500, reduceOnly: true })];
       return [];
     });
     expect(fills(record).map((f) => f.orderId)).toEqual(['in', 'out1', 'out2']);
-    // Вторая продажа именно переворачивает — значит снятие выше вызвано reduceOnly, а не тем, что
-    // раннер не умеет исполнять две заявки подряд.
-    expect(record.finalLedger.qty).toBeLessThan(0);
+    // Обе исполнились и вместе закрыли позицию в ноль — значит исполняются именно обе.
+    expect(record.finalLedger.qty).toBe(0);
   });
 
   it('reduceOnly в СТОРОНУ позиции отвергается ещё на подаче', async () => {
@@ -434,7 +443,15 @@ describe('3. ctx.position() — санкционированный PositionView,
       (e, _c, bar) => {
         if (e.kind !== 'market.candle.closed') return [];
         if (bar === 0) return [place({ clientOrderId: 'in', side: 'buy', qtyUsd: 1000 })];
-        if (bar === 3) return [place({ clientOrderId: 'flip', side: 'sell', qtyUsd: 4000 })];
+        // ПЕРЕВОРОТ ДВУМЯ ШАГАМИ. Одной непомеченной заявкой на удвоенный объём он больше не
+        // выражается: она отвергается на подаче, потому что её нотионал может пересечь ноль и
+        // открыть противоположную позицию мимо всех проверок открытия. Закрыть и открыть заново —
+        // это ровно тот же итог, но каждый шаг проходит проверки, которые ему положены.
+        // Нотионал с запасом: цена к этому моменту выросла со 100 до 120, и ровно 1000 USD закрыли
+        // бы не всю позицию, а её часть. `reduceOnly` клампится движком по знаковому остатку,
+        // поэтому «с запасом» здесь безопасно и означает именно «закрыть целиком».
+        if (bar === 3) return [place({ clientOrderId: 'close', side: 'sell', qtyUsd: 2000, reduceOnly: true })];
+        if (bar === 4) return [place({ clientOrderId: 'flip', side: 'sell', qtyUsd: 1000 })];
         return [];
       },
       { bars },
