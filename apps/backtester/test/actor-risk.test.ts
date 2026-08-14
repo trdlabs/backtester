@@ -211,27 +211,137 @@ describe('противоположная сторона НЕ равна закр
     expect(record.finalLedger.qty).toBe(0);
   });
 
-  it('ВРЕМЕННОЙ СЛУЧАЙ: заявка, поданная при flat, к исполнению встречает позицию', async () => {
-    // Проверка на подаче про этот момент не знает ничего и знать не может: в момент подачи будущего
-    // состояния не существует. Лимитная заявка подаётся при flat (законное открытие шорта), а
-    // позиция появляется раньше, чем цена дойдёт до её триггера.
-    //
-    // ЧТО ЗДЕСЬ ДОКАЗЫВАЕТСЯ: граница ответственности. Риск отвечает за момент подачи; за момент
-    // исполнения отвечает движок, и он отменяет reduceOnly-заявку, потерявшую предмет
-    // (`reduce_only_*`). Заявка БЕЗ reduceOnly таким гардом не прикрыта — и именно поэтому она
-    // отвергается на подаче, а не пропускается «до выяснения».
-    const record = await run((event, bar) => {
+});
+
+describe('RE-ВАЛИДАЦИЯ В МОМЕНТ ИСПОЛНЕНИЯ: обход правила через время', () => {
+  // Проверка на подаче закрывает только момент подачи. Заявка, законно принятая при flat, стоит в
+  // книге; пока она ждёт цену, позицию открывает другая заявка — и к срабатыванию та же самая
+  // заявка означает уже другое. Без второй проверки правило обходится ЧЕРЕЗ ВРЕМЯ.
+  //
+  // Первая редакция этих проб была ВАКУУМНОЙ: ждущая заявка имела триггер 150 при барах с
+  // high = 105, то есть не срабатывала никогда. «Ничего не произошло» читалось как «правило
+  // соблюдено», хотя проверять было нечего. Здесь триггер ДОСТИЖИМ, и каждая проба смотрит на
+  // ledger и на филлы, а не только на исходы подачи.
+
+  /** Лента с уступом: первые `flat` баров на 100, дальше на 200 — ждущая заявка дожидается цены. */
+  const stepped = (flat: number, total: number): readonly ActorBar[] =>
+    Array.from({ length: total }, (_, i) => {
+      const price = i < flat ? 100 : 200;
+      return {
+        tsUs: timestampUsFromMillis(T0 + i * MINUTE_MS),
+        open: price,
+        high: price + 5,
+        low: price - 5,
+        close: price,
+      };
+    });
+
+  async function runStepped(
+    script: (event: ActorInputEvent, barSeen: number) => readonly ActorCommand[],
+  ): Promise<ActorExecutionRecord> {
+    let barSeen = 0;
+    const executor: ActorLifecycleExecutor = {
+      createActor: async () => ({ __h: 1 }) as unknown as ActorExecutionHandle,
+      executeActorEvent: async (_h, event) => {
+        if (event.kind === 'market.candle.closed') barSeen += 1;
+        return script(event, barSeen);
+      },
+      disposeActor: async () => {},
+    };
+    const tape = stepped(4, 7);
+    const admission = admitActorMarketData(strategy(), {
+      candleVenue: proveCandleVenue({ datasetRef: 'actor-risk', candleVenue: 'bybit' }),
+      symbol: 'BTCUSDT',
+      barIntervalUs: MINUTE_US,
+      barCount: tape.length,
+    });
+    if (admission.refusal !== null) throw new Error(admission.refusal.message);
+    return runEventDrivenSymbol({
+      executor,
+      source: { manifest: strategy().manifest, module: {} },
+      actorId: 'actor-btcusdt',
+      symbol: 'BTCUSDT',
+      seed: 1,
+      params: {},
+      admission,
+      bars: tape,
+      costs: { feeBps: 0, slippageBps: 0, initialEquity: EQUITY },
+      risk: { profile: ACTOR_DEFAULT_RISK, initialEquity: EQUITY },
+    });
+  }
+
+  it('pending → ADD: ждущая заявка, ставшая наращиванием, снимается ДО исполнения', async () => {
+    // `buy stop 150` подан при flat — законное открытие. Пока он ждёт, позиция открывается лонгом,
+    // и к срабатыванию заявка НАРАЩИВАЕТ её — то, что профиль запрещает.
+    const record = await runStepped((event, bar) => {
       if (event.kind !== 'market.candle.closed') return [];
-      // Лимитный шорт с недостижимым на первой полке триггером — стоит и ждёт.
-      if (bar === 1) return [place({ clientOrderId: 'pending', side: 'sell', type: 'limit', price: 150, qtyUsd: 1000 })];
-      // Позиция открывается ПОЗЖЕ подачи, но РАНЬШЕ срабатывания.
-      if (bar === 2) return [place({ clientOrderId: 'later', side: 'buy', qtyUsd: 1000 })];
+      if (bar === 1) return [place({ clientOrderId: 'pending', side: 'buy', type: 'stop_market', stopPrice: 150, qtyUsd: 1000 })];
+      if (bar === 2) return [place({ clientOrderId: 'opener', side: 'buy', qtyUsd: 1000 })];
       return [];
     });
 
-    // Обе заявки приняты на подаче: в свой момент каждая была законна.
+    // Обе приняты на подаче: в свой момент каждая была законна.
     expect(placeOutcomes(record)).toEqual(['applied', 'applied']);
-    // Риск в момент исполнения не участвует — его вердиктов по этому прогону нет.
+    // Исполнился ТОЛЬКО опенер: ждущая снята до `executeFill`.
+    expect(record.journal.filter((j) => j.kind === 'fill').map((f) => (f.kind === 'fill' ? f.orderId : ''))).toEqual([
+      'opener',
+    ]);
+    // Причина доехала — и это причина RESTING-проверки, а не подачи.
+    expect(record.riskDecisions).toEqual([
+      { barIndex: 4, decisionKind: 'resting', action: 'reject', reason: 'resting_add_not_permitted' },
+    ]);
+    // Экспозиция — ровно от одного филла: 1000/100 = 10.
+    expect(record.finalLedger.qty).toBeCloseTo(10, 10);
+    // Заявка доехала до canceled через автомат, а не исчезла.
+    expect(record.orders.find((o) => o.orderId === 'pending')!.terminalState).toBe('canceled');
+  });
+
+  it('pending → FLIP: ждущая встречная без reduceOnly снимается, ноль не пересекается', async () => {
+    // `sell limit 150` подан при flat — законное открытие шорта. Позиция открывается лонгом
+    // раньше, чем цена дойдёт до лимита; к срабатыванию заявка на 3000 при позиции в 1000
+    // пересекла бы ноль и открыла шорт — мимо проверок открытия.
+    //
+    // ЛИМИТ, А НЕ СТОП, И ЭТО НЕ СТИЛЬ: sell-стоп срабатывает на ПАДЕНИИ, а лента растёт со 100 до
+    // 200 — такой триггер недостижим, и проба молча ничего бы не проверяла. Ровно этот дефект был
+    // в первой редакции временного случая.
+    const record = await runStepped((event, bar) => {
+      if (event.kind !== 'market.candle.closed') return [];
+      if (bar === 1) return [place({ clientOrderId: 'pending', side: 'sell', type: 'limit', price: 150, qtyUsd: 3000 })];
+      if (bar === 2) return [place({ clientOrderId: 'opener', side: 'buy', qtyUsd: 1000 })];
+      return [];
+    });
+
+    expect(placeOutcomes(record)).toEqual(['applied', 'applied']);
+    expect(record.journal.filter((j) => j.kind === 'fill').map((f) => (f.kind === 'fill' ? f.orderId : ''))).toEqual([
+      'opener',
+    ]);
+    expect(record.riskDecisions).toEqual([
+      { barIndex: 4, decisionKind: 'resting', action: 'reject', reason: 'resting_opposite_requires_reduce_only' },
+    ]);
+    // ГЛАВНОЕ: позиция осталась ЛОНГОМ. Знак не перевернулся — значит ноль не пересекали.
+    expect(record.finalLedger.qty).toBeGreaterThan(0);
+    expect(record.finalLedger.qty).toBeCloseTo(10, 10);
+  });
+
+  it('ПОЛОЖИТЕЛЬНЫЙ: ждущая reduceOnly-заявка исполняется и закрывает позицию', async () => {
+    // Без этой пробы обе выше зеленели бы и у раннера, снимающего ЛЮБУЮ ждущую заявку при открытой
+    // позиции, — то есть доказывали бы «выход из позиции невозможен», а это другое и неверное
+    // правило. reduceOnly сюда не попадает намеренно: её состояния разбирает движок.
+    const record = await runStepped((event, bar) => {
+      if (event.kind !== 'market.candle.closed') return [];
+      if (bar === 1) return [place({ clientOrderId: 'opener', side: 'buy', qtyUsd: 1000 })];
+      if (bar === 2) {
+        return [place({ clientOrderId: 'exit', side: 'sell', type: 'stop_market', stopPrice: 150, qtyUsd: 3000, reduceOnly: true })];
+      }
+      return [];
+    });
+
+    expect(record.journal.filter((j) => j.kind === 'fill').map((f) => (f.kind === 'fill' ? f.orderId : ''))).toEqual([
+      'opener',
+      'exit',
+    ]);
+    // Позиция закрыта, а не перевёрнута: reduceOnly клампится движком по знаковому остатку.
+    expect(record.finalLedger.qty).toBe(0);
     expect(record.riskDecisions).toEqual([]);
   });
 });

@@ -247,7 +247,59 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
       const seed: FrontierEvent<QueuedPayload>[] = [];
 
       // ── Фаза 1: исполнение. Матчинг стоящих заявок против ЭТОГО бара ──────────
-      const match = matchBar(restingOf(state.openOrders), bar, positionSideOf(state.ledger));
+      let match = matchBar(restingOf(state.openOrders), bar, positionSideOf(state.ledger));
+
+      // ── RE-ВАЛИДАЦИЯ РИСКА В МОМЕНТ ИСПОЛНЕНИЯ ──────────────────────────────
+      //
+      // Проверка на подаче закрывает ТОЛЬКО момент подачи. Заявка, законно принятая при flat,
+      // стоит в книге и ждёт свою цену; пока она ждёт, позиция живёт своей жизнью — её может
+      // открыть другая заявка. К моменту срабатывания та же самая заявка означает уже другое:
+      //
+      //   • смотрит В СТОРОНУ появившейся позиции ⇒ она её НАРАЩИВАЕТ, а профиль без add-лимитов
+      //     наращивание запрещает;
+      //   • смотрит ПРОТИВ позиции и не помечена reduceOnly ⇒ её нотионал может превысить позицию,
+      //     пересечь ноль и открыть противоположную — мимо проверок открытия.
+      //
+      // В обоих случаях правило обходится ЧЕРЕЗ ВРЕМЯ: на подаче оно выполнялось, на исполнении уже
+      // нет, а второй проверки не было. Поэтому она здесь, ДО `executeFill`: заявка снимается
+      // целиком, филла нет, бухгалтерия не двигается.
+      //
+      // reduceOnly сюда не попадает НАМЕРЕННО: оба её состояния разбирает движок по знаковому
+      // остатку (`reduce_only_flat` / `reduce_only_would_increase`), и вторая проверка того же
+      // вопроса завела бы второго судью, который однажды ответит иначе.
+      if (match !== null) {
+        const resting = state.openOrders.find((o) => o.clientOrderId === match!.orderId)!;
+        if (!resting.reduceOnly && state.ledger.qty !== 0) {
+          const intent = orderIntentOf(state.ledger.qty, resting.side);
+          const reason =
+            intent === 'add' ? 'resting_add_not_permitted' : 'resting_opposite_requires_reduce_only';
+          state = {
+            ...state,
+            openOrders: state.openOrders.filter((o) => o.clientOrderId !== resting.clientOrderId),
+          };
+          advanceOrder(orderRecords, resting.clientOrderId, { kind: 'cancel_request' });
+          advanceOrder(orderRecords, resting.clientOrderId, { kind: 'cancel_complete' });
+          riskDecisions.push({
+            barIndex: index,
+            decisionKind: 'resting',
+            action: 'reject',
+            reason,
+          });
+          seed.push({
+            businessTsUs: frontierUs,
+            phase: 'execution',
+            stableSubscriptionId: HOST_SUBSCRIPTION_ID,
+            sourceSequence: 0,
+            payload: {
+              subscriptionId: HOST_SUBSCRIPTION_ID,
+              event: { kind: 'order.canceled', clientOrderId: resting.clientOrderId },
+            },
+          });
+          // Матч снят: исполнять больше нечего, и ни одна строка ниже не выполнится.
+          match = null;
+        }
+      }
+
       if (match !== null) {
         const order = state.openOrders.find((o) => o.clientOrderId === match.orderId)!;
         const baseOpen = match.price;
