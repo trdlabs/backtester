@@ -163,6 +163,79 @@ describe('увеличение открытой позиции запрещен�
   });
 });
 
+describe('противоположная сторона НЕ равна закрытию', () => {
+  it('non-reduceOnly против позиции отвергается — она могла бы пересечь ноль', async () => {
+    // Заявка классифицируется как «против позиции» по ЗНАКУ, и размера в этой классификации нет.
+    // Нотионал больше позиции пересёк бы ноль и открыл ПРОТИВОПОЛОЖНУЮ — то есть открыл бы позицию
+    // мимо `allowedSides`, счётчика и потолка, потому что все три проверяются только на открытии.
+    const record = await run((event, bar) => {
+      if (event.kind !== 'market.candle.closed') return [];
+      if (bar === 1) return [place({ clientOrderId: 'in', qtyUsd: 1000 })];
+      // Втрое больше позиции и БЕЗ reduceOnly.
+      if (bar === 3) return [place({ clientOrderId: 'flip', side: 'sell', qtyUsd: 3000 })];
+      return [];
+    });
+
+    expect(placeOutcomes(record)).toEqual(['applied', 'rejected']);
+    expect(record.riskDecisions.map((d) => d.reason)).toEqual(['opposite_side_requires_reduce_only']);
+  });
+
+  it('ОТКАЗ АТОМАРЕН: ни заявки, ни филла, ни движения ledger', async () => {
+    // Позиция обязана остаться ровно такой, какой была: одна открывающая сделка и ничего сверх.
+    const record = await run((event, bar) => {
+      if (event.kind !== 'market.candle.closed') return [];
+      if (bar === 1) return [place({ clientOrderId: 'in', qtyUsd: 1000 })];
+      if (bar === 3) return [place({ clientOrderId: 'flip', side: 'sell', qtyUsd: 3000 })];
+      return [];
+    });
+
+    expect(record.orders.map((o) => o.orderId)).toEqual(['in']);
+    expect(record.journal.filter((j) => j.kind === 'fill')).toHaveLength(1);
+    // Знак и величина экспозиции не тронуты: флипа не случилось.
+    expect(record.finalLedger.qty).toBeGreaterThan(0);
+    expect(record.finalLedger.qty).toBeCloseTo(10, 10);
+  });
+
+  it('РАЗЛИЧАЮЩИЙ СЛУЧАЙ: та же заявка с reduceOnly проходит', async () => {
+    // Без неё утверждение выше зеленело бы и у контура, запрещающего выход вообще. У reduceOnly
+    // пересечение нуля невозможно по построению: движок клампит её знаковым остатком позиции.
+    const record = await run((event, bar) => {
+      if (event.kind !== 'market.candle.closed') return [];
+      if (bar === 1) return [place({ clientOrderId: 'in', qtyUsd: 1000 })];
+      if (bar === 3) return [place({ clientOrderId: 'out', side: 'sell', qtyUsd: 3000, reduceOnly: true })];
+      return [];
+    });
+
+    expect(placeOutcomes(record)).toEqual(['applied', 'applied']);
+    // И позиция ДЕЙСТВИТЕЛЬНО закрыта, а не перевёрнута избыточным размером.
+    expect(record.finalLedger.qty).toBe(0);
+  });
+
+  it('ВРЕМЕННОЙ СЛУЧАЙ: заявка, поданная при flat, к исполнению встречает позицию', async () => {
+    // Проверка на подаче про этот момент не знает ничего и знать не может: в момент подачи будущего
+    // состояния не существует. Лимитная заявка подаётся при flat (законное открытие шорта), а
+    // позиция появляется раньше, чем цена дойдёт до её триггера.
+    //
+    // ЧТО ЗДЕСЬ ДОКАЗЫВАЕТСЯ: граница ответственности. Риск отвечает за момент подачи; за момент
+    // исполнения отвечает движок, и он отменяет reduceOnly-заявку, потерявшую предмет
+    // (`reduce_only_*`). Заявка БЕЗ reduceOnly таким гардом не прикрыта — и именно поэтому она
+    // отвергается на подаче, а не пропускается «до выяснения».
+    const record = await run((event, bar) => {
+      if (event.kind !== 'market.candle.closed') return [];
+      // Лимитный шорт с недостижимым на первой полке триггером — стоит и ждёт.
+      if (bar === 1) return [place({ clientOrderId: 'pending', side: 'sell', type: 'limit', price: 150, qtyUsd: 1000 })];
+      // Позиция открывается ПОЗЖЕ подачи, но РАНЬШЕ срабатывания.
+      if (bar === 2) return [place({ clientOrderId: 'later', side: 'buy', qtyUsd: 1000 })];
+      return [];
+    });
+
+    // Обе заявки приняты на подаче: в свой момент каждая была законна.
+    expect(placeOutcomes(record)).toEqual(['applied', 'applied']);
+    // Риск в момент исполнения не участвует — его вердиктов по этому прогону нет.
+    expect(record.riskDecisions).toEqual([]);
+  });
+});
+
 describe('размер урезается потолком экспозиции', () => {
   it('заявка выше потолка встаёт КЛАМПНУТОЙ, и это видно в вердикте', async () => {
     // `maxPositionNotionalPct: 1.0` при equity 10 000 даёт потолок 10 000. Запрошено 25 000.

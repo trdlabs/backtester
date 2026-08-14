@@ -97,20 +97,63 @@ const ACTOR_INAPPLICABLE_RULES = new Set(['stopBounds', 'takeBounds']);
 export function unsupportedRiskRules(profile: RiskProfileShape): readonly string[] {
   const unsupported: string[] = [];
 
+  const seen = profile as unknown as Readonly<Record<string, unknown>>;
+
+  // ── Верхний уровень: имена ────────────────────────────────────────────────────
   for (const key of Object.keys(profile)) {
     if (ACTOR_ENFORCEABLE_RULES.has(key) || ACTOR_INAPPLICABLE_RULES.has(key)) continue;
-    // Долив — предмет, у которого носитель ЕСТЬ (`intentOf`), но исполнение отсутствует: режим
-    // (`dca` против `scale_in`) командой не сообщается, и выводить его запрещено. Профиль,
-    // разрешающий долив, actor-путь исполнить не может — и делает вид, что может, только молча.
+    // Долив — предмет, у которого носитель ЕСТЬ (`orderIntentOf`), но исполнение отсутствует:
+    // режим (`dca` против `scale_in`) командой не сообщается, и выводить его запрещено.
     unsupported.push(key);
   }
 
-  // Форма поддержанного правила проверяется отдельно от его наличия: `exposureLimits` без
-  // `maxPositionNotionalPct` — это объявленный потолок, который не с чем сравнить, и трактовать
-  // его как «потолка нет» значило бы исполнить прогон свободнее, чем просил профиль.
-  const exposure = profile.exposureLimits as { readonly maxPositionNotionalPct?: unknown } | undefined;
-  if (exposure !== undefined && typeof exposure.maxPositionNotionalPct !== 'number') {
-    unsupported.push('exposureLimits.maxPositionNotionalPct');
+  // ── ЗНАЧЕНИЯ И ВЛОЖЕННЫЕ ИМЕНА ────────────────────────────────────────────────
+  //
+  // Whitelist по верхнеуровневым именам закрывает «пришло правило, которого мы не знаем». Он НЕ
+  // закрывает «пришло знакомое правило с бессмысленным значением», а это тот же класс дефекта:
+  // `maxPositionNotionalPct: NaN` проходит `typeof === 'number'`, и дальше КАЖДОЕ сравнение с ним
+  // ложно — потолок молча выключен. Профиль при этом выглядит строгим, а прогон идёт без лимита.
+  const exposure = seen.exposureLimits;
+  if (exposure !== undefined) {
+    if (typeof exposure !== 'object' || exposure === null) {
+      unsupported.push('exposureLimits (не объект)');
+    } else {
+      // Вложенные ключи проверяются ТАК ЖЕ: `{ maxPositionNotionalPct: 1, maxLeverage: 10 }`
+      // объявляет плечо, которого actor-путь не исполняет, и молчаливое согласие здесь ничем не
+      // лучше молчаливого согласия наверху.
+      for (const key of Object.keys(exposure)) {
+        if (key !== 'maxPositionNotionalPct') unsupported.push(`exposureLimits.${key}`);
+      }
+      const pct = (exposure as { readonly maxPositionNotionalPct?: unknown }).maxPositionNotionalPct;
+      if (typeof pct !== 'number' || !Number.isFinite(pct)) {
+        unsupported.push(`exposureLimits.maxPositionNotionalPct=${String(pct)}`);
+      } else if (pct <= 0) {
+        // Ноль и отрицательное — не «строжайший лимит», а профиль, под которым нельзя открыть
+        // ничего. Отвергать такой прогон надо на входе, а не отказом каждой заявке по отдельности.
+        unsupported.push(`exposureLimits.maxPositionNotionalPct=${pct} (должен быть > 0)`);
+      }
+    }
+  }
+
+  const maxPositions = seen.maxConcurrentPositions;
+  if (maxPositions !== undefined) {
+    if (typeof maxPositions !== 'number' || !Number.isInteger(maxPositions) || maxPositions < 0) {
+      unsupported.push(`maxConcurrentPositions=${String(maxPositions)}`);
+    }
+  }
+
+  const sides = seen.allowedSides;
+  if (sides !== undefined) {
+    if (!Array.isArray(sides) || sides.length === 0) {
+      unsupported.push(`allowedSides=${JSON.stringify(sides)}`);
+    } else {
+      // ENUM, а не произвольные строки. `allowedSides: ['both']` не совпало бы ни с одной
+      // результирующей стороной и отвергало бы КАЖДОЕ открытие — поведение, неотличимое от
+      // «профиль запрещает торговать», хотя автор профиля имел в виду обратное.
+      for (const side of sides) {
+        if (side !== 'long' && side !== 'short') unsupported.push(`allowedSides[]=${String(side)}`);
+      }
+    }
   }
 
   return unsupported;

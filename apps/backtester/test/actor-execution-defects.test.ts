@@ -177,7 +177,10 @@ describe('2. slippage ПРИМЕНЯЕТСЯ к цене, а не только �
         if (e.kind !== 'market.candle.closed') return [];
         step += 1;
         if (step === 1) return [place({ type: 'market', clientOrderId: 'in', side: 'buy' })];
-        if (step === 3) return [place({ type: 'market', clientOrderId: 'out', side: 'sell' })];
+        // `reduceOnly` — потому что это ВЫХОД, и с риск-среза выходом считается только он:
+        // непомеченная встречная заявка могла бы пересечь ноль и открыть противоположную позицию.
+        // Предмет пробы — направление сдвига цены, и метка его не меняет.
+        if (step === 3) return [place({ type: 'market', clientOrderId: 'out', side: 'sell', reduceOnly: true })];
         return [];
       },
       { slippageBps: 100 },
@@ -203,9 +206,14 @@ describe('2. slippage ПРИМЕНЯЕТСЯ к цене, а не только �
 });
 
 describe('3. совместимость профиля с возможностями актора — whitelist, а не список запретов', () => {
-  it('ПОДДЕРЖАННЫЙ профиль проходит: DEFAULT_RISK исполним целиком', () => {
+  it('ПОДДЕРЖАННЫЙ профиль проходит: DEFAULT_RISK исполним в объявленной части', () => {
     // Главное утверждение среза. Раньше здесь проверялось обратное — что не проходит НИ ОДИН
     // профиль, — и это было верное описание системы без риск-контура.
+    //
+    // «В объявленной части», а не «целиком»: `stopBounds`/`takeBounds` профиль объявляет, а
+    // actor-путь их не применяет — у сырой заявки защитных хинтов нет. Прогон это не блокирует
+    // (ослаблять нечего), но и полной поддержки профиля путь не заявляет — см. applicability
+    // matrix дизайна.
     expect(unsupportedRiskRules(DEFAULT_RISK as never)).toEqual([]);
   });
 
@@ -235,8 +243,72 @@ describe('3. совместимость профиля с возможностя
   it('объявленный exposureLimits без своего числа — это лимит, который не с чем сравнить', () => {
     // Трактовать его как «потолка нет» значило бы исполнить прогон свободнее, чем просил профиль.
     expect(unsupportedRiskRules({ id: 'r', version: '1', exposureLimits: {} })).toEqual([
-      'exposureLimits.maxPositionNotionalPct',
+      'exposureLimits.maxPositionNotionalPct=undefined',
     ]);
+  });
+
+  it('NaN/Infinity в потолке НЕ проходят: сравнение с ними ложно, и лимит выключается молча', () => {
+    // Самый тихий из всех отказов контроля. `typeof NaN === 'number'`, профиль выглядит строгим, а
+    // каждое сравнение с ним ложно — прогон идёт БЕЗ потолка и отдаёт числа, выглядящие как
+    // результат стратегии под лимитом. Проверка имён такое не ловит по построению: имя-то знакомое.
+    expect(unsupportedRiskRules({ id: 'r', version: '1', exposureLimits: { maxPositionNotionalPct: Number.NaN } })).toEqual([
+      'exposureLimits.maxPositionNotionalPct=NaN',
+    ]);
+    expect(
+      unsupportedRiskRules({ id: 'r', version: '1', exposureLimits: { maxPositionNotionalPct: Number.POSITIVE_INFINITY } }),
+    ).toEqual(['exposureLimits.maxPositionNotionalPct=Infinity']);
+  });
+
+  it('нулевой и отрицательный потолок отвергаются на входе, а не отказом каждой заявке', () => {
+    expect(unsupportedRiskRules({ id: 'r', version: '1', exposureLimits: { maxPositionNotionalPct: 0 } })).toEqual([
+      'exposureLimits.maxPositionNotionalPct=0 (должен быть > 0)',
+    ]);
+  });
+
+  it('ВЛОЖЕННОЕ незнакомое правило отвергается так же, как верхнеуровневое', () => {
+    // Whitelist, проверяющий только верхний уровень, пропустил бы объявленное плечо: ключ
+    // `exposureLimits` знаком, а что внутри — никто не смотрел.
+    expect(
+      unsupportedRiskRules({
+        id: 'r',
+        version: '1',
+        exposureLimits: { maxPositionNotionalPct: 1, maxLeverage: 10 } as never,
+      }),
+    ).toEqual(['exposureLimits.maxLeverage']);
+  });
+
+  it('maxConcurrentPositions обязан быть целым неотрицательным', () => {
+    expect(unsupportedRiskRules({ id: 'r', version: '1', maxConcurrentPositions: 1.5 })).toEqual([
+      'maxConcurrentPositions=1.5',
+    ]);
+    expect(unsupportedRiskRules({ id: 'r', version: '1', maxConcurrentPositions: -1 })).toEqual([
+      'maxConcurrentPositions=-1',
+    ]);
+    expect(unsupportedRiskRules({ id: 'r', version: '1', maxConcurrentPositions: Number.NaN })).toEqual([
+      'maxConcurrentPositions=NaN',
+    ]);
+  });
+
+  it('allowedSides — ENUM, а не произвольные строки', () => {
+    // `['both']` не совпало бы ни с одной результирующей стороной и отвергало бы КАЖДОЕ открытие —
+    // поведение, неотличимое от «профиль запрещает торговать», хотя автор имел в виду обратное.
+    expect(unsupportedRiskRules({ id: 'r', version: '1', allowedSides: ['both'] })).toEqual([
+      'allowedSides[]=both',
+    ]);
+    expect(unsupportedRiskRules({ id: 'r', version: '1', allowedSides: [] })).toEqual(['allowedSides=[]']);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: годные значения проходят', () => {
+    // Иначе набор выше зеленел бы и у функции, отвергающей вообще всё.
+    expect(
+      unsupportedRiskRules({
+        id: 'r',
+        version: '1',
+        maxConcurrentPositions: 0,
+        exposureLimits: { maxPositionNotionalPct: 0.25 },
+        allowedSides: ['long', 'short'],
+      }),
+    ).toEqual([]);
   });
 
   it('portfolio-wide лимит против нескольких акторов не применяется per-actor', () => {

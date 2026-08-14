@@ -99,7 +99,11 @@ async function run(
     },
     disposeActor: async () => {},
   };
-  const bars = steppedBars(4, 6);
+  // Уступ на 5-м баре, а не на 4-м: смена позиции теперь идёт ДВУМЯ филлами (закрытие, затем
+  // открытие шорта), а симулятор исполняет не более одной заявки за frontier. На короткой ленте
+  // ждущая `ro` срабатывала РАНЬШЕ, чем успевал исполниться шорт, и проба «позицию перевернули»
+  // тихо превращалась в «позицию закрыли» — тот же сценарий, что этажом выше.
+  const bars = steppedBars(5, 7);
   const admission = admitActorMarketData(strategy(), {
     candleVenue: proveCandleVenue({ datasetRef: 'reduce-only-temporal', candleVenue: 'bybit' }),
     symbol: 'BTCUSDT',
@@ -137,7 +141,20 @@ const place = (over: Record<string, unknown>): ActorCommand =>
  *   бар 3 — `ro` по-прежнему недостижима (high = 105 < 150), исполняется `shift` и меняет позицию;
  *   бар 4 — полка 200, high = 205 ≥ 150: `ro` наконец срабатывает — и встречает ДРУГУЮ позицию.
  */
-const runWithShift = (shiftUsd: number): Promise<ActorExecutionRecord> => {
+/**
+ * СМЕНА ПОЗИЦИИ ИДЁТ ДВУМЯ ШАГАМИ, И ЭТО НЕ УСЛОЖНЕНИЕ РАДИ УСЛОЖНЕНИЯ.
+ *
+ * Прежняя редакция переворачивала позицию ОДНОЙ встречной заявкой на удвоенный объём: движок
+ * закрывал лонг и остатком открывал шорт (флип, `applyFill` случай 3). Риск-срез такую заявку
+ * запретил, и запретил по существу: непомеченная встречная заявка — это заявка, чей нотионал
+ * МОЖЕТ превысить позицию, а размер в базовой валюте до исполнения неизвестен. Пропустить её
+ * значило бы открыть противоположную позицию мимо `allowedSides`, счётчика и потолка.
+ *
+ * Поэтому переворот выражается тем, чем он и является: закрыть (reduceOnly) и открыть заново в
+ * другую сторону. Предмет пробы от этого не меняется — к моменту срабатывания ждущей заявки
+ * позиция ДРУГАЯ, а различает состояния по-прежнему движок.
+ */
+const runShifted = (flip: boolean): Promise<ActorExecutionRecord> => {
   let step = 0;
   return run((e) => {
     if (e.kind !== 'market.candle.closed') return [];
@@ -146,8 +163,15 @@ const runWithShift = (shiftUsd: number): Promise<ActorExecutionRecord> => {
     if (step === 2) {
       return [place({ clientOrderId: 'ro', side: 'sell', type: 'limit', price: 150, reduceOnly: true })];
     }
+    // Закрытие в ТОЧНЫЙ ноль: 1000/100 = 10 без остатка. «Почти ноль» был бы уже другим
+    // состоянием, и движок честно ответил бы на него клампом, а не снятием.
     if (step === 3) {
-      return [place({ clientOrderId: 'shift', side: 'sell', type: 'market', qtyUsd: shiftUsd })];
+      return [place({ clientOrderId: 'close', side: 'sell', type: 'market', qtyUsd: 1000, reduceOnly: true })];
+    }
+    // Второй шаг переворота: позиция уже flat, значит это ОТКРЫТИЕ шорта — законное и проходящее
+    // все проверки открытия.
+    if (step === 4 && flip) {
+      return [place({ clientOrderId: 'short', side: 'sell', type: 'market', qtyUsd: 1000 })];
     }
     return [];
   });
@@ -162,10 +186,8 @@ const orderOf = (record: ActorExecutionRecord, id: string): ActorOrderRecord => 
 };
 
 describe('reduce-only: позицию ЗАКРЫЛИ, пока заявка ждала', () => {
-  // Встречная продажа ровно на 1000 при цене 100 закрывает лонг из 10 в ТОЧНЫЙ ноль: 1000/100 = 10
-  // без остатка. Точность здесь существенна — «почти ноль» был бы уже другим состоянием, и движок
-  // честно ответил бы на него клампом, а не снятием.
-  const scenario = () => runWithShift(1000);
+  // Закрытие в точный ноль, без второго шага: к моменту срабатывания `ro` позиции нет вовсе.
+  const scenario = () => runShifted(false);
 
   it('заявка снимается со словом reduce_only_flat', async () => {
     const record = await scenario();
@@ -179,9 +201,9 @@ describe('reduce-only: позицию ЗАКРЫЛИ, пока заявка жд
 
   it('филла нет: снятие НЕ материализуется в бухгалтерии', async () => {
     const record = await scenario();
-    // Исполнились ровно две заявки — вход и встречная. Третьего филла быть не может: заявка снята.
+    // Исполнились ровно две заявки — вход и закрытие. Третьего филла быть не может: заявка снята.
     const fills = record.journal.filter((j) => j.kind === 'fill');
-    expect(fills.map((f) => (f.kind === 'fill' ? f.orderId : ''))).toEqual(['in', 'shift']);
+    expect(fills.map((f) => (f.kind === 'fill' ? f.orderId : ''))).toEqual(['in', 'close']);
   });
 
   it('позиция осталась закрытой — ledger не сдвинулся снятием', async () => {
@@ -191,9 +213,9 @@ describe('reduce-only: позицию ЗАКРЫЛИ, пока заявка жд
 });
 
 describe('reduce-only: позицию ПЕРЕВЕРНУЛИ, пока заявка ждала', () => {
-  // Встречная продажа на 2000 при цене 100 — это 20 к продаже против лонга в 10: позиция не просто
-  // закрывается, а становится ШОРТОМ в 10. Теперь `ro` (продажа) смотрит в СТОРОНУ позиции.
-  const scenario = () => runWithShift(2000);
+  // Позиция закрывается, а следом открывается ШОРТ. Теперь `ro` (продажа) смотрит в СТОРОНУ
+  // позиции — то есть наращивала бы её, а не сокращала.
+  const scenario = () => runShifted(true);
 
   it('заявка снимается со словом reduce_only_would_increase, а НЕ flat', async () => {
     const record = await scenario();
@@ -212,16 +234,18 @@ describe('reduce-only: позицию ПЕРЕВЕРНУЛИ, пока заяв�
   it('филла нет и здесь: наращивать позицию reduce-only заявка не вправе', async () => {
     const record = await scenario();
     const fills = record.journal.filter((j) => j.kind === 'fill');
-    expect(fills.map((f) => (f.kind === 'fill' ? f.orderId : ''))).toEqual(['in', 'shift']);
+    // Вход, закрытие и открытие шорта — и ни одного филла ждущей `ro`.
+    expect(fills.map((f) => (f.kind === 'fill' ? f.orderId : ''))).toEqual(['in', 'close', 'short']);
   });
 });
 
 describe('два состояния РАЗЛИЧИМЫ, а не совпадают', () => {
-  it('один и тот же сценарий с разным объёмом встречной заявки даёт РАЗНЫЕ слова', async () => {
+  it('один и тот же сценарий с разной судьбой позиции даёт РАЗНЫЕ слова', async () => {
     // Прямое опровержение схлопывания. Если бы движок отвечал одним словом на оба состояния, эта
     // проба была бы единственной, которая это заметит: обе причины по отдельности выглядят
     // правдоподобно, и только их РАЗЛИЧИЕ доказывает, что состояние действительно различается.
-    const [closed, flipped] = await Promise.all([runWithShift(1000), runWithShift(2000)]);
+    const closed = await runShifted(false);
+    const flipped = await runShifted(true);
     const a = orderOf(closed, 'ro').cancelReason;
     const b = orderOf(flipped, 'ro').cancelReason;
 
