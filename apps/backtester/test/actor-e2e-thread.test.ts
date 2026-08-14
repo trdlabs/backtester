@@ -62,38 +62,15 @@ const DATASET = 'actor-thread-1m';
 const FROM = '2023-11-14T22:13:00.000Z';
 const TO = '2023-11-14T22:33:00.000Z';
 
-interface ReaderFixture {
-  readonly candleVenue?: string;
-  readonly rows: readonly {
-    readonly minute_ts: number;
-    readonly open: number;
-    readonly high: number;
-    readonly low: number;
-    readonly close: number;
-  }[];
-}
-
-/** Та же фикстура, что кормит очередь: один источник на обе дороги, расходиться нечему. */
-const readFixture = (): ReaderFixture =>
-  JSON.parse(
-    readFileSync(resolve(HERE, `../fixtures/candles/${DATASET}.json`), 'utf8'),
-  ) as ReaderFixture;
-
-const fixtureVenue = (): string => {
-  const declared = readFixture().candleVenue;
-  if (declared === undefined) throw new Error(`фикстура ${DATASET} не объявляет candleVenue`);
-  return declared;
-};
-
-const fixtureBars = () =>
-  readFixture().rows.map((r) => ({
-    ts: r.minute_ts,
-    open: r.open,
-    high: r.high,
-    low: r.low,
-    close: r.close,
-    volume: 0,
-  }));
+/**
+ * ПОЛНОЕ ожидаемое сообщение отказа, дословно.
+ *
+ * Целиком, а не фрагментом: обрезанное сообщение проходит `toMatch` и скрывает как потерю второй
+ * половины («Деградация в onBarClose НЕ применяется»), так и подмену причины, начинающейся так же.
+ */
+const EXPECTED_REFUSAL =
+  'исполнитель, выбранный для event_driven_probe@1.0.0, не умеет lifecycle актора ' +
+  '(create → execute → dispose). Деградация в onBarClose НЕ применяется: это другая семантика.';
 
 async function runThroughQueue(
   runId: string,
@@ -101,8 +78,8 @@ async function runThroughQueue(
 ): Promise<{
   status: string;
   terminalCode: string | null;
-  issueCodes: readonly string[];
-  firstMessage: string;
+  /** ЦЕЛИКОМ, а не выборка. См. комментарий у возврата. */
+  terminalIssues: readonly unknown[];
 }> {
   __resetTapeCachesForTest();
   const bundle = loadBundle('event-driven-probe.bundle.json');
@@ -141,12 +118,16 @@ async function runThroughQueue(
     // `terminalCode` — ГРУБАЯ величина: `validation_error` склеивает несовместимые причины отказа.
     // Строить на нём утверждение о том, ЧТО именно закрыло путь, нельзя — ровно эту ошибку и
     // допустила первая редакция файла. Различает причины только `terminalIssues`.
-    const issues = (row!.terminalIssues ?? []) as readonly { code: string; message: string }[];
+    //
+    // ВОЗВРАЩАЕТСЯ ЦЕЛИКОМ, И ЭТО ВТОРАЯ ПОПРАВКА ТОГО ЖЕ КЛАССА. Промежуточная редакция сокращала
+    // issues до `issueCodes` + `firstMessage` — то есть снова проверяла выборочно, уже после того,
+    // как выборочность была названа дефектом. Мимо такой проверки проходят: потерянный `path: ''`
+    // (нормативная ссылка на запрос целиком), изменённая `severity`, обрезанное сообщение, лишний
+    // второй issue и любое различие direct/thread за пределами первого сообщения.
     return {
       status: row!.status,
       terminalCode: row!.terminalCode ?? null,
-      issueCodes: issues.map((i) => i.code),
-      firstMessage: issues[0]?.message ?? '',
+      terminalIssues: (row!.terminalIssues ?? []) as readonly unknown[],
     };
   } finally {
     await app.dispose();
@@ -207,24 +188,37 @@ describe.runIf(THREAD_SEAM_LOADS)('прод-дорога: обе транспо�
   // СЕЙЧАС. Он содержателен и в таком виде: транспорт не вправе менять исход, и если поток начнёт
   // отвечать иначе, чем прямая ветка, это будет видно здесь — независимо от того, отказ это или
   // завершение.
-  it('поток и прямая ветка отвергают прогон одинаково', async () => {
-    const [thread, direct] = await Promise.all([
-      runThroughQueue('thr-parity-thread', { barLoopThread: true }),
-      runThroughQueue('thr-parity-direct', { barLoopThread: false }),
-    ]);
+  it('поток и прямая ветка отвергают прогон одинаково — вплоть до полной причины', async () => {
+    // ПОСЛЕДОВАТЕЛЬНО, а не `Promise.all`. Первая редакция запускала оба приложения параллельно, и
+    // это дало недетерминизм: один прогон возвращал ПУСТОЙ `terminalIssues` при непустом у
+    // второго. Два `buildTestApp` в одном процессе делят кэш ленты (`__resetTapeCachesForTest`
+    // сбрасывает его глобально) и временные каталоги — то есть параллельный запуск проверял бы не
+    // паритет транспортов, а живучесть тестовой обвязки. Заметить это позволило только точное
+    // сравнение полных причин: на сокращённой выборке расхождение выглядело бы так же, как
+    // совпадение.
+    const thread = await runThroughQueue('thr-parity-thread', { barLoopThread: true });
+    const direct = await runThroughQueue('thr-parity-direct', { barLoopThread: false });
+    // Сравниваются ПОЛНЫЕ причины, а не их коды: транспорт не вправе изменить ни severity, ни
+    // path, ни текст, ни ЧИСЛО issues. Расхождение за пределами первого сообщения — это ровно то,
+    // что выборочная проверка пропускала бы.
+    expect(thread.terminalIssues).toEqual(direct.terminalIssues);
     expect(thread).toEqual(direct);
   });
 
-  it('причина — ИМЕННО отсутствие actor lifecycle у исполнителя, а не что-нибудь', async () => {
+  it('причина совпадает с ожидаемой ЦЕЛИКОМ — severity, code, message, path', async () => {
     // ЭТА ПРОБА ЗАМЕНЯЕТ ВАКУУМНУЮ. Прежняя редакция утверждала `terminalCode: 'validation_error'`
     // и называла это «исход, предписанный риск-блокером». Утверждение проходило и не значило
     // ничего: `validation_error` склеивает несовместимые причины, а риск-контур до проверки даже
     // не доходит — путь закрывается РАНЬШЕ, на способности исполнителя.
+    //
+    // Сравнение ТОЧНОЕ и по всему массиву. Отдельная проверка «а не риск ли это» после него не
+    // нужна: полная ожидаемая причина исключает любую подмену по построению — чужая причина не
+    // совпадёт ни сообщением, ни кодом. `path: ''` при этом не деталь форматирования, а
+    // нормативная ссылка на запрос целиком (RFC 6901 §5): нарушающего узла у этого отказа нет,
+    // запрос корректен, не совпадает окружение.
     const thread = await runThroughQueue('thr-blocked', { barLoopThread: true });
-    expect(thread.issueCodes).toEqual(['unsupported_lifecycle']);
-    expect(thread.firstMessage).toMatch(/не умеет lifecycle актора/);
-    // Риск здесь НЕ участвует — и это проверяется явно, чтобы проба не начала однажды доказывать
-    // чужую причину под тем же грубым кодом.
-    expect(thread.firstMessage).not.toMatch(/профиль риска/);
+    expect(thread.terminalIssues).toEqual([
+      { severity: 'error', code: 'unsupported_lifecycle', message: EXPECTED_REFUSAL, path: '' },
+    ]);
   });
 });
