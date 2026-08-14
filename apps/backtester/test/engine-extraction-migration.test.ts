@@ -65,10 +65,18 @@ const hashMap = JSON.parse(
   goldens: Record<string, Entry>;
 };
 
-/** Карта следующего звена цепи: 083 S1, бамп контракта 017.3 → 017.4. Её `active` лежит на диске. */
+/** Карта следующего звена цепи: 083 S1, бамп контракта 017.3 → 017.4. */
 const s1HashMap = JSON.parse(
   readFileSync(
     resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-4-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, Entry> };
+
+/** Голова цепи: Д3, бамп 017.4 → 017.5. Её `active` и лежит на диске. */
+const d3HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-5-migration/hash-map.json'),
     'utf8',
   ),
 ) as { goldens: Record<string, Entry> };
@@ -130,8 +138,12 @@ describe('Ф3 extraction-equivalence: backtester on @trdlabs/engine', () => {
         // природы. Вместо этого сцепка: пост-Ф3 хеш обязан быть `legacy` следующего звена, и уже
         // его `active` лежит на диске.
         expect(hashMap.goldens[scenario.id].active).toBe(s1HashMap.goldens[scenario.id].legacy);
+        // Д3 добавил пятое звено (017.4 → 017.5), и файл на диске уехал ещё раз. Маршрут до диска
+        // идёт ЧЕРЕЗ оба звена: разрыв в любом месте — падение здесь, а не тихий дрейф. Сами
+        // хеши Ф3-карты при этом неизменны: они историческая величина, а не текущее состояние.
+        expect(s1HashMap.goldens[scenario.id].active).toBe(d3HashMap.goldens[scenario.id].legacy);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          s1HashMap.goldens[scenario.id].active,
+          d3HashMap.goldens[scenario.id].active,
         );
       });
     });

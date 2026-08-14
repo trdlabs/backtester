@@ -30,7 +30,13 @@ import {
   structuralDiffPaths,
 } from './helpers/golden-scenarios.js';
 
+const D3_MAP = 'apps/backtester/test/fixtures/017-5-migration/hash-map.json';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/** Голова цепи после Д3: её `active` лежит в файлах голденов, а `legacy` — это наш `active`. */
+const d3Map = JSON.parse(readFileSync(resolve(REPO_ROOT, D3_MAP), 'utf8')) as {
+  goldens: Record<string, { legacy: string; active: string }>;
+};
 
 interface Entry {
   readonly scenario: string;
@@ -80,11 +86,15 @@ describe('017.3 → 017.4 golden migration proof', () => {
         expect(hashMap.goldens[scenario.id].legacy).toBe(f3HashMap.goldens[scenario.id].active);
       });
 
-      it('the committed golden on disk IS the 017.4 hash recorded here', async () => {
+      it('the 017.4 hash recorded here is the anchor the NEXT migration starts from', async () => {
         const proof = proveS1ContractMigration(await scenario.run());
         expect(proof.activeHash).toBe(hashMap.goldens[scenario.id].active);
+        // Д3 (017.4 → 017.5) перебазировала committed-голдены ещё раз, поэтому файл на диске
+        // больше НЕ равен 017.4-хешу. Это звено сцепляется со следующим: его `active` обязан
+        // быть `legacy` головы, а на диске лежит уже `active` головы.
+        expect(hashMap.goldens[scenario.id].active).toBe(d3Map.goldens[scenario.id].legacy);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          hashMap.goldens[scenario.id].active,
+          d3Map.goldens[scenario.id].active,
         );
       });
     });

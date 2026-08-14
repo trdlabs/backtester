@@ -38,7 +38,7 @@ function loadMap(relPath: string): Record<string, Entry> {
 describe('цепь миграций голденов', () => {
   it('голова — последнее объявленное звено', () => {
     expect(CHAIN_HEAD).toBe(MIGRATION_CHAIN[MIGRATION_CHAIN.length - 1]);
-    expect(CHAIN_HEAD.id).toBe('017-4-migration');
+    expect(CHAIN_HEAD.id).toBe('017-5-migration');
   });
 
   it('каждое объявленное звено существует на диске', () => {
@@ -83,12 +83,15 @@ describe('право записи в файлы голденов', () => {
     // Регрессия 083 S1 ровно здесь: до этого гейта derive-f3-goldens --write успешно откатывал
     // все три голдена в эпоху Ф3.
     expect(() => assertOwnsGoldenFiles('f3-engine-migration')).toThrow(/не голова цепи/);
-    expect(() => assertOwnsGoldenFiles('f3-engine-migration')).toThrow(/017-4-migration/);
+    // Прежняя голова стала историческим звеном — и потеряла право записи ТЕМ ЖЕ механизмом,
+    // без правки своего кода. Ради этого реестр и заведён.
+    expect(() => assertOwnsGoldenFiles('017-4-migration')).toThrow(/не голова цепи/);
+    expect(() => assertOwnsGoldenFiles('f3-engine-migration')).toThrow(/017-5-migration/);
   });
 
   it('незаявленное звено — тоже не может', () => {
     // Молчаливое «разрешить неизвестному» вернуло бы ту же дыру для любого нового скрипта.
-    expect(() => assertOwnsGoldenFiles('017-5-migration')).toThrow(/не объявлено/);
+    expect(() => assertOwnsGoldenFiles('017-6-migration')).toThrow(/не объявлено/);
   });
 
   it('отказ — исключение, а не тихий пропуск записи', () => {

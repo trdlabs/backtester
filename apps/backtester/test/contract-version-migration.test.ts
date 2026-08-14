@@ -54,6 +54,14 @@ const s1HashMap = JSON.parse(
   ),
 ) as { goldens: Record<string, HashMapEntry> };
 
+/** Голова цепи после Д3: бамп контракта 017.4 → 017.5. Её `active` и лежит на диске. */
+const d3HashMap = JSON.parse(
+  readFileSync(
+    resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-5-migration/hash-map.json'),
+    'utf8',
+  ),
+) as { goldens: Record<string, HashMapEntry> };
+
 const hashMap = JSON.parse(
   readFileSync(resolve(REPO_ROOT, 'apps/backtester/test/fixtures/017-migration/hash-map.json'), 'utf8'),
 ) as { contract: { from: string; to: string }; goldens: Record<string, HashMapEntry> };
@@ -95,8 +103,11 @@ describe('017.2 → 017.3 golden migration proof', () => {
         // разъехаться незамеченной, пока концы сходятся.
         expect(recorded.active).toBe(f3HashMap.goldens[scenario.id].legacy);
         expect(f3HashMap.goldens[scenario.id].active).toBe(s1HashMap.goldens[scenario.id].legacy);
+        // Д3 добавил пятое звено (017.4 → 017.5): файл на диске уехал ещё раз. Цепь по-прежнему
+        // проверяется ЦЕЛИКОМ — до головы, а не до ближайшего соседа.
+        expect(s1HashMap.goldens[scenario.id].active).toBe(d3HashMap.goldens[scenario.id].legacy);
         expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          s1HashMap.goldens[scenario.id].active,
+          d3HashMap.goldens[scenario.id].active,
         );
       });
     });
