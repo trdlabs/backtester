@@ -7,7 +7,7 @@
     "summary": "минимальный event_driven бандл для гейта проводки флага раскатки",
     "rationale": "доказать, что решение о допуске одинаково на прямой и потоковой дорогах",
     "author": "agent",
-    "contractVersion": "017.4",
+    "contractVersion": "017.5",
     "status": "research_only",
     "paramsSchema": {
       "type": "object",
