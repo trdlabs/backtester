@@ -28,6 +28,7 @@ import { InMemoryArtifactStore } from '../src/artifacts/store.js';
 import { contentRef } from '../src/determinism/hash.js';
 import type { ActorTimelineDocument } from '../src/engine/actor/timeline-artifact.js';
 import type { RunOutcome } from '../src/engine/artifacts.js';
+import { DEFAULT_RISK } from '../src/engine/profiles.js';
 
 const MINUTE_MS = 60_000;
 const MINUTE_US = 60_000_000;
@@ -96,8 +97,15 @@ const NO_COST: ExecutionProfile = {
   slippageModel: { kind: 'fixed_bps', bps: 0 },
 };
 
-/** Профиль БЕЗ объявленных лимитов — единственный, на котором actor-путь сегодня открыт. */
-const NO_LIMITS = { id: 'risk_none', version: '1.0.0', allowedSides: ['long', 'short'] };
+/**
+ * НАСТОЯЩИЙ зарегистрированный профиль — тот же объект, что стоит в `TRUSTED_REGISTRY_DEFINITION`.
+ *
+ * Прежде здесь жил `NO_LIMITS = { id: 'risk_none', … }`, сконструированный самим тестом, и на нём
+ * набор был зелен. Это доказывало сквозную семантику на конфигурации, в которую прод попасть НЕ
+ * МОЖЕТ: в реестре такого профиля нет. Долг снят вместе с риск-контуром — теперь путь открыт на
+ * том же профиле, что и прод, и «сквозной прогон проходит» означает ровно то, что читается.
+ */
+const RISK = DEFAULT_RISK;
 
 /**
  * Настоящий `EventDrivenModule`: входит на первой свече, выходит `reduceOnly` на четвёртой.
@@ -160,7 +168,7 @@ const request = (): BacktestRunRequest =>
       from: new Date(T0).toISOString(),
       to: new Date(T0 + BAR_COUNT * MINUTE_MS).toISOString(),
     },
-    riskProfileRef: { id: NO_LIMITS.id, version: NO_LIMITS.version },
+    riskProfileRef: { id: RISK.id, version: RISK.version },
     executionProfileRef: { id: NO_COST.id, version: NO_COST.version },
     seed: 11,
     metrics: ['pnl'],
@@ -186,7 +194,7 @@ async function runE2E(
   const outcome = await runBacktest(request(), {
     registry: createModuleRegistry({
       strategies: [Object.assign(probe.make(), { moduleFactory: probe.make })],
-      riskProfiles: [NO_LIMITS as never],
+      riskProfiles: [RISK],
       executionProfiles: [NO_COST],
     }),
     dataset,

@@ -42,7 +42,8 @@ import { AUTH, buildTestApp, testDeps } from './helpers.js';
 import { loadConfig } from '../src/config.js';
 import { InMemoryArtifactStore } from '../src/artifacts/store.js';
 import { __resetTapeCachesForTest } from '../src/data/tape-cache.js';
-import { unenforcedRiskLimits } from '../src/engine/actor/production.js';
+import { unsupportedRiskRules } from '../src/engine/actor/production.js';
+import { DCA_RISK } from '../src/engine/profiles.js';
 import { TRUSTED_REGISTRY_DEFINITION } from '../src/engine/registry-definition.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -151,22 +152,23 @@ describe('БЛОКЕР: риск-контур закрывает actor-путь 
     ]);
   });
 
-  it('ни один зарегистрированный профиль не проходит actor-допуск', () => {
-    // Пока это истинно, ни один actor-прогон прод-дорогой не может завершиться:
-    // `runActorProduction` отвергает такой профиль до `createActor`, потому что RiskEngine у
-    // actor-пути нет, `riskDecisions` пуст, а запрошенный размер доехал бы до исполнения без
-    // клампа. Проверяется ОТСУТСТВИЕ проходящих, а не наличие блокируемых: список проходящих
-    // печатается в отказе поимённо, и диагносту сразу видно, какой профиль изменился.
-    const passing = TRUSTED_REGISTRY_DEFINITION.riskProfiles
-      .filter((p) => unenforcedRiskLimits(p as never).length === 0)
-      .map((p) => `${p.id}@${p.version}`);
-    expect(passing).toEqual([]);
+  it('КАЖДЫЙ зарегистрированный профиль исполним actor-путём', () => {
+    // Утверждение развёрнуто на 180°, и это и есть содержание риск-среза. Прежде здесь стояло «не
+    // проходит ни один» — верное описание системы БЕЗ риск-контура.
+    //
+    // Проверяется весь реестр, а не `DEFAULT_RISK` поимённо: профиль, добавленный завтра с
+    // правилом, которого actor-путь не исполняет, обязан покрасить именно эту строку — до того,
+    // как прогон под ним посчитается свободнее, чем разрешено.
+    const unsupported = TRUSTED_REGISTRY_DEFINITION.riskProfiles
+      .map((p) => ({ ref: `${p.id}@${p.version}`, rules: unsupportedRiskRules(p as never) }))
+      .filter((r) => r.rules.length > 0);
+    expect(unsupported).toEqual([]);
   });
 
-  it('ПРОВЕРКА ПРОВЕРКИ: профиль без лимитов прошёл бы — блокирует именно их наличие', () => {
-    // Иначе утверждение выше зеленело бы и у функции, возвращающей непустой список всегда, то есть
-    // доказывало бы «actor-путь закрыт всегда», а это другой и неверный факт.
-    expect(unenforcedRiskLimits({ id: 'r', version: '1', allowedSides: ['long', 'short'] })).toEqual([]);
+  it('ПРОВЕРКА ПРОВЕРКИ: неисполнимый профиль был бы отвергнут — гейт не пропускает всё подряд', () => {
+    // Иначе утверждение выше зеленело бы и у функции, возвращающей пустой список всегда, то есть
+    // доказывало бы «actor-путь принимает любой профиль» — другой и куда более опасный факт.
+    expect(unsupportedRiskRules(DCA_RISK as never)).toEqual(['dcaLimits', 'scaleInLimits']);
   });
 });
 

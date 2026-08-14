@@ -33,6 +33,7 @@ import type {
   ActorLifecycleExecutor,
 } from '../src/engine/actor/execution-handle.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
+import { riskBinding } from './helpers/actor-risk.js';
 
 const MINUTE_MS = 60_000;
 const MINUTE_US = 60_000_000;
@@ -130,6 +131,7 @@ function makeRun(opts: {
     admission,
     bars: bars(opts.barCount),
     costs: COSTS,
+    risk: riskBinding(COSTS.initialEquity),
   };
   return { input, seen, calls, run: () => runEventDrivenSymbol(input) };
 }
@@ -240,8 +242,21 @@ describe('одно readiness на контекст и на валидацию', 
       onEvent: (event, ctx) => {
         if (event.kind !== 'market.candle.closed') return [];
         observed.push({ readiness: ctx.readiness, outcome: '' });
+        // ЛИМИТНАЯ заявка по заведомо недостижимой цене, а не рыночная, и это не деталь стиля.
+        // Рыночная исполнилась бы на следующем баре, открыв позицию, — и все последующие заявки
+        // стали бы НАРАЩИВАНИЕМ, которое риск отвергает законно. Тест утверждал бы тогда сумму
+        // двух правил сразу и краснел бы при изменении любого из них, называя чужую причину.
+        // Здесь предмет один: значение `readiness`, которое видит автор, и значение, по которому
+        // судят его команду, — это одно и то же значение.
         return [
-          { kind: 'place', type: 'market', clientOrderId: `o${observed.length}`, side: 'buy', qtyUsd: 100 } as ActorCommand,
+          {
+            kind: 'place',
+            type: 'limit',
+            price: 1,
+            clientOrderId: `o${observed.length}`,
+            side: 'buy',
+            qtyUsd: 100,
+          } as ActorCommand,
         ];
       },
     });

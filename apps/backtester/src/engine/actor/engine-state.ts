@@ -20,6 +20,7 @@ import {
   type Validation,
   type Applied,
   type BatchCore,
+  type RiskDecision,
 } from '@trdlabs/engine';
 import { HOST_SUBSCRIPTION_ID } from '@trdlabs/sdk/research-contract';
 import type {
@@ -31,6 +32,20 @@ import type {
   TimestampUs,
   TradingState,
 } from '@trdlabs/sdk/research-contract';
+
+import { evaluateActorPlace, type ActorRiskProfile } from './risk.js';
+
+/**
+ * Привязка риск-профиля к ядру команд.
+ *
+ * `initialEquity` едет вместе с профилем, а не берётся из состояния, потому что в состоянии его
+ * нет: ledger знает только реализованное и экспозицию. Долевые лимиты профиля считаются от
+ * mark-to-market equity, и её база — стартовый капитал прогона.
+ */
+export interface ActorRiskBinding {
+  readonly profile: ActorRiskProfile;
+  readonly initialEquity: number;
+}
 
 /** Заявка, стоящая в книге симулятора. Форма ХОСТА: движок матчит свою `RestingOrder`. */
 export interface ActorOpenOrder {
@@ -73,6 +88,15 @@ export interface ActorEngineState {
   readonly timers: readonly ScheduledTimer[];
   /** Заметки команды `annotate` — единственный её эффект, и он обязан быть наблюдаем. */
   readonly notes: readonly { readonly frontier: number; readonly note: string }[];
+  /**
+   * Вердикты риска, накопленные ВНУТРИ батча.
+   *
+   * Здесь копятся только `accept`/`clamp`: `validate` состояние не пишет по контракту `BatchCore`,
+   * поэтому отказы дописывает раннер из `outcome.rejectedReason` — там же, где он строит timeline.
+   * Разнесение вынужденное: пока `Validation` бинарен, «принять изменённое» выразимо только в
+   * `apply`, а «отклонить» — только в `validate`.
+   */
+  readonly riskDecisions: readonly RiskDecision[];
 }
 
 /**
@@ -131,7 +155,9 @@ export function actorRejectionEvent(
  * средств или неизвестная заявка, и получает те же гарантии — префикс, обрыв суффикса, событие в
  * outbox, запись в timeline.
  */
-export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState> {
+export function createActorBatchCore(
+  risk: ActorRiskBinding,
+): BatchCore<ActorCommand, ActorEngineState> {
   return {
     validate(command, state): Validation {
       switch (command.kind) {
@@ -188,6 +214,16 @@ export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState
           if (!Number.isFinite(command.qtyUsd) || command.qtyUsd <= 0) {
             return { ok: false, reason: `place отклонена: qtyUsd обязан быть положительным, получено ${command.qtyUsd}` };
           }
+          // РИСК — ПОСЛЕДНИМ, и порядок здесь нормативен. Все проверки выше говорят о том, что
+          // заявка вообще является заявкой (есть цена своего вида, номер не занят, размер
+          // положителен). Риск отвечает на другой вопрос — позволена ли ТАКАЯ заявка профилем, — и
+          // задавать его о структурно негодной команде значило бы получить вердикт о том, чего нет.
+          //
+          // Отказ риска идёт ТОЙ ЖЕ дорогой, что и всякий другой: `applyBatch` коммитит префикс, не
+          // применяет отклонённую, обрывает суффикс и кладёт `order.denied` в outbox. Отдельного
+          // пути у риска нет намеренно — он получил бы отдельные гарантии, а значит другие.
+          const verdict = evaluateActorPlace(command, state, risk.profile, risk.initialEquity);
+          if (verdict.kind === 'reject') return { ok: false, reason: verdict.reason };
           return { ok: true };
         }
         case 'cancel': {
@@ -219,12 +255,25 @@ export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState
       switch (command.kind) {
         case 'place': {
           const trigger = triggerPriceOf(command);
+          // ТОТ ЖЕ вердикт, что видел `validate`. Функция чиста от пары `(command, state)`, а
+          // `applyBatch` передаёт сюда ровно ту же пару, поэтому второй вызов тождествен первому.
+          // Кэшировать его между половинами `BatchCore` значило бы завести между ними состояние —
+          // то самое, чего эта форма избегает намеренно.
+          //
+          // Кламп живёт ЗДЕСЬ, и это вынужденно: `Validation` бинарен — он умеет «принять» и
+          // «отклонить», но не умеет «принять изменённое», а подменить команду между `validate` и
+          // `apply` негде. Значит урезанный размер может появиться только там, где строится заявка.
+          const verdict = evaluateActorPlace(command, state, risk.profile, risk.initialEquity);
+          const qtyUsd = verdict.kind === 'clamp' ? verdict.qtyUsd : command.qtyUsd;
           const order: ActorOpenOrder = {
             clientOrderId: command.clientOrderId,
             side: command.side,
             // Нотионал и только он. Базовый размер появится в момент исполнения и посчитает его
             // движок (`executeFill`) — здесь его не существует, и подставлять нечего.
-            qtyUsd: command.qtyUsd,
+            //
+            // В книгу встаёт КЛАМПНУТОЕ значение, а не запрошенное: заявка, стоящая размером, о
+            // котором риск сказал «нет», отличалась бы от разрешённой только записью в артефактах.
+            qtyUsd,
             type: command.type,
             // `limit` несёт `price`, `stop_market` — `stopPrice`. Разные поля контракта, и путать
             // их нельзя: у стопа лимитной цены нет вовсе.
@@ -234,7 +283,16 @@ export function createActorBatchCore(): BatchCore<ActorCommand, ActorEngineState
             reduceOnly: command.reduceOnly === true,
           };
           return {
-            state: { ...state, openOrders: [...state.openOrders, order] },
+            state: {
+              ...state,
+              openOrders: [...state.openOrders, order],
+              // Вердикт записывается ТОЛЬКО когда риску было что сказать. `accept` — это отсутствие
+              // возражений, а не решение: строка «риск не возражал» на каждую заявку утопила бы в
+              // шуме те, где он вмешался, и `riskDecisions` перестал бы отвечать на свой вопрос.
+              ...(verdict.kind === 'clamp'
+                ? { riskDecisions: [...state.riskDecisions, verdict.decision] }
+                : {}),
+            },
             events: [outbox({ kind: 'order.accepted', clientOrderId: command.clientOrderId }, state.frontierUs)],
           };
         }

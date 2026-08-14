@@ -29,6 +29,7 @@ import type {
   ActorLifecycleExecutor,
 } from '../src/engine/actor/execution-handle.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
+import { riskBinding } from './helpers/actor-risk.js';
 import {
   ACTOR_TIMELINE_ARTIFACT_TYPE,
   ActorTimelineIntegrityError,
@@ -107,6 +108,7 @@ async function realRecord(actorId = 'actor-btcusdt'): Promise<ActorExecutionReco
     admission,
     bars: tape,
     costs: { feeBps: 0, slippageBps: 0, initialEquity: 10_000 },
+    risk: riskBinding(10_000),
   });
 }
 

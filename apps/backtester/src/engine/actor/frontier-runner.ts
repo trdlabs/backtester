@@ -31,6 +31,7 @@ import {
   type Fill,
   type FrontierEvent,
   type Ledger,
+  type RiskDecision,
   transition,
   type OrderEvent,
   type OrderState,
@@ -58,7 +59,9 @@ import {
   type ActorEngineState,
   type ActorOpenOrder,
   type ActorOutboxPayload,
+  type ActorRiskBinding,
 } from './engine-state.js';
+import { orderIntentOf, parseRiskRefusal } from './risk.js';
 import type {
   ActorCloseAnnotation,
   ActorEquitySample,
@@ -103,6 +106,14 @@ export interface FrontierRunInput {
   readonly costs: ActorExecutionCosts;
   readonly cascade: CascadeBudget;
   readonly tradingState?: TradingState;
+  /**
+   * Риск-профиль прогона, привязанный к ядру команд.
+   *
+   * Обязателен, без дефолта — по той же причине, что и `costs`: прогон с забытым риском отдал бы
+   * числа, выглядящие как результат стратегии, хотя это результат стратегии БЕЗ лимитов. Разница
+   * не в точности, а в предмете.
+   */
+  readonly risk: ActorRiskBinding;
 }
 
 /** Сторона позиции для `matchBar`: при flat берётся `buy` — «худшее» тогда не определено ничем. */
@@ -126,12 +137,9 @@ function equityOf(ledger: Ledger, mark: number, initialEquity: number): number {
   return initialEquity + ledger.realizedPnl + unrealized;
 }
 
-/** Намерение заявки относительно ТЕКУЩЕЙ экспозиции — выводится, а не объявляется автором. */
-function intentOf(ledger: Ledger, side: Side): ActorOrderRecord['intent'] {
-  if (ledger.qty === 0) return 'open';
-  const signed = side === 'buy' ? 1 : -1;
-  return Math.sign(ledger.qty) === signed ? 'add' : 'close';
-}
+// Намерение заявки (`open`/`add`/`close`) живёт в `risk.ts` — ОДНИМ определением на двоих. Прежде
+// оно было объявлено здесь, а риск-контур завёл бы своё: разойдись эти копии — и риск отвергал бы
+// как наращивание то, что запись прогона называет закрытием, причём обе стороны были бы «правы».
 
 interface QueuedPayload extends ActorOutboxPayload {
   readonly causedBySeq?: number;
@@ -182,7 +190,7 @@ function advanceOrder(
  */
 export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorExecutionRecord> {
   const host = createActorHost();
-  const core = createActorBatchCore();
+  const core = createActorBatchCore(input.risk);
   const rngSource = createSeededRng(input.seed);
   const bindings = input.admission.bindings;
   const tradingFrom = input.admission.tradingFromBarIndex;
@@ -196,6 +204,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
     openOrders: [],
     timers: [],
     notes: [],
+    riskDecisions: [],
   };
 
   let seqCursor = 0;
@@ -217,6 +226,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
   const journal: ActorJournalEntry[] = [];
   const closes: ActorCloseAnnotation[] = [];
   const equity: ActorEquitySample[] = [];
+  const riskDecisions: RiskDecision[] = [];
   const orderRecords = new Map<string, TrackedOrder>();
 
   for (let index = 0; index < input.bars.length; index += 1) {
@@ -315,7 +325,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
           causedBy: order.clientOrderId,
         };
         const before = state.ledger;
-        const intent = intentOf(before, order.side);
+        const intent = orderIntentOf(before.qty, order.side);
         state = {
           ...state,
           ledger: applyFill(before, fill),
@@ -456,10 +466,32 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
             ctx,
           );
 
+          const riskSeen = state.riskDecisions.length;
           const outcome = applyBatch(commands, state, core, input.cascade, counter, (c, i, reason) =>
             actorRejectionEvent(c, i, reason, frontierUs),
           );
           state = outcome.state;
+
+          // ВЕРДИКТЫ РИСКА СОБИРАЮТСЯ ИЗ ДВУХ МЕСТ, И ЭТО ВЫНУЖДЕННО.
+          //
+          // `apply` записал в состояние то, что смог, — клампы. Отказы туда попасть не могли:
+          // `validate` состояние не пишет по контракту `BatchCore`, а отклонённая команда до
+          // `apply` не доходит вовсе. Поэтому отказ восстанавливается здесь, из того же
+          // `outcome`, по которому строится timeline, — и ровно для тех причин, которые пометил
+          // риск. Структурные отказы (прогрев, занятый номер, отрицательный размер) риску не
+          // принадлежат и в его вердикты не попадают.
+          riskDecisions.push(...state.riskDecisions.slice(riskSeen));
+          if (outcome.rejectedIndex !== null && outcome.rejectedReason !== null) {
+            const code = parseRiskRefusal(outcome.rejectedReason);
+            if (code !== null) {
+              riskDecisions.push({
+                barIndex: index,
+                decisionKind: 'place',
+                action: 'reject',
+                reason: code,
+              });
+            }
+          }
           deliveredSeqs.push(scheduled.seq);
           lastCommittedSeq = scheduled.seq;
 
@@ -485,7 +517,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
                     orderId: ev.clientOrderId,
                     placedAtFrontier: placed.placedAtFrontier,
                     side: placed.side === 'buy' ? 'long' : 'short',
-                    intent: intentOf(state.ledger, placed.side),
+                    intent: orderIntentOf(state.ledger.qty, placed.side),
                     terminalState: 'pending_new',
                   },
                   state: 'pending_new',
@@ -523,6 +555,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
 
       frontiers.push({ index, tsUs: frontierUs, lastCommittedSeq });
       equity.push({ frontier: index, equity: equityOf(state.ledger, bar.close, input.costs.initialEquity) });
+
     });
   }
 
@@ -535,7 +568,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
     journal,
     closes,
     equity,
-    riskDecisions: [],
+    riskDecisions,
     finalLedger: state.ledger,
     timeline,
   };

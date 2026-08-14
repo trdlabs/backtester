@@ -15,7 +15,8 @@ import type { ActorCommand, ActorInputEvent, MarketDataRequirement } from '@trdl
 import { timestampUsFromMillis } from '@trdlabs/sdk/research-contract';
 
 import { admitActorMarketData, proveCandleVenue } from '../src/engine/actor/admission.js';
-import { unenforcedRiskLimits } from '../src/engine/actor/production.js';
+import { portfolioLimitUnsupported, unsupportedRiskRules } from '../src/engine/actor/production.js';
+import { DCA_RISK, DEFAULT_RISK } from '../src/engine/profiles.js';
 import { runEventDrivenSymbol } from '../src/engine/actor/run-symbol.js';
 import type { ActorBar } from '../src/engine/actor/frontier-runner.js';
 import type { ActorExecutionRecord } from '../src/engine/actor/execution-record.js';
@@ -24,6 +25,7 @@ import type {
   ActorLifecycleExecutor,
 } from '../src/engine/actor/execution-handle.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
+import { riskBinding } from './helpers/actor-risk.js';
 
 const MINUTE_MS = 60_000;
 const MINUTE_US = 60_000_000;
@@ -93,6 +95,7 @@ async function run(
     admission,
     bars,
     costs: { feeBps: 0, slippageBps: opts.slippageBps ?? 0, initialEquity: 10_000 },
+    risk: riskBinding(10_000),
   });
 }
 
@@ -199,32 +202,49 @@ describe('2. slippage ПРИМЕНЯЕТСЯ к цене, а не только �
   });
 });
 
-describe('3. риск-контур: отсутствует — значит fail-closed, а не «как-нибудь»', () => {
-  it('объявленные лимиты перечисляются поимённо', () => {
+describe('3. совместимость профиля с возможностями актора — whitelist, а не список запретов', () => {
+  it('ПОДДЕРЖАННЫЙ профиль проходит: DEFAULT_RISK исполним целиком', () => {
+    // Главное утверждение среза. Раньше здесь проверялось обратное — что не проходит НИ ОДИН
+    // профиль, — и это было верное описание системы без риск-контура.
+    expect(unsupportedRiskRules(DEFAULT_RISK as never)).toEqual([]);
+  });
+
+  it('РАЗРЕШЁННЫЙ ПРОФИЛЕМ ДОЛИВ не исполним и потому отвергается', () => {
+    // Предмет у правила ЕСТЬ (`intentOf` отличает наращивание), а исполнения нет: режим `dca`
+    // против `scale_in` командой не сообщается. Исполнить молча значило бы разрешить долив под
+    // профилем, который его лимитирует.
+    expect(unsupportedRiskRules(DCA_RISK as never)).toEqual(['dcaLimits', 'scaleInLimits']);
+  });
+
+  it('НЕЗНАКОМОЕ правило останавливает прогон — профиль не только DEFAULT_RISK навсегда', () => {
+    // Whitelist ловит то, чего этот код никогда не видел. Blacklist пропустил бы каждое правило,
+    // которого мы сегодня не предвидели, — то есть ровно те, что придут с пользовательскими
+    // профилями.
     expect(
-      unenforcedRiskLimits({
-        id: 'r',
-        version: '1',
-        maxConcurrentPositions: 3,
-        exposureLimits: { maxPositionNotionalPct: 10 },
-        allowedSides: ['long'],
-        stopBounds: {},
-      }),
-    ).toEqual([
-      'maxConcurrentPositions=3',
-      'exposureLimits',
-      'allowedSides=[long]',
-      'stopBounds',
+      unsupportedRiskRules({ id: 'r', version: '1', maxDailyLossPct: 5 } as never),
+    ).toEqual(['maxDailyLossPct']);
+  });
+
+  it('stopBounds/takeBounds НЕ блокируют: у них нет предмета, а не «мы их игнорируем»', () => {
+    // Разница существенна и записана applicability matrix'ей: у сырой заявки актора защитных
+    // хинтов нет вовсе, поэтому их неклампирование ничего не ослабляет. Выводить protection из
+    // `stop_market` или `avgPrice` запрещено решением владельца.
+    expect(unsupportedRiskRules({ id: 'r', version: '1', stopBounds: {}, takeBounds: {} })).toEqual([]);
+  });
+
+  it('объявленный exposureLimits без своего числа — это лимит, который не с чем сравнить', () => {
+    // Трактовать его как «потолка нет» значило бы исполнить прогон свободнее, чем просил профиль.
+    expect(unsupportedRiskRules({ id: 'r', version: '1', exposureLimits: {} })).toEqual([
+      'exposureLimits.maxPositionNotionalPct',
     ]);
   });
 
-  it('профиль без лимитов не мешает', () => {
-    // Проверка проверки: без неё «лимиты отвергаются» зеленело бы и у функции, возвращающей всё.
-    expect(unenforcedRiskLimits({ id: 'r', version: '1', allowedSides: ['long', 'short'] })).toEqual([]);
-  });
-
-  it('пустой exposureLimits — это отсутствие лимита, а не лимит', () => {
-    expect(unenforcedRiskLimits({ id: 'r', version: '1', exposureLimits: {} })).toEqual([]);
+  it('portfolio-wide лимит против нескольких акторов не применяется per-actor', () => {
+    // Per-actor трактовка тихо превратила бы «1 позиция на портфель» в «до N позиций».
+    expect(portfolioLimitUnsupported(DEFAULT_RISK as never, 1)).toBe(false);
+    expect(portfolioLimitUnsupported(DEFAULT_RISK as never, 2)).toBe(true);
+    // Проверка проверки: дело в ЛИМИТЕ, а не в числе акторов самом по себе.
+    expect(portfolioLimitUnsupported({ id: 'r', version: '1' }, 2)).toBe(false);
   });
 });
 

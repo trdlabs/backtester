@@ -25,6 +25,7 @@ import type { ActorBar, ActorExecutionCosts } from './frontier-runner.js';
 import { runEventDrivenSymbol } from './run-symbol.js';
 import type { ActorLifecycleExecutor } from './execution-handle.js';
 import type { ActorExecutionRecord } from './execution-record.js';
+import type { ActorRiskProfile } from './risk.js';
 
 export interface ActorProductionInput {
   readonly strategy: ResolvedStrategy;
@@ -40,7 +41,7 @@ export interface ActorProductionInput {
   readonly riskProfile: RiskProfileShape;
 }
 
-/** Та часть риск-профиля, чьи лимиты actor-путь обязан соблюдать, но пока не умеет. */
+/** Риск-профиль прогона в той форме, в какой его видит допуск: ключи важны все, включая чужие. */
 export interface RiskProfileShape {
   readonly id: string;
   readonly version: string;
@@ -49,34 +50,121 @@ export interface RiskProfileShape {
   readonly allowedSides?: readonly string[];
   readonly stopBounds?: unknown;
   readonly takeBounds?: unknown;
+  readonly dcaLimits?: unknown;
+  readonly scaleInLimits?: unknown;
 }
 
 /**
- * Какие объявленные лимиты actor-путь НЕ соблюдает.
+ * Правила профиля, ИСПОЛНИМЫЕ actor-путём. Whitelist, а не blacklist, и это принципиально.
  *
- * Legacy-путь пропускает каждую заявку через `RiskEngine`: тот клампит размер, режет запрещённую
- * сторону и отвергает превышение потолка, а его вердикты уезжают в `riskDecisions` артефактов.
- * Actor-путь этого контура НЕ имеет: `riskDecisions` у него пуст, а `qtyUsd` доезжает до
- * исполнения ровно тем, что попросил автор.
- *
- * Молча исполнить прогон с объявленным профилем значило бы посчитать его БЕЗ лимитов и отдать
- * числа, которые выглядят как результат стратегии, а на деле — результат стратегии без риска.
- * Разница не в точности, а в предмете: это другой прогон.
+ * `DEFAULT_RISK` не навсегда единственный профиль: за ним придут пользовательские. Список
+ * запрещённого пропустил бы каждое правило, которого мы сегодня не предвидели, — то есть ровно те,
+ * что появятся позже. Список разрешённого отвергает незнакомое по построению.
  */
-export function unenforcedRiskLimits(profile: RiskProfileShape): readonly string[] {
-  const missing: string[] = [];
-  if (profile.maxConcurrentPositions !== undefined && Number.isFinite(profile.maxConcurrentPositions)) {
-    missing.push(`maxConcurrentPositions=${profile.maxConcurrentPositions}`);
+const ACTOR_ENFORCEABLE_RULES = new Set([
+  'id',
+  'version',
+  'maxConcurrentPositions',
+  'exposureLimits',
+  'allowedSides',
+]);
+
+/**
+ * Правила, у которых на actor-пути НЕТ ПРЕДМЕТА, — и потому их отсутствие не является ослаблением.
+ *
+ * `stopBounds`/`takeBounds` клампят защитные ХИНТЫ решения (`enter.stop`, `update_protection`).
+ * У сырой заявки актора таких хинтов нет вовсе: `stop_market` несёт абсолютную цену и может быть
+ * подан до входа, когда базовой цены не существует. Толковать его как protection значило бы
+ * ВЫВЕСТИ защитную семантику из косвенных признаков — прямо запрещено решением владельца
+ * 2026-08-14. Поэтому такие правила не блокируют прогон, но и поддержанными не объявляются:
+ * применимость записана матрицей в дизайне, а не подразумевается.
+ */
+const ACTOR_INAPPLICABLE_RULES = new Set(['stopBounds', 'takeBounds']);
+
+/**
+ * Правила профиля, которые actor-путь НЕ УМЕЕТ исполнить.
+ *
+ * Критерий ровно один: **у правила есть предмет в actor-языке, а путь его не исполняет**. Такое
+ * правило — тихое ослабление контроля, и прогон под ним отвергается до создания акторов.
+ *
+ * Не путать с правилом, у которого предмета нет вовсе (`stopBounds`/`takeBounds`): его отсутствие
+ * ничего не ослабляет, потому что ослаблять нечего, и оно записано applicability matrix'ей.
+ *
+ * Незнакомый ключ отвергается ВСЕГДА. Профиль — не только `DEFAULT_RISK`; пользовательские правила
+ * придут, и правило, о котором этот код никогда не слышал, обязано остановить прогон, а не
+ * проехать молча под видом «наверное, неважное».
+ */
+export function unsupportedRiskRules(profile: RiskProfileShape): readonly string[] {
+  const unsupported: string[] = [];
+
+  for (const key of Object.keys(profile)) {
+    if (ACTOR_ENFORCEABLE_RULES.has(key) || ACTOR_INAPPLICABLE_RULES.has(key)) continue;
+    // Долив — предмет, у которого носитель ЕСТЬ (`intentOf`), но исполнение отсутствует: режим
+    // (`dca` против `scale_in`) командой не сообщается, и выводить его запрещено. Профиль,
+    // разрешающий долив, actor-путь исполнить не может — и делает вид, что может, только молча.
+    unsupported.push(key);
   }
-  if (profile.exposureLimits !== undefined && Object.keys(profile.exposureLimits).length > 0) {
-    missing.push('exposureLimits');
+
+  // Форма поддержанного правила проверяется отдельно от его наличия: `exposureLimits` без
+  // `maxPositionNotionalPct` — это объявленный потолок, который не с чем сравнить, и трактовать
+  // его как «потолка нет» значило бы исполнить прогон свободнее, чем просил профиль.
+  const exposure = profile.exposureLimits as { readonly maxPositionNotionalPct?: unknown } | undefined;
+  if (exposure !== undefined && typeof exposure.maxPositionNotionalPct !== 'number') {
+    unsupported.push('exposureLimits.maxPositionNotionalPct');
   }
-  if (profile.allowedSides !== undefined && profile.allowedSides.length < 2) {
-    missing.push(`allowedSides=[${profile.allowedSides.join(', ')}]`);
+
+  return unsupported;
+}
+
+/**
+ * Профиль, ДОКАЗАННО исполнимый actor-путём.
+ *
+ * Возвращает тот же объект, суженный до формы, которую ядро команд умеет применять. Бросок здесь —
+ * нарушение инварианта, а не пользовательский отказ: форму уже проверил `unsupportedRiskRules`, и
+ * попасть сюда с неподходящим профилем можно только миновав гейт. Отдельная функция существует
+ * ровно для того, чтобы «проверено» и «применено» относились к одному объекту: пересборка профиля
+ * на входе в раннер позволила бы проверить одно, а исполнить другое.
+ */
+export function provenActorRiskProfile(profile: RiskProfileShape): ActorRiskProfile {
+  const exposure = profile.exposureLimits as { readonly maxPositionNotionalPct: number } | undefined;
+  if (exposure !== undefined && typeof exposure.maxPositionNotionalPct !== 'number') {
+    throw new Error(
+      `provenActorRiskProfile: профиль ${profile.id}@${profile.version} миновал гейт совместимости ` +
+        'с непригодным exposureLimits — это нарушение инварианта допуска, а не отказ прогона',
+    );
   }
-  if (profile.stopBounds !== undefined) missing.push('stopBounds');
-  if (profile.takeBounds !== undefined) missing.push('takeBounds');
-  return missing;
+  return {
+    id: profile.id,
+    version: profile.version,
+    ...(profile.maxConcurrentPositions !== undefined
+      ? { maxConcurrentPositions: profile.maxConcurrentPositions }
+      : {}),
+    ...(exposure !== undefined ? { exposureLimits: exposure } : {}),
+    ...(profile.allowedSides !== undefined ? { allowedSides: profile.allowedSides } : {}),
+  };
+}
+
+/**
+ * Portfolio-wide лимит позиций против нескольких акторов.
+ *
+ * Профиль объявляет `maxConcurrentPositions` для ПОРТФЕЛЯ, а актор видит только свой символ:
+ * соседний во время `validate` не существует, записи сводятся лишь после прогона. Per-actor
+ * трактовка запрещена решением владельца — она тихо превратила бы «1 позиция на портфель» в «до N
+ * позиций», и результат выглядел бы законным.
+ *
+ * Сегодня эту проверку опережает отказ многосимвольного прогона по `marketData[].instrument`, и
+ * потому в проде она недостижима. Она стоит здесь не «на будущее», а потому что снятие того
+ * блокера иначе тихо открыло бы этот: обе причины независимы, и закрывать их одной строкой нельзя.
+ */
+export function portfolioLimitUnsupported(
+  profile: RiskProfileShape,
+  actorCount: number,
+): boolean {
+  return (
+    actorCount > 1 &&
+    profile.maxConcurrentPositions !== undefined &&
+    Number.isFinite(profile.maxConcurrentPositions)
+  );
 }
 
 export interface ActorProductionOutcome {
@@ -131,21 +219,43 @@ export async function runActorProduction(
     };
   }
 
-  // РИСК-КОНТУР: fail-closed, потому что его нет. См. `unenforcedRiskLimits`.
-  const unenforced = unenforcedRiskLimits(input.riskProfile);
-  if (unenforced.length > 0) {
+  // СОВМЕСТИМОСТЬ ПРОФИЛЯ С ВОЗМОЖНОСТЯМИ АКТОРА — fail-closed, до создания акторов.
+  //
+  // Риск-контур у actor-пути ЕСТЬ (`risk.ts`), но он исполняет не всякое правило. Профиль,
+  // объявляющий правило, которого путь не умеет, отвергается здесь — а не исполняется молча в
+  // усечённом виде. Разница не в точности, а в предмете: прогон без объявленного лимита — это
+  // другой прогон, и числа его выглядят как результат стратегии.
+  const unsupported = unsupportedRiskRules(input.riskProfile);
+  if (unsupported.length > 0) {
     return {
       refusal: {
         code: 'unsupported_lifecycle',
         path: '',
         message:
           `${input.strategy.manifest.id}@${input.strategy.manifest.version}: профиль риска ` +
-          `${input.riskProfile.id}@${input.riskProfile.version} объявляет лимиты, которые actor-путь ` +
-          `не соблюдает (${unenforced.join(', ')}). У legacy-пути их проверяет RiskEngine, и его ` +
-          'вердикты уезжают в riskDecisions; у actor-пути этого контура нет, riskDecisions пуст, а ' +
-          'запрошенный размер доезжает до исполнения без клампа. Исполнить прогон молча значило бы ' +
-          'посчитать его БЕЗ лимитов и отдать числа, выглядящие как результат стратегии, — это ' +
-          'другой прогон, а не менее точный',
+          `${input.riskProfile.id}@${input.riskProfile.version} объявляет правила, которых actor-путь ` +
+          `не исполняет (${unsupported.join(', ')}). Поддержаны: ` +
+          `${[...ACTOR_ENFORCEABLE_RULES].join(', ')}; неприменимы за отсутствием предмета: ` +
+          `${[...ACTOR_INAPPLICABLE_RULES].join(', ')}. Исполнить прогон молча значило бы посчитать ` +
+          'его свободнее, чем разрешил профиль',
+      },
+    };
+  }
+
+  if (portfolioLimitUnsupported(input.riskProfile, input.symbols.length)) {
+    return {
+      refusal: {
+        code: 'unsupported_lifecycle',
+        path: '',
+        message:
+          `${input.strategy.manifest.id}@${input.strategy.manifest.version}: профиль риска ` +
+          `${input.riskProfile.id}@${input.riskProfile.version} объявляет ` +
+          `maxConcurrentPositions=${input.riskProfile.maxConcurrentPositions} для ПОРТФЕЛЯ, а прогон ` +
+          `поднимает ${input.symbols.length} акторов, каждый из которых видит только свой символ. ` +
+          'Применить лимит к каждому по отдельности значило бы разрешить до ' +
+          `${input.symbols.length} одновременных позиций там, где профиль разрешает ` +
+          `${input.riskProfile.maxConcurrentPositions} — и результат выглядел бы законным. ` +
+          'Portfolio-wide гарантия требует координатора над акторами, которого в этом срезе нет',
       },
     };
   }
@@ -189,6 +299,9 @@ export async function runActorProduction(
         admission,
         bars,
         costs: input.costs,
+        // Профиль едет в ядро команд ТЕМ ЖЕ объектом, который прошёл гейт совместимости выше.
+        // Пересобрать его здесь значило бы проверить одно, а исполнить другое.
+        risk: { profile: provenActorRiskProfile(input.riskProfile), initialEquity: input.costs.initialEquity },
       }),
     );
     barsProcessed += candles.length;

@@ -26,6 +26,7 @@ import type {
   ActorLifecycleExecutor,
 } from '../src/engine/actor/execution-handle.js';
 import type { ResolvedStrategy } from '../src/engine/artifacts.js';
+import { riskBinding } from './helpers/actor-risk.js';
 
 const MINUTE_MS = 60_000;
 const MINUTE_US = 60_000_000;
@@ -94,6 +95,7 @@ async function runOne(symbol: string, actorId: string, base: number): Promise<Ac
     admission,
     bars: bars(4, base),
     costs: { feeBps: 5, slippageBps: 0, initialEquity: 10_000 },
+    risk: riskBinding(10_000),
   });
 }
 

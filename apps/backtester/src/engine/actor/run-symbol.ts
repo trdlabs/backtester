@@ -20,6 +20,7 @@ import type { CascadeBudget } from '@trdlabs/engine';
 
 import type { ActorLifecycleExecutor, ActorSource } from './execution-handle.js';
 import type { ActorMarketDataAdmitted } from './admission.js';
+import type { ActorRiskBinding } from './engine-state.js';
 import { runActorFrontiers, type ActorBar, type ActorExecutionCosts } from './frontier-runner.js';
 import type { ActorExecutionRecord } from './execution-record.js';
 
@@ -40,6 +41,8 @@ export interface EventDrivenSymbolInput {
   readonly costs?: ActorExecutionCosts;
   readonly cascade?: CascadeBudget;
   readonly tradingState?: TradingState;
+  /** Риск-профиль прогона. Дефолта нет по той же причине, что и у `costs` (см. ниже). */
+  readonly risk?: ActorRiskBinding;
 }
 
 /**
@@ -147,6 +150,15 @@ export async function runEventDrivenSymbol(
     // бы себя не выдал. Отсутствие параметров исполнения — отказ, а не ноль.
     throw new Error('runEventDrivenSymbol: costs обязательны — комиссия и стартовый капитал не имеют дефолта');
   }
+  const risk = input.risk;
+  if (risk === undefined) {
+    // Дефолтный «профиль без лимитов» здесь был бы худшим из возможных умолчаний: прогон прошёл бы
+    // целиком и отдал числа, выглядящие как результат стратегии, хотя это результат стратегии БЕЗ
+    // риска. Разница не в точности, а в предмете — это другой прогон.
+    throw new Error(
+      'runEventDrivenSymbol: risk обязателен — прогон без риск-профиля посчитал бы стратегию без лимитов',
+    );
+  }
   const cascade = input.cascade ?? { maxCascadeDepth: 8, maxEventsPerFrontier: 256 };
 
   return withActorLifecycle(input, async (handle) =>
@@ -159,6 +171,7 @@ export async function runEventDrivenSymbol(
       admission: input.admission,
       bars,
       costs,
+      risk,
       cascade,
       ...(input.tradingState !== undefined ? { tradingState: input.tradingState } : {}),
     }),
