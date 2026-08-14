@@ -53,6 +53,12 @@ import { ENGINE_VERSION } from '@trdlabs/engine';
 import { mergeAccumulators } from './bar-major-aggregate.js';
 import { admitActorExecutor, admitActorRun, isEventDriven } from './actor/admission.js';
 import { runActorProduction } from './actor/production.js';
+import {
+  assertActorTimelineIntegrity,
+  buildActorTimelineDocument,
+  persistActorTimelines,
+} from './actor/timeline-artifact.js';
+import type { ArtifactStore } from '../artifacts/store.js';
 import type { ActorLifecycleExecutor } from './actor/execution-handle.js';
 
 /** Зависимости прогона (contracts/runner-api.md §RunDeps; 019 additive — всё опционально). */
@@ -90,6 +96,14 @@ export interface RunDeps {
    * один раз на символ, а всё пербарное строится заново и приватно для своего бара.
    */
   readonly contextFreeze?: boolean;
+  /**
+   * Хранилище артефактов — ОБЯЗАТЕЛЬНО для actor-пути и не используется legacy-путём (ADR-0014).
+   *
+   * Опционально в типе, потому что `RunDeps` additive и legacy-вызывающих здесь десятки. Но на
+   * actor-ветке его отсутствие — ОТКАЗ, а не пропуск записи: прогон, чей поток диспетчеризации
+   * некуда положить, нельзя объяснить постфактум, а по результату это неотличимо от здорового.
+   */
+  readonly artifactStore?: ArtifactStore;
 }
 
 /** Поддерживаемые точки перехвата overlay (MVP). */
@@ -975,6 +989,14 @@ function assembleResult(
   executionProfileRef: Ref,
   coverage: CoverageModel | undefined,
   capitalModel?: RunEvidence['capitalModel'],
+  /**
+   * Ссылки на артефакты, сохранённые ДО сборки результата (ADR-0014 §2).
+   *
+   * Пусто у legacy-пути, и это не заглушка: таких артефактов у него нет. Actor-путь кладёт сюда
+   * content-hash своего потока диспетчеризации — САМ поток в результат не попадает, потому что
+   * `resultHash = contentRef(payload)`, а поток растёт линейно по числу событий.
+   */
+  artifactRefs: readonly string[] = [],
 ): BacktestRunResult {
   // P3-7: elapsed for cagr/calmar comes from the REALLY-PROCESSED unique bar timestamps (equity
   // curve), not the requested period — a partially-covered window must not deflate the annualization.
@@ -1026,7 +1048,7 @@ function assembleResult(
     trades: acc.trades,
     decisionRecords: acc.decisionRecords,
     validationIssues: acc.validationIssues,
-    artifactRefs: [],
+    artifactRefs,
     evidence,
   };
 }
@@ -1233,6 +1255,24 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
         return rejected(actorOutcome.refusal.code, actorOutcome.refusal.message, actorOutcome.refusal.path);
       }
 
+      // ПОТОК ДИСПЕТЧЕРИЗАЦИИ — ОТДЕЛЬНЫМ АРТЕФАКТОМ, СО СВЕРКОЙ (ADR-0014).
+      //
+      // Порядок здесь нормативен: сохранить → СВЕРИТЬ → и только потом собрать результат. Собрать
+      // сначала, а записать потом значило бы выпустить наружу результат, ссылающийся на артефакт,
+      // про который ещё никто не утверждал, что он читается.
+      if (deps.artifactStore === undefined) {
+        // FAIL-CLOSED. Прогон без хранилища — это прогон, который нельзя объяснить постфактум, а
+        // по результату он неотличим от здорового: метрики, сделки и equity на месте. Молча не
+        // записать поток значит вернуть ровно тот дефект, ради закрытия которого он заведён.
+        throw new Error(
+          'actor-путь требует artifact store: поток диспетчеризации некуда сохранить, а прогон ' +
+            'без него необъясним постфактум (ADR-0014). Legacy-путь хранилища не требует',
+        );
+      }
+      const timelineDocuments = actorOutcome.records!.map(buildActorTimelineDocument);
+      const timelineRefs = await persistActorTimelines(deps.artifactStore, timelineDocuments);
+      await assertActorTimelineIntegrity(deps.artifactStore, timelineRefs, timelineDocuments);
+
       const actorBaseline = assembleResult(
         { kind: 'baseline', runId: request.runId, strategy, overlays: [] },
         request,
@@ -1241,6 +1281,10 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
         request.riskProfileRef,
         request.executionProfileRef,
         undefined,
+        undefined,
+        // В результат едет ХЕШ, а не поток. Ссылка мала и постоянна по размеру; поток остаётся в
+        // сторе, и потребитель, которому он не нужен, не платит за него ни байтом.
+        timelineRefs.map((r) => r.artifactId),
       );
       return { status: 'completed', baseline: actorBaseline, variant: null, comparison: null };
     }

@@ -348,7 +348,7 @@ function makeWalkForwardRunFold(
     makeRouter: () => workerInternals.overlayRouterFor(deps, r.symbols.length),
     runEngine: (request, tape, router) =>
       engine === 'strategy'
-        ? runStrategyBacktest(request, { registry, marketTape: tape, router, ...strategyRunFlags(deps) })
+        ? runStrategyBacktest(request, { registry, marketTape: tape, router, artifactStore: deps.artifactStore, ...strategyRunFlags(deps) })
         : runOverlayBacktest(request, { registry, marketTape: tape, router, ...(deps.universe ? { universe: deps.universe } : {}) }),
   };
   const foldIo = io ?? realIo;
@@ -1104,6 +1104,8 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
           registry,
           marketTape,
           ...(sandboxRouter ? { router: sandboxRouter } : {}),
+          // ADR-0014: хранилище для потока диспетчеризации актора. Legacy-путь его не читает.
+          artifactStore: deps.artifactStore,
           ...runFlags,
         });
       }

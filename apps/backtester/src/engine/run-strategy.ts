@@ -4,6 +4,7 @@ import type { TrustedModuleRegistry } from './registry.js';
 import type { MarketTapeDataset } from '@trading/research-contracts/research';
 import type { BacktestRunRequest } from '@trading/research-contracts';
 import type { RunOutcome } from './artifacts.js';
+import type { ArtifactStore } from '../artifacts/store.js';
 
 export interface StrategyRunDeps {
   readonly registry: TrustedModuleRegistry;
@@ -36,6 +37,15 @@ export interface StrategyRunDeps {
    * ни один гейт на значения не ловит, потому что значения-то верны.
    */
   readonly eventDrivenEnabled?: boolean;
+  /**
+   * 083 S3 / ADR-0014: хранилище для потока диспетчеризации актора.
+   *
+   * Заведено здесь по той же причине, что `contextFreeze` и `eventDrivenEnabled` выше — и это уже
+   * третий случай подряд, то есть закономерность, а не совпадение: у прод-пути стратегии просто нет
+   * другого способа донести зависимость до runner'а, и всё, что здесь не объявлено, теряется молча.
+   * Разница в том, что потеря ЭТОГО поля не тихая: actor-путь без хранилища отказывает.
+   */
+  readonly artifactStore?: ArtifactStore;
 }
 
 /**
@@ -61,5 +71,6 @@ export async function runStrategyBacktest(
     // значения по умолчанию здесь сделала бы поле неотличимым от «вызывающий ничего не просил».
     ...(deps.contextFreeze !== undefined ? { contextFreeze: deps.contextFreeze } : {}),
     ...(deps.eventDrivenEnabled !== undefined ? { eventDrivenEnabled: deps.eventDrivenEnabled } : {}),
+    ...(deps.artifactStore !== undefined ? { artifactStore: deps.artifactStore } : {}),
   });
 }

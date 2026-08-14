@@ -252,7 +252,7 @@ describe('гейт различает СВОИ ссылки среди чужи�
     const store = new InMemoryArtifactStore();
     const refs = await persistActorTimelines(store, [doc]);
     const withNoise: readonly ArtifactReference[] = [
-      { artifactId: 'sha256:' + '0'.repeat(64), artifactType: 'metrics', availability: 'available' },
+      { artifactId: `sha256:${'0'.repeat(64)}` as ContentHash, artifactType: 'metrics', availability: 'available' },
       ...refs,
     ];
     await expect(assertActorTimelineIntegrity(store, withNoise, [doc])).resolves.toBeUndefined();

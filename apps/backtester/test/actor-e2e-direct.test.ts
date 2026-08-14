@@ -24,6 +24,9 @@ import { createModuleRegistry } from '../src/engine/sandbox/routing.js';
 import { createTrustedRouter, InProcessTrustedModuleExecutor } from '../src/engine/module-executor.js';
 import { loadCandleDataset } from '../src/engine/dataset.js';
 import { runBacktest } from '../src/engine/runner.js';
+import { InMemoryArtifactStore } from '../src/artifacts/store.js';
+import { contentRef } from '../src/determinism/hash.js';
+import type { ActorTimelineDocument } from '../src/engine/actor/timeline-artifact.js';
 import type { RunOutcome } from '../src/engine/artifacts.js';
 
 const MINUTE_MS = 60_000;
@@ -163,17 +166,23 @@ const request = (): BacktestRunRequest =>
     metrics: ['pnl'],
   }) as unknown as BacktestRunRequest;
 
-async function runE2E(opts: { candleVenue?: string; enabled?: boolean } = {}): Promise<{
+async function runE2E(
+  opts: { candleVenue?: string; enabled?: boolean; withoutStore?: boolean } = {},
+): Promise<{
   outcome: RunOutcome;
   seen: ReturnType<typeof eventDrivenProbe>['seen'];
   created: readonly ActorInit[];
   executor: InProcessTrustedModuleExecutor;
+  artifactStore: InMemoryArtifactStore;
 }> {
   const probe = eventDrivenProbe();
   const dir = writeFixture('candleVenue' in opts ? opts.candleVenue : 'bybit');
   // НАСТОЯЩИЙ загрузчик и настоящий файл: происхождение свечей приезжает с диска, а не из теста.
   const dataset = loadCandleDataset(DATASET_REF, dir);
   const executor = new InProcessTrustedModuleExecutor();
+  // ХРАНИЛИЩЕ ОБЯЗАТЕЛЬНО (ADR-0014). До него actor-путь молча не сохранял бы поток
+  // диспетчеризации, и прогон, который нельзя объяснить постфактум, выглядел бы здоровым.
+  const artifactStore = new InMemoryArtifactStore();
   const outcome = await runBacktest(request(), {
     registry: createModuleRegistry({
       strategies: [Object.assign(probe.make(), { moduleFactory: probe.make })],
@@ -183,14 +192,59 @@ async function runE2E(opts: { candleVenue?: string; enabled?: boolean } = {}): P
     dataset,
     router: createTrustedRouter(executor),
     eventDrivenEnabled: opts.enabled ?? true,
+    ...(opts.withoutStore === true ? {} : { artifactStore }),
   } as never);
-  return { outcome, seen: probe.seen, created: probe.created, executor };
+  return { outcome, seen: probe.seen, created: probe.created, executor, artifactStore };
 }
 
 const refusalOf = (outcome: RunOutcome): { code?: string; message?: string } => {
   const issues = (outcome as { validation?: { issues?: { code: string; message: string }[] } }).validation?.issues;
   return issues?.[0] ?? {};
 };
+
+describe('поток диспетчеризации доезжает до результата отдельным артефактом (ADR-0014)', () => {
+  it('результат несёт ССЫЛКУ, а не сам поток, и ссылка разрешается в хранилище', async () => {
+    const { outcome, artifactStore } = await runE2E();
+    if (outcome.status !== 'completed') throw new Error(refusalOf(outcome).message ?? 'отказ');
+
+    // Ссылка одна — актор один. Content-hash, а не путь и не имя: адресуется СОДЕРЖИМОЕ.
+    expect(outcome.baseline.artifactRefs).toHaveLength(1);
+    const ref = outcome.baseline.artifactRefs[0]!;
+    expect(ref).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(await artifactStore.has(ref as never)).toBe(true);
+  });
+
+  it('содержимое читается и его хеш СВЕРЯЕТСЯ со ссылкой', async () => {
+    const { outcome, artifactStore } = await runE2E();
+    if (outcome.status !== 'completed') throw new Error(refusalOf(outcome).message ?? 'отказ');
+
+    const ref = outcome.baseline.artifactRefs[0]!;
+    const doc = (await artifactStore.read(ref as never)) as ActorTimelineDocument;
+    // Три половины гейта целостности по отдельности: разрешилась, прочиталась, СОШЛАСЬ.
+    expect(contentRef(doc)).toBe(ref);
+    expect(doc.actorId).toBe('actor-btcusdt');
+    expect(doc.rows.length).toBeGreaterThan(0);
+    // Дескрипторы пережили сериализацию — включая канонический хостовый источник.
+    expect(doc.subscriptions.map((s) => s.kind)).toEqual(['host', 'candles']);
+  });
+
+  it('САМ поток в результат не попал: платит только тот, кому он нужен', async () => {
+    const { outcome } = await runE2E();
+    if (outcome.status !== 'completed') throw new Error(refusalOf(outcome).message ?? 'отказ');
+    // Проба против соблазна «положить поток в evidence — так удобнее». resultHash считается по
+    // всему payload'у, а поток растёт линейно по числу событий: на длинном прогоне ответ /result
+    // стал бы непригоден для чтения. В результате обязана быть ССЫЛКА и ничего больше.
+    const serialized = JSON.stringify(outcome.baseline);
+    expect(serialized).not.toContain('"rows"');
+    expect(serialized).not.toContain('causedBySeq');
+  });
+
+  it('без хранилища actor-прогон ОТКАЗЫВАЕТ, а не молчит', async () => {
+    // Fail-closed. Прогон без возможности сохранить поток неотличим от здорового по результату:
+    // метрики, сделки и equity на месте. Поэтому отказ, а не пропуск записи.
+    await expect(runE2E({ withoutStore: true })).rejects.toThrow(/artifact store/);
+  });
+});
 
 describe('сквозной actor-прогон на прямом исполнителе', () => {
   it('фикстура с объявленным venue доходит до результата с ордерами, филлами и сделкой', async () => {
