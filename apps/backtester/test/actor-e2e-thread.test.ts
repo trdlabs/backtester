@@ -10,11 +10,17 @@
 //
 // ═══ ЧТО ВЫЯСНИЛОСЬ ВМЕСТО ЭТОГО ═══
 //
-// ПРОД-ДОРОГА НЕ МОЖЕТ ДОВЕСТИ ACTOR-ПРОГОН ДО `completed` НИ С ОДНИМ ЗАРЕГИСТРИРОВАННЫМ ПРОФИЛЕМ
-// РИСКА. Все пять (`DEFAULT_RISK`, `DCA_RISK`, `TIGHT_ADD_RISK`, `LONG_ONLY_RISK`,
-// `TIGHT_STOP_RISK`) объявляют полный набор лимитов, а actor-путь их НЕ СОБЛЮДАЕТ и потому
-// отказывает fail-closed (`unenforcedRiskLimits`, `production.ts`). Это не дефект дороги и не
-// дефект теста — это состояние системы: риск-контур для actor-пути ещё не реализован.
+// ПРОД-ДОРОГА НЕ МОЖЕТ ДОВЕСТИ ACTOR-ПРОГОН ДО `completed`. В каноническом реестре
+// (`TRUSTED_REGISTRY_DEFINITION.riskProfiles`) ОДИН профиль — `DEFAULT_RISK`, — и он объявляет
+// лимиты, которых actor-путь не соблюдает; допуск отказывает fail-closed (`unenforcedRiskLimits`,
+// `production.ts`). Это не дефект дороги и не дефект теста — это состояние системы: риск-контур
+// для actor-пути ещё не реализован.
+//
+// ПЕРВАЯ РЕДАКЦИЯ ЭТОГО ФАЙЛА УТВЕРЖДАЛА ШИРЕ И ПОТОМУ НЕТОЧНО: «все пять профилей». Пять — это
+// список ЭКСПОРТОВ `profiles.ts`; четыре из них (`DCA_RISK`, `TIGHT_ADD_RISK`, `LONG_ONLY_RISK`,
+// `TIGHT_STOP_RISK`) в реестр не входят и через прод-дорогу недостижимы вовсе. Гейт при этом
+// проходил — каждое отдельное утверждение было истинным, ложной была картина, которую они рисуют
+// вместе. Инвентарь обязан читаться из того же источника, из которого прогон берёт профиль.
 //
 // ═══ И ЭТО ЖЕ ОСЛАБЛЯЕТ СОСЕДНИЙ НАБОР, что важнее самой находки ═══
 //
@@ -37,13 +43,7 @@ import { loadConfig } from '../src/config.js';
 import { InMemoryArtifactStore } from '../src/artifacts/store.js';
 import { __resetTapeCachesForTest } from '../src/data/tape-cache.js';
 import { unenforcedRiskLimits } from '../src/engine/actor/production.js';
-import {
-  DCA_RISK,
-  DEFAULT_RISK,
-  LONG_ONLY_RISK,
-  TIGHT_ADD_RISK,
-  TIGHT_STOP_RISK,
-} from '../src/engine/profiles.js';
+import { TRUSTED_REGISTRY_DEFINITION } from '../src/engine/registry-definition.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REQ = resolve(HERE, 'fixtures/overlay/requests');
@@ -107,29 +107,32 @@ async function runThroughQueue(
 }
 
 describe('БЛОКЕР: риск-контур закрывает actor-путь для ВСЕХ зарегистрированных профилей', () => {
-  it('каждый профиль реестра объявляет лимиты, которых actor-путь не соблюдает', () => {
-    // Утверждение о РЕЕСТРЕ, а не о выдуманном профиле. Пока оно истинно, ни один actor-прогон
-    // прод-дорогой не может завершиться: `runActorProduction` отвергает такой профиль до
-    // `createActor`, потому что RiskEngine у actor-пути нет, `riskDecisions` пуст, а запрошенный
-    // размер доехал бы до исполнения без клампа.
-    const registry = {
-      DEFAULT_RISK,
-      DCA_RISK,
-      TIGHT_ADD_RISK,
-      LONG_ONLY_RISK,
-      TIGHT_STOP_RISK,
-    };
-    const blocked = Object.entries(registry).map(([name, p]) => [
-      name,
-      unenforcedRiskLimits(p as never).length > 0,
+  // ЧИТАЕТСЯ КАНОНИЧЕСКИЙ РЕЕСТР, А НЕ СПИСОК ЭКСПОРТОВ. Первая редакция перечисляла пять
+  // профилей из `profiles.ts` — и утверждала не то, что нужно: зарегистрирован ТОЛЬКО
+  // `DEFAULT_RISK`, остальные четыре экспортируются, но членами `TRUSTED_REGISTRY_DEFINITION` не
+  // являются и через прод-дорогу недостижимы вовсе. Гейт при этом проходил: утверждение было
+  // истинным про каждый профиль по отдельности и ложным про то, что оно якобы описывает состояние
+  // прода. Здесь источник один — тот же, из которого прогон берёт профиль по `riskProfileRef`.
+
+  it('СОСТАВ реестра зафиксирован: добавление профиля обязано быть замечено', () => {
+    // Без этого утверждения проверка ниже молча ослабла бы при добавлении профиля без лимитов:
+    // «ни один не проходит» осталось бы истинным ровно до того момента, когда появится проходящий,
+    // и никто бы не заметил, что список вырос.
+    expect(TRUSTED_REGISTRY_DEFINITION.riskProfiles.map((p) => `${p.id}@${p.version}`)).toEqual([
+      'default_risk@1.0.0',
     ]);
-    expect(blocked).toEqual([
-      ['DEFAULT_RISK', true],
-      ['DCA_RISK', true],
-      ['TIGHT_ADD_RISK', true],
-      ['LONG_ONLY_RISK', true],
-      ['TIGHT_STOP_RISK', true],
-    ]);
+  });
+
+  it('ни один зарегистрированный профиль не проходит actor-допуск', () => {
+    // Пока это истинно, ни один actor-прогон прод-дорогой не может завершиться:
+    // `runActorProduction` отвергает такой профиль до `createActor`, потому что RiskEngine у
+    // actor-пути нет, `riskDecisions` пуст, а запрошенный размер доехал бы до исполнения без
+    // клампа. Проверяется ОТСУТСТВИЕ проходящих, а не наличие блокируемых: список проходящих
+    // печатается в отказе поимённо, и диагносту сразу видно, какой профиль изменился.
+    const passing = TRUSTED_REGISTRY_DEFINITION.riskProfiles
+      .filter((p) => unenforcedRiskLimits(p as never).length === 0)
+      .map((p) => `${p.id}@${p.version}`);
+    expect(passing).toEqual([]);
   });
 
   it('ПРОВЕРКА ПРОВЕРКИ: профиль без лимитов прошёл бы — блокирует именно их наличие', () => {
