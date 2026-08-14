@@ -220,7 +220,15 @@ describe('два состояния РАЗЛИЧИМЫ, а не совпадаю
     // проба была бы единственной, которая это заметит: обе причины по отдельности выглядят
     // правдоподобно, и только их РАЗЛИЧИЕ доказывает, что состояние действительно различается.
     const [closed, flipped] = await Promise.all([runWithShift(1000), runWithShift(2000)]);
-    expect(orderOf(closed, 'ro').cancelReason).not.toBe(orderOf(flipped, 'ro').cancelReason);
+    const a = orderOf(closed, 'ro').cancelReason;
+    const b = orderOf(flipped, 'ro').cancelReason;
+
+    // ОБА исхода обязаны быть снятиями, и только потом — разными. Первая редакция сравнивала лишь
+    // на неравенство, и это оказалось слабее, чем выглядело: под мутацией знака перевёрнутый
+    // случай переставал сниматься вовсе, `cancelReason` становился `undefined` — и «не равно»
+    // проходило. Проба «различаются» обязана сперва потребовать, чтобы было ЧЕМУ различаться.
+    expect([a, b].every((r) => r !== undefined)).toBe(true);
+    expect(new Set([a, b]).size).toBe(2);
   });
 });
 
