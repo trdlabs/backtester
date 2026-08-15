@@ -61,7 +61,7 @@ import {
   type ActorOutboxPayload,
   type ActorRiskBinding,
 } from './engine-state.js';
-import { flatEquityOf, orderIntentOf, parseRiskRefusal } from './risk.js';
+import { exposureCeilingOf, orderIntentOf, parseRiskRefusal } from './risk.js';
 import type {
   ActorCancelReason,
   ActorCloseAnnotation,
@@ -330,10 +330,10 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
           // Проверка на подаче этого не ловит по той же причине, что и add/flip: она отвечала на
           // вопрос о другом моменте времени. Поэтому потолок пересчитывается здесь, и вердикт тот
           // же, что у подачи, — accept / clamp / reject.
-          const exposure = input.risk.profile.exposureLimits;
-          if (exposure !== undefined) {
-            const equity = flatEquityOf(state, input.risk.initialEquity);
-            const ceiling = exposure.maxPositionNotionalPct * equity;
+          // Формула потолка — общая с подачей (`exposureCeilingOf`). Своя копия здесь разошлась бы
+          // с той молча, и заявка проходила бы подачу по одному правилу, а исполнялась по другому.
+          const ceiling = exposureCeilingOf(input.risk.profile, state, input.risk.initialEquity);
+          if (ceiling !== null) {
             if (ceiling <= 0) {
               const reason = 'resting_exposure_ceiling_exhausted';
               state = {

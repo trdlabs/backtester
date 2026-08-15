@@ -107,6 +107,36 @@ export function flatEquityOf(state: ActorEngineState, initialEquity: number): nu
 }
 
 /**
+ * Потолок экспозиции в нотионале — ЕДИНСТВЕННОЕ место, где живёт формула `pct × equity`.
+ *
+ * Считается дважды за жизнь заявки: на подаче (`evaluateActorPlace`) и в момент исполнения
+ * (re-валидация ждущей заявки в раннере). Две копии одной формулы разошлись бы молча — и разошлись
+ * бы именно там, где это невидимо: заявка прошла бы подачу по одному правилу, а исполнилась по
+ * другому, и оба числа выглядели бы законными.
+ *
+ * `null` означает «профиль потолка не объявляет», а не «потолок бесконечен»: разница существенна
+ * для вызывающего, который иначе сравнивал бы с `Infinity` и не отличал бы одно от другого.
+ */
+export function exposureCeilingOf(
+  profile: ActorRiskProfile,
+  state: ActorEngineState,
+  initialEquity: number,
+): number | null {
+  const exposure = profile.exposureLimits;
+  if (exposure === undefined) return null;
+  // Негодное значение — нарушение инварианта допуска, и оно обязано быть громким: тихий пропуск
+  // означал бы прогон БЕЗ потолка при строгом на вид профиле.
+  if (!Number.isFinite(exposure.maxPositionNotionalPct) || exposure.maxPositionNotionalPct <= 0) {
+    throw new Error(
+      `exposureCeilingOf: профиль ${profile.id}@${profile.version} миновал гейт совместимости ` +
+        `с maxPositionNotionalPct=${exposure.maxPositionNotionalPct} — лимит, который нельзя ` +
+        'сравнить, молча отключил бы потолок экспозиции',
+    );
+  }
+  return exposure.maxPositionNotionalPct * flatEquityOf(state, initialEquity);
+}
+
+/**
  * Вердикт риска по одной команде.
  *
  * `clamp` несёт ГОТОВОЕ значение, а не коэффициент: считать его дважды (в `validate` и в `apply`)
@@ -278,21 +308,11 @@ export function evaluateActorPlace(
     // Потолок экспозиции служит и авторитетом сайзинга (SSOT decision 3), но роль риска здесь иная,
     // чем в legacy: размер НАЗНАЧАЕТ автор, риск может его только урезать. Наращивать заявку до
     // потолка нельзя — это назначило бы размер, которого автор не просил.
-    const exposure = profile.exposureLimits;
-    if (exposure !== undefined) {
-      // НЕ `if (… && Number.isFinite(pct))`. Так было, и это был тихий выключатель: профиль с
-      // `NaN`/`Infinity` пропускал блок целиком, то есть прогон шёл БЕЗ потолка, а профиль при
-      // этом выглядел строгим. Негодное значение — нарушение инварианта допуска (гейт
-      // совместимости такой профиль не пропускает), и здесь оно обязано быть громким.
-      if (!Number.isFinite(exposure.maxPositionNotionalPct) || exposure.maxPositionNotionalPct <= 0) {
-        throw new Error(
-          `evaluateActorPlace: профиль ${profile.id}@${profile.version} миновал гейт совместимости ` +
-            `с maxPositionNotionalPct=${exposure.maxPositionNotionalPct} — лимит, который нельзя ` +
-            'сравнить, молча отключил бы потолок экспозиции',
-        );
-      }
+    // Формула потолка живёт в `exposureCeilingOf` — одна на подачу и на re-валидацию ждущей
+    // заявки. Здесь только вердикт по её результату.
+    const ceiling = exposureCeilingOf(profile, state, initialEquity);
+    if (ceiling !== null) {
       const equity = flatEquityOf(state, initialEquity);
-      const ceiling = exposure.maxPositionNotionalPct * equity;
 
       // Нулевой или отрицательный потолок означает, что открывать нечего: equity исчерпана либо
       // профиль запрещает экспозицию вовсе. Кламп до нуля дал бы заявку нулевого размера, которую

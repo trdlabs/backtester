@@ -384,6 +384,35 @@ describe('RE-ВАЛИДАЦИЯ В МОМЕНТ ИСПОЛНЕНИЯ: обход
     expect(pendingFill.qty * pendingFill.price).toBeCloseTo(clamp!.clamped![0]!.to, 6);
   });
 
+  it('ИСЧЕРПАННЫЙ ПОТОЛОК: при нулевой equity ждущая заявка снимается, а не клампится в ноль', async () => {
+    // Третья ветка re-валидации при flat, и единственная, которой не было пробы. Кламп до нуля дал
+    // бы заявку нулевого размера — её отвергла бы уже проверка размера, но с ДРУГОЙ причиной,
+    // потерявшей риск как виновника. Отказ обязан называть исчерпанный потолок.
+    //
+    // Комиссия 100% съедает капитал: вход и выход по 5000 при equity 10 000 обнуляют её.
+    const record = await runStepped((event, bar) => {
+      if (event.kind !== 'market.candle.closed') return [];
+      if (bar === 1) return [place({ clientOrderId: 'pending', side: 'buy', type: 'stop_market', stopPrice: 150, qtyUsd: 1000 })];
+      if (bar === 2) return [place({ clientOrderId: 'in', side: 'buy', qtyUsd: 5000 })];
+      if (bar === 3) return [place({ clientOrderId: 'out', side: 'sell', qtyUsd: 9000, reduceOnly: true })];
+      return [];
+    }, 10_000);
+
+    const cancelled = record.orders.find((o) => o.orderId === 'pending')!;
+    expect(cancelled.terminalState).toBe('canceled');
+    expect(cancelled.cancelReason).toBe('resting_exposure_ceiling_exhausted');
+    expect(record.riskDecisions.at(-1)).toEqual({
+      barIndex: 4,
+      decisionKind: 'resting',
+      action: 'reject',
+      reason: 'resting_exposure_ceiling_exhausted',
+    });
+    // Филла ждущей нет: снятие не материализуется в бухгалтерии.
+    expect(record.journal.filter((j) => j.kind === 'fill').map((f) => (f.kind === 'fill' ? f.orderId : ''))).not.toContain(
+      'pending',
+    );
+  });
+
   it('ПОЛОЖИТЕЛЬНЫЙ: ждущая reduceOnly-заявка исполняется и закрывает позицию', async () => {
     // Без этой пробы обе выше зеленели бы и у раннера, снимающего ЛЮБУЮ ждущую заявку при открытой
     // позиции, — то есть доказывали бы «выход из позиции невозможен», а это другое и неверное
