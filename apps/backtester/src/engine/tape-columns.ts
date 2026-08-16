@@ -69,6 +69,16 @@ export interface TapeColumns {
   readonly datasetRef: string;
   /** Таймфрейм ДЕСКРИПТОРА датасета — тот же, которым построена лента. */
   readonly timeframe: string;
+  /**
+   * Венью свечей, ОБЪЯВЛЕННОЕ дескриптором датасета. Едет здесь по тому же доводу, что и
+   * `timeframe`: колонки и происхождение обязаны быть неразделимы, иначе поток может получить пару
+   * «колонки от одной ленты, происхождение от другой».
+   *
+   * Отсутствует ⟺ дескриптор его не объявил. Отсутствие читается как «происхождение неизвестно» и
+   * закрывает actor-путь (`proveCandleVenue`) — подставлять сюда что-либо нельзя: любое венью
+   * само по себе законно, и подстановка была бы неотличима от объявления.
+   */
+  readonly candleVenue?: string;
   readonly rowCount: number;
   /** Словарь символов; `symbolIds[i]` — индекс в нём. */
   readonly symbolNames: readonly string[];
@@ -89,9 +99,24 @@ export interface TapeColumns {
   readonly taker?: ColumnPair;
 }
 
+/**
+ * Лента оверлей-датасета вместе с происхождением своих свечей.
+ *
+ * Расширение объявлено ЗДЕСЬ, а не в контракте `@trdlabs/sdk`, и это выбор, а не обход. Происхождение
+ * — факт ХОСТА: его объявляет дескриптор датасета на сервере, ровно как таймфрейм, который хост уже
+ * проверяет на этом же шве. Класть его в общий контракт значило бы выпускать релиз SDK и репинить
+ * всех потребителей ради заботы, которая живёт только у бэктестера. Лента при этом строится
+ * ЛОКАЛЬНОЙ фабрикой (`marketTapeFromCanonicalRows`), поэтому носителя менять не требуется — только
+ * его тип у нас.
+ */
+export interface OverlayTape extends MarketTapeDataset {
+  /** Венью свечей по дескриптору датасета; отсутствует ⟺ дескриптор его не объявил. */
+  readonly candleVenue?: string;
+}
+
 /** Материализация оверлей-датасета: лента и (опционально) её колоночный двойник для потока. */
 export interface OverlayMaterialization {
-  readonly tape: MarketTapeDataset;
+  readonly tape: OverlayTape;
   /**
    * Колонки той же ленты. Отсутствуют, когда путь потока в процессе не включён: строить и держать их
    * в кэше без потребителя — чистая надбавка к памяти воркера.
@@ -103,6 +128,7 @@ export interface OverlayMaterialization {
 export function encodeTapeColumns(
   datasetRef: string,
   timeframe: string,
+  candleVenue: string | undefined,
   rows: readonly CanonicalRowV2[],
 ): TapeColumns {
   const n = rows.length;
@@ -208,6 +234,9 @@ export function encodeTapeColumns(
   return {
     datasetRef,
     timeframe,
+    // Только когда объявлено. `candleVenue: undefined` и отсутствие ключа обязаны читаться
+    // одинаково: «не объявлено» — одно состояние, а не два похожих.
+    ...(candleVenue !== undefined ? { candleVenue } : {}),
     rowCount: n,
     symbolNames,
     symbolIds,
@@ -271,10 +300,16 @@ export function decodeTapeColumns(cols: TapeColumns): CanonicalRowV2[] {
  * coverage-модель: всё это живёт в фабрике, и вторая её реализация на стороне потока разъезжалась бы
  * с первой ровно тогда, когда фабрику поменяют. Здесь путь один, и он общий.
  */
-export function tapeFromColumns(cols: TapeColumns): MarketTapeDataset {
+export function tapeFromColumns(cols: TapeColumns): OverlayTape {
   const result = marketTapeFromCanonicalRows(cols.datasetRef, cols.timeframe, decodeTapeColumns(cols));
   if (!result.ok) {
     throw new Error(`tapeFromColumns: постройка ленты не удалась (${result.reason}): ${result.detail}`);
   }
-  return result.tape;
+  // Происхождение восстанавливается ВМЕСТЕ с лентой. Не восстанови его здесь — дорога потока
+  // строила бы ленту без провенанса, и actor-прогон отказывал бы «происхождение не доказано»
+  // ровно там, где дескриптор его объявил: два читателя одного заявления снова разошлись бы, и
+  // разошлись бы молча, потому что отказ выглядит законным.
+  return cols.candleVenue !== undefined
+    ? { ...result.tape, candleVenue: cols.candleVenue }
+    : result.tape;
 }

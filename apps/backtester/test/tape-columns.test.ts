@@ -22,7 +22,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { CanonicalRowV2 } from '@trading/research-contracts/research';
-import { decodeTapeColumns, encodeTapeColumns } from '../src/engine/tape-columns.js';
+import { decodeTapeColumns, encodeTapeColumns, tapeFromColumns } from '../src/engine/tape-columns.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -52,11 +52,11 @@ function bareRow(symbol: string, i: number): CanonicalRowV2 {
 }
 
 const roundTrip = (rows: readonly CanonicalRowV2[]): CanonicalRowV2[] =>
-  decodeTapeColumns(encodeTapeColumns('ds', '1m', rows));
+  decodeTapeColumns(encodeTapeColumns('ds', '1m', undefined, rows));
 
 describe('tape-columns — round-trip канонических строк', () => {
   it('пустой вход даёт пустой выход и сохраняет метки ленты', () => {
-    const cols = encodeTapeColumns('pump-fixture-1m', '1m', []);
+    const cols = encodeTapeColumns('pump-fixture-1m', '1m', undefined, []);
     expect(cols.rowCount).toBe(0);
     expect(cols.datasetRef).toBe('pump-fixture-1m');
     expect(cols.timeframe).toBe('1m');
@@ -144,13 +144,13 @@ describe('tape-columns — round-trip канонических строк', () =
   it('блок вида отсутствует, когда его не несёт ни одна строка — и появляется, когда несёт', () => {
     // Это ровно то, на чём стоит composition-following в `marketTapeFromCanonicalRows`: колонка
     // попадает в источник ленты только при наличии данных, и от этого зависит coverage-модель.
-    const none = encodeTapeColumns('ds', '1m', [bareRow('BTCUSDT', 0)]);
+    const none = encodeTapeColumns('ds', '1m', undefined, [bareRow('BTCUSDT', 0)]);
     expect(none.oi).toBeUndefined();
     expect(none.funding).toBeUndefined();
     expect(none.liq).toBeUndefined();
     expect(none.taker).toBeUndefined();
 
-    const some = encodeTapeColumns('ds', '1m', [
+    const some = encodeTapeColumns('ds', '1m', undefined, [
       bareRow('BTCUSDT', 0),
       { ...bareRow('BTCUSDT', 1), oi_total_usd: 10, has_oi: true },
     ]);
@@ -173,14 +173,45 @@ describe('tape-columns — round-trip канонических строк', () =
     // Uint16 держит 65 536 значений. Больше — не «немного неточно», а перепутанные символы, поэтому
     // граница закрыта исключением: невозможное состояние должно падать, а не печататься.
     const rows = Array.from({ length: 65_537 }, (_, i) => bareRow(`SYM${i}`, 0));
-    expect(() => encodeTapeColumns('ds', '1m', rows)).toThrow(/символ/i);
+    expect(() => encodeTapeColumns('ds', '1m', undefined, rows)).toThrow(/символ/i);
   });
 
   it('символы восстанавливаются по именам, а не по индексам — повтор имени делит идентификатор', () => {
     const rows = [bareRow('BTCUSDT', 0), bareRow('ETHUSDT', 0), bareRow('BTCUSDT', 1)];
-    const cols = encodeTapeColumns('ds', '1m', rows);
+    const cols = encodeTapeColumns('ds', '1m', undefined, rows);
     expect(cols.symbolNames).toEqual(['BTCUSDT', 'ETHUSDT']);
     expect([...cols.symbolIds]).toEqual([0, 1, 0]);
     expect(decodeTapeColumns(cols).map((r) => r.symbol)).toEqual(['BTCUSDT', 'ETHUSDT', 'BTCUSDT']);
+  });
+});
+
+describe('происхождение свечей переживает границу потока', () => {
+  // Колонки — ЕДИНСТВЕННЫЙ канал, которым лента попадает в поток: `MarketTapeDataset` через
+  // `postMessage` не проходит, и лента там строится заново из колонок. Значит потеря провенанса
+  // именно здесь была бы невидима на главном потоке и проявилась бы отказом «происхождение не
+  // доказано» ровно там, где дескриптор его объявил, — то есть выглядела бы законно.
+
+  it('объявленное венью доезжает до восстановленной ленты', () => {
+    const cols = encodeTapeColumns('ds', '1m', 'bybit', [bareRow('BTCUSDT', 0)]);
+    expect(cols.candleVenue).toBe('bybit');
+    expect(tapeFromColumns(cols).candleVenue).toBe('bybit');
+  });
+
+  it('НЕобъявленное остаётся необъявленным — ключа нет, а не «пусто»', () => {
+    // Подстановка была бы неотличима от объявления: любое венью само по себе законно, и допуск
+    // принял бы происхождение, которого никто не утверждал. Проверяется ОТСУТСТВИЕ КЛЮЧА, а не
+    // равенство `undefined`: `{candleVenue: undefined}` пережил бы `JSON`-сериализацию как потеря,
+    // а отсутствие ключа — как отсутствие.
+    const cols = encodeTapeColumns('ds', '1m', undefined, [bareRow('BTCUSDT', 0)]);
+    expect(Object.prototype.hasOwnProperty.call(cols, 'candleVenue')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(tapeFromColumns(cols), 'candleVenue')).toBe(false);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: сама лента строится, а не молча пустует', () => {
+    // Иначе обе пробы выше зеленели бы и на ленте, у которой нет вообще ничего.
+    const tape = tapeFromColumns(encodeTapeColumns('ds', '1m', 'bybit', [bareRow('BTCUSDT', 0)]));
+    expect(tape.datasetRef).toBe('ds');
+    expect(tape.timeframe).toBe('1m');
+    expect(tape.symbols()).toEqual(['BTCUSDT']);
   });
 });

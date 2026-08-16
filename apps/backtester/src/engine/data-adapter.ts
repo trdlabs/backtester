@@ -16,7 +16,7 @@ import type {
 } from '@trading/research-contracts/research';
 import type { CanonicalRow as ReaderRow } from '@trading/research-contracts';
 import { marketTapeFromCanonicalRows } from './market-tape.js';
-import { encodeTapeColumns, type OverlayMaterialization } from './tape-columns.js';
+import { encodeTapeColumns, type OverlayMaterialization, type OverlayTape } from './tape-columns.js';
 import type { BacktesterDataPort } from '../data/reader.js';
 import { RunnerError } from '../runner/errors.js';
 
@@ -81,7 +81,7 @@ export async function buildOverlayDatasetWithColumns(
 export async function buildOverlayDataset(
   port: BacktesterDataPort,
   sel: OverlayDatasetSelector,
-): Promise<MarketTapeDataset> {
+): Promise<OverlayTape> {
   return (await materializeOverlay(port, sel, false)).tape;
 }
 
@@ -128,6 +128,15 @@ async function materializeOverlay(
     for (const row of batch) mappedRows.push(toCanonicalRowV2(row));
   }
 
+  // Происхождение свечей берётся ОТСЮДА ЖЕ и по тому же правилу, что таймфрейм: объявляет СЕРВЕР
+  // дескриптором датасета, клиент переопределить не вправе. Запроса на него нет и быть не может —
+  // «венью, которое назвал клиент» это ровно то, что `proveCandleVenue` отказывается принимать.
+  //
+  // Отсутствие ключа НЕ подменяется ничем. Любое венью само по себе законно, поэтому подстановка
+  // была бы неотличима от объявления, а прогон объяснялся бы происхождением, которого никто не
+  // утверждал. Не объявлено — значит неизвестно, и допуск обязан это увидеть.
+  const candleVenue = descriptor.candleVenue;
+
   const result: TapeBuildResult = marketTapeFromCanonicalRows(
     sel.datasetRef,
     descriptor.timeframe, // server-derived, validated == sel.timeframe above
@@ -139,9 +148,12 @@ async function materializeOverlay(
     );
   }
   return {
-    tape: result.tape,
+    tape: candleVenue !== undefined ? { ...result.tape, candleVenue } : result.tape,
     // Тот же `descriptor.timeframe`, которым построена лента — иначе колонки описывали бы её
-    // неверно, и поток собрал бы ленту с другим таймфреймом из тех же свечей.
-    ...(withColumns ? { columns: encodeTapeColumns(sel.datasetRef, descriptor.timeframe, mappedRows) } : {}),
+    // неверно, и поток собрал бы ленту с другим таймфреймом из тех же свечей. Происхождение едет
+    // тем же каналом и по тому же доводу.
+    ...(withColumns
+      ? { columns: encodeTapeColumns(sel.datasetRef, descriptor.timeframe, candleVenue, mappedRows) }
+      : {}),
   };
 }
