@@ -38,6 +38,44 @@ export const MIGRATION_CHAIN: readonly MigrationLink[] = [
 /** Голова цепи — единственное звено, которому разрешено писать в файлы голденов. */
 export const CHAIN_HEAD: MigrationLink = MIGRATION_CHAIN[MIGRATION_CHAIN.length - 1] as MigrationLink;
 
+/** Пара якорей одного звена для одного сценария: откуда звено ушло и куда пришло. */
+export interface LinkAnchors {
+  readonly id: string;
+  readonly legacy: string;
+  readonly active: string;
+}
+
+/**
+ * Якоря ВСЕХ звеньев цепи для одного сценария, в порядке применения.
+ *
+ * Существует потому, что сцепку звеньев каждый исторический пруф прежде выписывал у себя руками:
+ * читал карту «следующего» звена по зашитому пути и сравнивал файл на диске с её `active`. Пока
+ * звено было последним, это работало; добавление 017.5 сделало «следующего» соседа не головой, и
+ * ТРИ пруфа разом стали утверждать неправду про диск — притом что сама цепь не рвалась.
+ *
+ * Здесь порядок и состав берутся из `MIGRATION_CHAIN`, то есть из одного объявления. Новое звено —
+ * одна строка там, и ни один пруф править не нужно.
+ */
+export function chainAnchors(
+  repoRoot: string,
+  scenarioId: string,
+  readJson: (path: string) => unknown,
+): readonly LinkAnchors[] {
+  return MIGRATION_CHAIN.map((link) => {
+    const map = readJson(`${repoRoot}/${link.map}`) as {
+      goldens?: Record<string, { legacy?: string; active?: string }>;
+    };
+    const entry = map.goldens?.[scenarioId];
+    if (entry?.legacy === undefined || entry.active === undefined) {
+      throw new Error(
+        `migration-chain: в карте звена '${link.id}' нет якорей сценария '${scenarioId}'. ` +
+          `Звено, не знающее сценария, разрывает цепь молча.`,
+      );
+    }
+    return { id: link.id, legacy: entry.legacy, active: entry.active };
+  });
+}
+
 /**
  * Разрешить записывать файлы голденов только голове цепи. Бросает — то есть fail-closed — для
  * любого исторического звена.

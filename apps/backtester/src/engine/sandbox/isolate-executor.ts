@@ -38,6 +38,25 @@ import { DecisionRevalidator } from './decision-revalidator.js';
 import { type SandboxErrorArtifact, boundedRedactedDetail } from './errors.js';
 import { serializeContext, plainBar } from './context-serializer.js';
 import type { MarketApiWithPresence } from '../market-access.js';
+import type { RngState } from '@trdlabs/engine';
+import type {
+  ActorCommand,
+  ActorInit,
+  ActorInputEvent,
+} from '@trdlabs/sdk/research-contract';
+import type {
+  ActorExecutionHandle,
+  ActorSource,
+  HostActorContext,
+} from '../actor/execution-handle.js';
+import {
+  isRngStateWire,
+  revalidateActorCommands,
+  serializeActorContext,
+  serializeActorInit,
+  type ActorEventReplyWire,
+  type ActorEventWire,
+} from './actor-boundary.js';
 
 // widened specifier → tsc не резолвит модуль в build-графе (паттерн платформенного адаптера).
 const IVM_SPECIFIER: string = 'isolated-vm';
@@ -128,6 +147,16 @@ export class IsolateModuleExecutor implements ModuleExecutor {
   private hookRef: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private hookBatchRef: any;
+  /**
+   * Прекомпилированная ссылка на доставку события актору.
+   *
+   * У актора это ТОТ ЖЕ горячий путь, что `hook` у legacy: один заход на каждое событие каждого
+   * frontier'а, а событий в frontier'е больше одного (исполнение, таймеры, свеча, каскад).
+   * Компилировать выражение на каждом — платить те же 4 мкс, что уже измерены лестницей
+   * `profile-isolate-boundary` и убраны у соседей.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private actorEventRef: any;
   private openPromise?: Promise<{ ok: true } | { ok: false; error: SessionErrorLike }>;
   /** Fail-closed защёлка: после session-fatal сбоя все последующие вызовы отвечают той же ошибкой. */
   private failed?: SessionErrorLike;
@@ -207,9 +236,11 @@ export class IsolateModuleExecutor implements ModuleExecutor {
       const harnessRef = await this.context.global.get('__isolateHarness', { reference: true });
       this.hookRef = await harnessRef.get('hook', { reference: true });
       this.hookBatchRef = await harnessRef.get('hookBatch', { reference: true });
+      this.actorEventRef = await harnessRef.get('actorEvent', { reference: true });
     } catch {
       this.hookRef = undefined;
       this.hookBatchRef = undefined;
+      this.actorEventRef = undefined;
     }
 
     // ESM-граф бандла: только файлы из descriptor.files (whitelist), только относительные
@@ -662,11 +693,248 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 083 S3 — LIFECYCLE АКТОРА ЗА ГРАНИЦЕЙ ИЗОЛЯТА: create → execute → dispose.
+  //
+  // ЧЕМ ЭТОТ ШОВ ОТЛИЧАЕТСЯ ОТ ВСЕГО ОСТАЛЬНОГО В ЭТОМ ФАЙЛЕ — ОТКАЗ ЗДЕСЬ ГРОМКИЙ.
+  //
+  // Legacy-хуки деградируют fail-closed: сбой в песочнице пишет диагностику и отдаёт `[]`, прогон
+  // идёт дальше. Для актора это было бы не деградацией, а подлогом: `[]` — законный ответ («событие
+  // проигнорировано»), и проглоченный сбой стал бы неотличим от решения стратегии. Прогон дошёл бы
+  // до конца и отдал числа, посчитанные без части команд, ничем себя не выдав.
+  //
+  // Контракт называет тот же класс своим именем: невалидный по схеме батч, бросок из dispatch и
+  // превышение бюджета — это `halt+finalize`, а не «пустой ответ». Доверенный исполнитель уже
+  // бросает по тем же поводам; расходись эти два пути, sandbox молчал бы ровно там, где доверия
+  // меньше всего.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Дескриптор хоста → идентификатор слота ВНУТРИ изолята. Наружу не отдаётся ни то, ни другое. */
+  private readonly actorHandles = new Map<object, string>();
+  /** Счётчик дескрипторов. Монотонный: переиспользование освобождённого адресовало бы двух акторов. */
+  private actorSeq = 0;
+
+  /**
+   * Создать актора внутри изолята.
+   *
+   * АТОМАРНОСТЬ ВЛАДЕНИЯ — ОБЯЗАТЕЛЬСТВО ЭТОГО МЕТОДА. Отказ до возврата дескриптора обязан
+   * убрать за собой всё поднятое: у раннера дескриптора нет, адресовать `disposeActor` ему нечем,
+   * а звать освобождение «на всякий случай» он не вправе — он не знает, было ли что-то создано.
+   *
+   * ТРИ ПУТИ ОТКАЗА, И УБИРАЮТ ЗА СОБОЙ ОНИ ПО-РАЗНОМУ:
+   *
+   *   • отказ ДО захода в изолят (чужой манифест, мёртвая сессия, изолят не открылся) — поднимать
+   *     было нечего;
+   *   • харнесс ответил отказом ЗНАЧЕНИЕМ (не та форма модуля, фабрика бросила) — сессия жива,
+   *     слот харнесс не заводил, и освобождение зовётся всё равно: рассуждение «он точно не завёл»
+   *     держалось бы чтением чужого кода, а вызов идемпотентен;
+   *   • заход НЕ УДАЛСЯ (таймаут, крах, подменённый ответ) — сессия мертва, и слот, если он успел
+   *     появиться, снимается вместе с изолятом в `close()`. Подробности — у самой ветки.
+   */
+  async createActor(source: ActorSource, init: ActorInit): Promise<ActorExecutionHandle> {
+    // ТОТ ЛИ ЭТО МОДУЛЬ. Исполнитель поднят вокруг КОНКРЕТНОГО бандла (`this.bundle`), а допуск
+    // проверял манифест из `source`. Разойдись они — прогон исполнил бы не тот код, который
+    // допущен, и отличить это по результату было бы нечем.
+    if (
+      source.manifest.id !== this.bundle.manifest.id ||
+      source.manifest.version !== this.bundle.manifest.version
+    ) {
+      throw new Error(
+        `isolate executor: запрошен актор ${source.manifest.id}@${source.manifest.version}, а ` +
+          `исполнитель поднят вокруг бандла ${this.bundle.manifest.id}@${this.bundle.manifest.version}`,
+      );
+    }
+    if (this.failed !== undefined) {
+      throw new Error(`isolate executor: сессия мертва (${this.failed.code}): ${this.failed.detail}`);
+    }
+    const opened = await this.ensureOpen();
+    if (!opened.ok) {
+      throw new Error(`isolate executor: изолят не открылся (${opened.error.code}): ${opened.error.detail}`);
+    }
+
+    const handleId = `actor-${this.actorSeq}`;
+    this.actorSeq += 1;
+
+    const r = await this.evalHarness(
+      'return globalThis.__isolateHarness.createActor($0, $1)',
+      [handleId, JSON.stringify(serializeActorInit(init))],
+      'init',
+    );
+    if (!r.ok) {
+      // ЗДЕСЬ УБОРКИ НЕТ, И ЭТО НЕ ПРОПУСК. Любой отказ `evalHarness` — session-fatal: он ставит
+      // защёлку `this.failed`, после которой заходить в изолят нельзя. Слот при этом действительно
+      // МОГ остаться (нативный таймаут прерывает исполнение в произвольной точке, в том числе между
+      // записью слота и возвратом ответа), но пережить он может только до `close()`, а тот снимает
+      // изолят целиком вместе со всем его содержимым. Раннер зовёт `closeAll()` в `finally`.
+      //
+      // Позвать освобождение всё равно было бы ХУЖЕ, а не безопаснее: заход в мёртвую сессию
+      // отказал бы снова и перезаписал бы `this.failed` причиной уборки — то есть заменил бы
+      // исходный диагноз своим. Ровно тот класс, из-за которого в `withActorLifecycle` нет
+      // `finally`: бросок из уборки замещает ошибку тела, а диагносту нужна первая.
+      throw new Error(`isolate executor: createActor не доехал (${r.error.code}): ${r.error.detail}`);
+    }
+    let parsed: { ok: true } | { ok: false; code: string; detail: string };
+    try {
+      parsed = JSON.parse(r.json) as typeof parsed;
+    } catch {
+      await this.releaseActorSlot(handleId);
+      throw new Error('isolate executor: ответ createActor не валидный JSON — харнесс подменён?');
+    }
+    if (!parsed.ok) {
+      // Харнесс отказал ЗНАЧЕНИЕМ: слота он не завёл. Освобождение всё равно зовём — оно
+      // идемпотентно, а рассуждение «он точно не завёл» держалось бы чтением чужого кода.
+      await this.releaseActorSlot(handleId);
+      throw new Error(`isolate executor: createActor отверг модуль (${parsed.code}): ${parsed.detail}`);
+    }
+
+    // ПОСЛЕДНЯЯ строка удачного пути — ровно как в харнессе на той стороне.
+    const handle = {} as unknown as ActorExecutionHandle;
+    this.actorHandles.set(handle as unknown as object, handleId);
+    return handle;
+  }
+
+  /**
+   * Освободить слот в изоляте, не трогая таблицу хоста. Ошибки глотаются: это уборка.
+   *
+   * На МЁРТВОЙ сессии не делает ничего, и это условие, а не осторожность: заходить туда нельзя, а
+   * попытка перезаписала бы `this.failed` причиной уборки поверх исходного диагноза. Освобождать
+   * там и нечего — `close()` снимает изолят целиком.
+   */
+  private async releaseActorSlot(handleId: string): Promise<void> {
+    if (this.failed !== undefined || this.isolate === undefined) return;
+    try {
+      await this.evalHarness('return globalThis.__isolateHarness.disposeActor($0)', [handleId], 'dispose');
+    } catch {
+      /* изолят мёртв — освобождать нечего */
+    }
+  }
+
+  /**
+   * Доставить событие актору за границей и вернуть его команды.
+   *
+   * Батч ревалидируется схемой КОНТРАКТА (`actor-command-batch`) — той самой, что называет себя
+   * гейтом этой границы. Состояние генератора приезжает обратно и усваивается хостом: `ctx.rng`
+   * автора обязан продолжать ОДНУ последовательность через всю жизнь актора, а объект за границу
+   * не передать — едет значение.
+   */
+  async executeActorEvent(
+    handle: ActorExecutionHandle,
+    event: ActorInputEvent,
+    ctx: HostActorContext,
+  ): Promise<readonly ActorCommand[]> {
+    const handleId = this.actorHandles.get(handle as unknown as object);
+    if (handleId === undefined) {
+      throw new Error('isolate executor: дескриптор неизвестен — актор не создавался либо уже освобождён');
+    }
+    if (this.failed !== undefined) {
+      throw new Error(`isolate executor: сессия мертва (${this.failed.code}): ${this.failed.detail}`);
+    }
+    const before = ctx.rng.snapshot();
+    const msg: ActorEventWire = { handleId, event, ctx: serializeActorContext(ctx) };
+    const r = await this.evalHarness(
+      'return globalThis.__isolateHarness.actorEvent($0)',
+      [JSON.stringify(msg)],
+      'onEvent',
+      undefined,
+      { ref: this.actorEventRef },
+    );
+    if (!r.ok) {
+      throw new Error(`isolate executor: доставка события не удалась (${r.error.code}): ${r.error.detail}`);
+    }
+    // Кап размера ответа — тот же SBX-5-класс, что у legacy-хуков: батч команд ходит через ту же
+    // границу и в тех же байтах, и освобождать его от лимита было бы регрессией самой границы.
+    const maxBytes = this.policy.limits.maxDecisionBytes;
+    if (maxBytes > 0 && Buffer.byteLength(r.json, 'utf8') > maxBytes) {
+      throw new Error(`isolate executor: ответ актора превышает ${maxBytes} байт`);
+    }
+    let parsed: ActorEventReplyWire & { ok: true } | { ok: false; code: string; detail: string };
+    try {
+      parsed = JSON.parse(r.json) as typeof parsed;
+    } catch {
+      throw new Error('isolate executor: ответ actorEvent не валидный JSON — харнесс подменён?');
+    }
+    if (!parsed.ok) {
+      throw new Error(`isolate executor: актор отказал (${parsed.code}): ${parsed.detail}`);
+    }
+    const commands = revalidateActorCommands(parsed.commands);
+    if (!commands.ok) {
+      throw new Error(`isolate executor: ${commands.message}`);
+    }
+    // СОСТОЯНИЕ ГЕНЕРАТОРА — ТОЖЕ НЕДОВЕРЕННЫЙ ВХОД. Не проверив его, хост принял бы от бандла
+    // произвольное положение ленты случайности, то есть отдал бы недоверенному коду руль над
+    // детерминизмом прогона: тот же seed давал бы разные числа, а воспроизведение — другой ответ.
+    if (!isRngStateWire(parsed.rng)) {
+      throw new Error(
+        `isolate executor: актор вернул недопустимое состояние rng (${JSON.stringify(parsed.rng)})`,
+      );
+    }
+    // Лента не вправе идти НАЗАД. Откат положения позволил бы бандлу переигрывать одни и те же
+    // числа, а «то же значение» законно ровно тогда, когда автор не тянул вовсе.
+    this.adoptRngState(ctx, before, parsed.rng);
+    return commands.commands;
+  }
+
+  /**
+   * Усвоить положение генератора, вернувшееся из-за границы.
+   *
+   * Хост держит ОДИН генератор на актора; за границей исполняется его копия, и обратно приезжает
+   * её положение. Догнать свой до этого положения нельзя иначе как прокрутив его: `next()` —
+   * единственная законная операция, и она же доказывает, что вернувшееся состояние ДОСТИЖИМО из
+   * прежнего. Подстановка значения напрямую приняла бы любое, включая выдуманное.
+   *
+   * Верхняя граница прокрутки — `maxCommandsPerBatch`-подобная величина здравого смысла: автор,
+   * дёрнувший `next()` больше `RNG_ADVANCE_LIMIT` раз за ОДНО событие, скорее зациклился, чем
+   * считает; дальше крутить дешевле было бы бандлу, чем нам.
+   */
+  private adoptRngState(ctx: HostActorContext, before: RngState, after: RngState): void {
+    if (after.a === before.a) return; // автор не тянул — положение не двигалось
+    for (let i = 0; i < IsolateModuleExecutor.RNG_ADVANCE_LIMIT; i += 1) {
+      ctx.rng.next();
+      if (ctx.rng.snapshot().a === after.a) return;
+    }
+    throw new Error(
+      `isolate executor: состояние rng, вернувшееся от актора (a=${after.a}), недостижимо из ` +
+        `прежнего (a=${before.a}) за ${IsolateModuleExecutor.RNG_ADVANCE_LIMIT} розыгрышей`,
+    );
+  }
+
+  private static readonly RNG_ADVANCE_LIMIT = 1_000_000;
+
+  /** Освободить актора. Идемпотентно: повторный вызов на освобождённом — no-op, не бросок. */
+  async disposeActor(handle: ActorExecutionHandle): Promise<void> {
+    const key = handle as unknown as object;
+    const handleId = this.actorHandles.get(key);
+    if (handleId === undefined) return;
+    this.actorHandles.delete(key);
+    await this.releaseActorSlot(handleId);
+  }
+
+  /** Сколько акторов держит ХОСТ. По нему проверяется атомарность владения на этой стороне. */
+  activeActorSessions(): number {
+    return this.actorHandles.size;
+  }
+
+  /**
+   * Сколько акторов живо ВНУТРИ изолята.
+   *
+   * Отдельный вопрос, а не дубль предыдущего: счётчик хоста доказывает лишь то, что хост о себе
+   * думает. Слот, заведённый за границей и потерянный хостом, виден только отсюда — а это ровно
+   * та утечка, которую обязана исключать атомарность создания.
+   */
+  async harnessActorSessions(): Promise<number> {
+    const r = await this.evalHarness('return globalThis.__isolateHarness.actorSessions()', [], 'stats');
+    if (!r.ok) throw new Error(`harnessActorSessions failed: ${r.error.detail}`);
+    return (JSON.parse(r.json) as { count: number }).count;
+  }
+
   /** Teardown изолята — детерминированная очистка (зеркало docker close()). */
   close(): void {
+    // Дескрипторы хоста снимаются вместе с изолятом: адресовать ими будет нечего, а оставленная
+    // таблица врала бы счётчиком живых сессий после teardown'а.
+    this.actorHandles.clear();
     // P4-2: ссылки освобождаются ДО dispose изолята — держать их после нельзя, а после dispose
     // release() уже бросит. Ошибки глотаем: teardown обязан быть идемпотентным.
-    for (const ref of [this.hookRef, this.hookBatchRef]) {
+    for (const ref of [this.hookRef, this.hookBatchRef, this.actorEventRef]) {
       try {
         ref?.release();
       } catch {
@@ -675,6 +943,7 @@ export class IsolateModuleExecutor implements ModuleExecutor {
     }
     this.hookRef = undefined;
     this.hookBatchRef = undefined;
+    this.actorEventRef = undefined;
     try {
       this.isolate?.dispose();
     } catch {

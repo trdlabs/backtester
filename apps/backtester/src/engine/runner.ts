@@ -51,7 +51,14 @@ import { createSeededRng } from '../determinism/rng.js';
 // changes»). `ENGINE_VERSION` is the shared core's own version, not a host constant.
 import { ENGINE_VERSION } from '@trdlabs/engine';
 import { mergeAccumulators } from './bar-major-aggregate.js';
-import { admitActorExecutor, admitActorRun } from './actor/admission.js';
+import { admitActorExecutor, admitActorRun, isEventDriven } from './actor/admission.js';
+import { runActorProduction } from './actor/production.js';
+import {
+  assertActorTimelineIntegrity,
+  buildActorTimelineDocument,
+  persistActorTimelines,
+} from './actor/timeline-artifact.js';
+import type { ArtifactStore } from '../artifacts/store.js';
 import type { ActorLifecycleExecutor } from './actor/execution-handle.js';
 
 /** Зависимости прогона (contracts/runner-api.md §RunDeps; 019 additive — всё опционально). */
@@ -89,6 +96,14 @@ export interface RunDeps {
    * один раз на символ, а всё пербарное строится заново и приватно для своего бара.
    */
   readonly contextFreeze?: boolean;
+  /**
+   * Хранилище артефактов — ОБЯЗАТЕЛЬНО для actor-пути и не используется legacy-путём (ADR-0014).
+   *
+   * Опционально в типе, потому что `RunDeps` additive и legacy-вызывающих здесь десятки. Но на
+   * actor-ветке его отсутствие — ОТКАЗ, а не пропуск записи: прогон, чей поток диспетчеризации
+   * некуда положить, нельзя объяснить постфактум, а по результату это неотличимо от здорового.
+   */
+  readonly artifactStore?: ArtifactStore;
 }
 
 /** Поддерживаемые точки перехвата overlay (MVP). */
@@ -974,6 +989,14 @@ function assembleResult(
   executionProfileRef: Ref,
   coverage: CoverageModel | undefined,
   capitalModel?: RunEvidence['capitalModel'],
+  /**
+   * Ссылки на артефакты, сохранённые ДО сборки результата (ADR-0014 §2).
+   *
+   * Пусто у legacy-пути, и это не заглушка: таких артефактов у него нет. Actor-путь кладёт сюда
+   * content-hash своего потока диспетчеризации — САМ поток в результат не попадает, потому что
+   * `resultHash = contentRef(payload)`, а поток растёт линейно по числу событий.
+   */
+  artifactRefs: readonly string[] = [],
 ): BacktestRunResult {
   // P3-7: elapsed for cagr/calmar comes from the REALLY-PROCESSED unique bar timestamps (equity
   // curve), not the requested period — a partially-covered window must not deflate the annualization.
@@ -1025,7 +1048,7 @@ function assembleResult(
     trades: acc.trades,
     decisionRecords: acc.decisionRecords,
     validationIssues: acc.validationIssues,
-    artifactRefs: [],
+    artifactRefs,
     evidence,
   };
 }
@@ -1182,27 +1205,105 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
 
   const router = deps.router ?? createTrustedRouter(deps.executor);
   const composer = new OverlayComposer();
-  const engine: SimEngine = {
-    router,
-    risk: new RiskEngine(riskProfile),
-    exec: new ExecutionSimulator(execProfile),
-    composer,
-  };
 
   try {
     // 083 S3 — ДОПУСК, часть 2: то, для чего нужен исполнитель. ВНУТРИ `try`, поэтому созданный
     // router закрывается `finally` и на этом отказе тоже. Спрашивается способность ВЫБРАННОГО
     // исполнителя — узнать о её отсутствии надо здесь, а не на первом событии посреди прогона.
     // Ни одна ветка не порождает сессий и не трогает модуль: `forStrategy` только выбирает.
-    {
-      const refusal = admitActorExecutor(
-        strategy,
-        router.forStrategy(strategy) as Partial<ActorLifecycleExecutor>,
-      );
+    if (isEventDriven(strategy)) {
+      const executor = router.forStrategy(strategy) as Partial<ActorLifecycleExecutor>;
+      const refusal = admitActorExecutor(strategy, executor);
       if (refusal !== null) {
         return rejected(refusal.code, refusal.message, refusal.path);
       }
+
+      // 083 S3 — ПРОДОВАЯ ТОЧКА ВЫЗОВА actor-пути.
+      //
+      // Обе транспортные ветки приходят СЮДА: direct и thread различаются только исполнителем,
+      // которого вернул `router.forStrategy`, и ничем больше. Развилки «если thread, то иначе»
+      // здесь нет намеренно — она и есть тот способ, которым транспорты расходятся.
+      //
+      // Результат собирает `assembleResult` — тот же, что и у legacy. Своя сборка завела бы вторую
+      // форму evidence, совпадающую с первой сегодня и расходящуюся завтра.
+      //
+      // FAIL-CLOSED СОХРАНЁН И ПОСЛЕ ПОДКЛЮЧЕНИЯ: `runActorProduction` спрашивает у датасета
+      // происхождение свечей, и датасет, который его не объявил, закрывает путь до `createActor`.
+      // Ни один реальный датасет его сегодня не объявляет — поведение прода не изменилось.
+      const actorOutcome = await runActorProduction({
+        strategy,
+        executor: executor as ActorLifecycleExecutor,
+        dataset,
+        symbols: request.symbols,
+        seed: request.seed,
+        params: {
+          ...((strategy.manifest.params as Record<string, unknown> | undefined) ?? {}),
+          ...((request.params as Record<string, unknown> | undefined) ?? {}),
+        },
+        // Комиссия и проскальзывание берутся из ПРОФИЛЯ прогона, а не выбираются раннером: это
+        // объявленные параметры, и подставить сюда своё число значило бы посчитать прогон не по
+        // тому, что заказано.
+        costs: {
+          feeBps: (execProfile.feeModel as { readonly bps: number }).bps,
+          slippageBps: (execProfile.slippageModel as { readonly bps: number }).bps,
+          initialEquity: INITIAL_EQUITY,
+        },
+        barIntervalUs: (parseTimeframeMs(request.timeframe) ?? 60_000) * 1000,
+        riskProfile: riskProfile as never,
+      });
+      if (actorOutcome.refusal !== null) {
+        return rejected(actorOutcome.refusal.code, actorOutcome.refusal.message, actorOutcome.refusal.path);
+      }
+
+      // ПОТОК ДИСПЕТЧЕРИЗАЦИИ — ОТДЕЛЬНЫМ АРТЕФАКТОМ, СО СВЕРКОЙ (ADR-0014).
+      //
+      // Порядок здесь нормативен: сохранить → СВЕРИТЬ → и только потом собрать результат. Собрать
+      // сначала, а записать потом значило бы выпустить наружу результат, ссылающийся на артефакт,
+      // про который ещё никто не утверждал, что он читается.
+      if (deps.artifactStore === undefined) {
+        // FAIL-CLOSED. Прогон без хранилища — это прогон, который нельзя объяснить постфактум, а
+        // по результату он неотличим от здорового: метрики, сделки и equity на месте. Молча не
+        // записать поток значит вернуть ровно тот дефект, ради закрытия которого он заведён.
+        throw new Error(
+          'actor-путь требует artifact store: поток диспетчеризации некуда сохранить, а прогон ' +
+            'без него необъясним постфактум (ADR-0014). Legacy-путь хранилища не требует',
+        );
+      }
+      const timelineDocuments = actorOutcome.records!.map(buildActorTimelineDocument);
+      const timelineRefs = await persistActorTimelines(deps.artifactStore, timelineDocuments);
+      await assertActorTimelineIntegrity(deps.artifactStore, timelineRefs, timelineDocuments);
+
+      const actorBaseline = assembleResult(
+        { kind: 'baseline', runId: request.runId, strategy, overlays: [] },
+        request,
+        actorOutcome.accumulators!,
+        actorOutcome.barsProcessed!,
+        request.riskProfileRef,
+        request.executionProfileRef,
+        undefined,
+        undefined,
+        // В результат едет ХЕШ, а не поток. Ссылка мала и постоянна по размеру; поток остаётся в
+        // сторе, и потребитель, которому он не нужен, не платит за него ни байтом.
+        timelineRefs.map((r) => r.artifactId),
+      );
+      return { status: 'completed', baseline: actorBaseline, variant: null, comparison: null };
     }
+
+    // СБОРКА ДВИЖКА СИМУЛЯЦИИ — ПОСЛЕ actor-ветки, и это не косметика.
+    //
+    // `new RiskEngine(profile)` требует объявленных `exposureLimits`: из них он берёт и потолок, и
+    // правило сайзинга. Actor-путь, наоборот, ОТКАЗЫВАЕТ прогону с объявленными лимитами — он их не
+    // соблюдает и не притворяется. Пока конструирование стояло выше ветки, оба условия сходились в
+    // одном прогоне: профиль с лимитами отвергался допуском, профиль без лимитов ронял конструктор
+    // — то есть для actor-пути не существовало ни одного проходящего профиля вовсе.
+    //
+    // Legacy-путь не задет: те же аргументы, тот же порядок относительно ПЕРВОГО использования.
+    const engine: SimEngine = {
+      router,
+      risk: new RiskEngine(riskProfile),
+      exec: new ExecutionSimulator(execProfile),
+      composer,
+    };
 
     const baseline = await simulateTarget(
       { kind: 'baseline', runId: request.runId, strategy, overlays: [] },

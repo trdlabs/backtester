@@ -59,8 +59,16 @@
 // поток диспетчеризации со своей проекцией и своими гардами (`timeline.ts`). Он не расширяет
 // legacy-форму и потому ничего в ней не двигает.
 
-import type { CloseAnnotation, Fill, FillSide, Ledger, OrderState, RiskDecision } from '@trdlabs/engine';
-import type { TimestampUs } from '@trdlabs/sdk/research-contract';
+import type {
+  CloseAnnotation,
+  Fill,
+  FillOutcome,
+  FillSide,
+  Ledger,
+  OrderState,
+  RiskDecision,
+} from '@trdlabs/engine';
+import type { ActorSubscriptionDescriptor, TimestampUs } from '@trdlabs/sdk/research-contract';
 
 import type { ActorTimeline } from './timeline.js';
 
@@ -98,6 +106,25 @@ export interface ActorFrontierRecord {
  * (см. `ORDER_STATUS_BY_STATE`). Записывать сюда уже суженное значение значило бы потерять
  * различие «отвергнута» и «отменена» до того, как кто-либо решил, что оно не нужно.
  */
+/**
+ * Причины, по которым заявку снял ХОСТ, а не автор. Два происхождения, и оба типизированы:
+ *
+ *   • движковые — исход `executeFill` для reduceOnly-заявки, потерявшей предмет сокращения;
+ *   • риск-контурные — re-валидация ждущей заявки в момент исполнения (наращивание, пересечение
+ *     нуля, исчерпанный потолок).
+ *
+ * ЗАЧЕМ ОБЪЕДИНЁННЫЙ ТИП, А НЕ `string`. Отмена по риску прежде оставляла в записи заявки ровно
+ * `terminalState: 'canceled'` — идентификатор был у ордера, причина у вердикта, и НИ ОДНА запись не
+ * содержала обоих фактов. Связать их можно было только сопоставлением двух списков по номеру
+ * frontier'а, то есть догадкой: «наверное, отменили именно эту». Здесь причина живёт в самой
+ * записи заявки, а `string` принял бы и пересказ, и опечатку.
+ */
+export type ActorCancelReason =
+  | Extract<FillOutcome, { readonly kind: 'canceled' }>['reason']
+  | 'resting_add_not_permitted'
+  | 'resting_opposite_requires_reduce_only'
+  | 'resting_exposure_ceiling_exhausted';
+
 export interface ActorOrderRecord {
   readonly orderId: string;
   /** Номер frontier'а, на котором заявка подана. */
@@ -105,6 +132,25 @@ export interface ActorOrderRecord {
   readonly side: 'long' | 'short';
   readonly intent: 'open' | 'close' | 'add';
   readonly terminalState: OrderState;
+  /**
+   * Причина СНЯТИЯ заявки хостом — из ДВУХ источников, и оба типизированы.
+   *
+   * Присутствует ⟺ заявку снял хост, а не автор. Без неё «canceled» в записи неотличимо от отмены
+   * по команде автора, а это разные факты: один означает решение стратегии, другой — что рынок
+   * ушёл из-под заявки либо что её сняла политика риска.
+   *
+   * ДВА ПРОИСХОЖДЕНИЯ (см. `ActorCancelReason`): движковое — исход `executeFill` для
+   * reduceOnly-заявки, потерявшей предмет сокращения; host-risk — re-валидация ждущей заявки в
+   * момент исполнения (наращивание, пересечение нуля, исчерпанный потолок). Прежняя редакция
+   * этого поля обещала «слово движка, а не пересказ хоста» — после появления host risk boundary
+   * формулировка стала неверной: часть причин принадлежит хосту по построению.
+   *
+   * ТИП НЕ ОБЪЯВЛЕН `string` и не скопирован именем союза. Разница проверяемая: `string` принял бы
+   * любое слово, включая опечатку, а копия имени пережила бы РАСШИРЕНИЕ движкового союза молча —
+   * движок 0.17.0 добавил второе слово к прежнему единственному, и запись, объявленная старым
+   * союзом, продолжала бы компилироваться, теряя новую причину на границе.
+   */
+  readonly cancelReason?: ActorCancelReason;
   readonly mode?: 'dca' | 'scale_in';
   readonly closeFraction?: number;
   readonly origin?: 'protection';
@@ -184,7 +230,20 @@ export interface ActorEquitySample {
  * агрегат был бы набором списков, про которые никто не проверяет, что они описывают одну историю.
  */
 export interface ActorExecutionRecord {
+  /**
+   * Идентификатор ИНСТАНСА актора. Обязателен уже здесь, а не при агрегации нескольких символов:
+   * восстановить его снаружи можно было бы только по `symbol`, а это неверно ровно тогда, когда
+   * акторов на символ больше одного. `seq` и `subscriptionId` актор-локальны, и без этого поля две
+   * записи склеились бы в одну историю с пересекающимися номерами.
+   */
+  readonly actorId: string;
   readonly symbol: string;
+  /**
+   * ФАКТИЧЕСКИЕ подписки, с которыми актор был создан, — тот же список, что уехал в
+   * `ActorInit.subscriptions`. Не реконструкция по манифесту: реконструкция отвечала бы на вопрос
+   * «что было объявлено», а нужен ответ «что было разрешено и доставлено».
+   */
+  readonly subscriptions: readonly ActorSubscriptionDescriptor[];
   readonly frontiers: readonly ActorFrontierRecord[];
   readonly orders: readonly ActorOrderRecord[];
   /** Единая упорядоченная последовательность бухгалтерии: филлы и funding вперемешку, как было. */

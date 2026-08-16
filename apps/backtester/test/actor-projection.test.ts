@@ -45,6 +45,10 @@ import type { ActorRunArtifacts } from '../src/engine/actor/projection.js';
 import type { MergedAccumulators } from '../src/engine/runner.js';
 
 const SYMBOL = 'BTCUSDT';
+const ACTOR_ID = 'actor-btcusdt-0';
+const SUBSCRIPTIONS = Object.freeze([
+  Object.freeze({ subscriptionId: 'sub-req-candles', kind: 'candles', requirementId: 'req-candles' }),
+]) as ActorExecutionRecord['subscriptions'];
 const T0 = 1_700_000_000_000; // мс, минутная сетка
 const MINUTE = 60_000;
 
@@ -178,7 +182,9 @@ function baseRecord(overrides: Partial<ActorExecutionRecord> = {}): ActorExecuti
     fillEntry('f2', 'o2', 2, 'sell', 2, 110, 1, { baseOpen: 110.11, slippageBps: 10, fillKind: 'close' }),
   ];
   const record: ActorExecutionRecord = {
+    actorId: ACTOR_ID,
     symbol: SYMBOL,
+    subscriptions: SUBSCRIPTIONS,
     frontiers: FRONTIERS,
     orders: [
       { orderId: 'o1', placedAtFrontier: 0, side: 'long', intent: 'open', terminalState: 'filled' },
@@ -508,7 +514,9 @@ describe('сужение состояний ордера до статуса а�
   function oneOrder(state: OrderState, withFill: boolean): ActorExecutionRecord {
     const journal: ActorJournalEntry[] = withFill ? [fillEntry('f1', 'o1', 0, 'buy', 1, 100, 0)] : [];
     return {
+      actorId: ACTOR_ID,
       symbol: SYMBOL,
+      subscriptions: SUBSCRIPTIONS,
       frontiers: [FRONTIERS[0]!],
       orders: [{ orderId: 'o1', placedAtFrontier: 0, side: 'long', intent: 'open', terminalState: state }],
       journal,

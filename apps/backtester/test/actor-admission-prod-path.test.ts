@@ -124,22 +124,54 @@ function capableRouter(calls: string[]) {
   };
 }
 
+/**
+ * Router, чей исполнитель lifecycle актора НЕ умеет.
+ *
+ * Нужен с тех пор, как его умеет прямой: без явно неспособного исполнителя гейт способности стало
+ * бы нечем проверить, а он остаётся верным для sandbox-исполнителей — им lifecycle не реализован.
+ */
+function incapableRouter() {
+  const base = createTrustedRouter();
+  const strip = (ex: unknown): unknown => {
+    const { createActor: _c, executeActorEvent: _e, disposeActor: _d, ...rest } = ex as Record<string, unknown>;
+    // Прототипные методы класса тоже надо снять — копия полей их бы унаследовала.
+    const flat: Record<string, unknown> = { ...rest };
+    for (const key of ['executeStrategyHook', 'executeOverlayApply', 'executeStrategyHookBarMajor', 'initStrategy', 'disposeStrategy', 'close']) {
+      const fn = (ex as Record<string, unknown>)[key];
+      if (typeof fn === 'function') flat[key] = (fn as (...a: unknown[]) => unknown).bind(ex);
+    }
+    return flat;
+  };
+  return {
+    forStrategy: (r: never) => strip(base.forStrategy(r)),
+    forOverlay: (r: never) => base.forOverlay(r),
+    closeAll: () => base.closeAll(),
+  };
+}
+
 async function runThrough(
   overrides: Record<string, unknown>,
   deps: {
     readonly eventDrivenEnabled?: boolean;
     readonly barBatching?: { maxBars: number };
     readonly capableExecutor?: boolean;
+    readonly incapableExecutor?: boolean;
   } = {},
 ): Promise<{ outcome: RunOutcome; calls: string[] }> {
   const p = probe(overrides);
-  const { capableExecutor, ...runDeps } = deps;
+  const { capableExecutor, incapableExecutor, ...runDeps } = deps;
+  const router =
+    capableExecutor === true
+      ? capableRouter(p.calls)
+      : incapableExecutor === true
+        ? incapableRouter()
+        : createTrustedRouter();
   const outcome = await runStrategyBacktest(
     { ...makeRequest(SPEC), moduleRef: p.moduleRef },
     {
       registry: p.registry,
       marketTape: buildTape(SPEC),
-      router: capableExecutor === true ? capableRouter(p.calls) : createTrustedRouter(),
+      router,
       ...runDeps,
     } as never,
   );
@@ -186,19 +218,47 @@ describe('сквозь runBacktest: event_driven отвергается, а не
     expect(calls).toEqual([]);
   }, 60_000);
 
-  it('флаг включён, но у исполнителя НЕТ lifecycle актора → отказ по способности', async () => {
-    // Сегодня это реальное состояние прода: seam объявлен, не реализован никем.
-    const { outcome, calls } = await runThrough(eventDriven, { eventDrivenEnabled: true });
+  it('исполнитель БЕЗ lifecycle актора → отказ по способности', async () => {
+    // Прямой исполнитель lifecycle УЖЕ умеет (S3), поэтому неспособного приходится предъявить
+    // явно — иначе гейт способности перестал бы проверяться вовсе, а он остаётся верным для
+    // sandbox-исполнителей, которым lifecycle ещё не реализован.
+    const { outcome, calls } = await runThrough(eventDriven, {
+      eventDrivenEnabled: true,
+      incapableExecutor: true,
+    });
     expect(outcome.status).toBe('rejected');
     expect(refusalOf(outcome).code).toBe('unsupported_lifecycle');
     expect(refusalOf(outcome).message).toMatch(/lifecycle актора/);
     expect(calls).toEqual([]);
   }, 60_000);
 
-  it('флаг включён, режимы совместимы, capability ЕСТЬ → всё равно отказ по проекции', async () => {
+  it('прямой исполнитель умеет lifecycle → путь проходит РИСК и упирается в происхождение свечей', async () => {
+    // Отличие от пробы выше ровно в исполнителе: способность больше не является тем, что закрывает
+    // путь у trusted.
+    //
+    // РИСК-КОНТУР ЕГО ТОЖЕ БОЛЬШЕ НЕ ЗАКРЫВАЕТ, и это содержание риск-среза. Профиль прогона
+    // (`default_risk@1.0.0`) исполним actor-путём целиком, поэтому прогон проходит гейт
+    // совместимости и доходит до допуска данных — где и отвергается, потому что фикстура датасета
+    // происхождения свечей не объявляет. Это состояние ВСЕХ реальных датасетов: rollout-блокер
+    // `candleVenue` остаётся единственным, что удерживает actor-путь в проде.
+    const { outcome, calls } = await runThrough(eventDriven, { eventDrivenEnabled: true });
+    expect(outcome.status).toBe('rejected');
+    expect(refusalOf(outcome).code).toBe('unsupported_lifecycle');
+    expect(refusalOf(outcome).message).toMatch(/происхождение свечей не доказано/);
+    // И отказ НЕ называет риск: причина, называющая не своё, отправляет чинить не то.
+    expect(refusalOf(outcome).message).not.toMatch(/профиль риска/);
+    expect(calls).toEqual([]);
+  }, 60_000);
+
+  it('флаг включён, режимы совместимы, capability ЕСТЬ → отказ по НЕДОКАЗАННОМУ происхождению свечей', async () => {
     // Требование владельца дословно: ни один набор условий не проваливается в legacy, включая
-    // полностью совместимый. Проверяется через подставленного способного исполнителя, потому что
-    // штатного пока не существует.
+    // полностью совместимый. Проверяется через подставленного способного исполнителя.
+    //
+    // ПРИЧИНА ОТКАЗА СМЕНИЛАСЬ ВМЕСТЕ С КОДОМ. Прежде путь упирался в отсутствие проекции; теперь
+    // проекция, раннер и продовая точка вызова подключены, и прогон доходит до допуска подписок,
+    // где и отвергается: фикстура датасета не объявляет происхождения свечей. Это состояние ВСЕХ
+    // реальных датасетов, поэтому поведение прода не изменилось — изменилось лишь то, КАКАЯ
+    // проверка его удерживает, и она теперь называет конкретный несошедшийся параметр.
     const { outcome, calls } = await runThrough(eventDriven, {
       eventDrivenEnabled: true,
       capableExecutor: true,
@@ -207,7 +267,13 @@ describe('сквозь runBacktest: event_driven отвергается, а не
     const r = refusalOf(outcome);
     expect(r.code).toBe('unsupported_lifecycle');
     expect(r.path).toBe('');
-    expect(r.message).toMatch(/проекц/);
+    // ПРИЧИНА ОДНА И ОПРЕДЕЛЁННАЯ. Прежде здесь стояла альтернатива «профиль риска ИЛИ
+    // происхождение свечей»: она проходила при любом из двух отказов и потому не отличала их друг
+    // от друга — то есть пережила бы и подмену причины. После риск-среза профиль исполним, и
+    // единственное, что удерживает путь, — недоказанное происхождение свечей.
+    expect(r.message).toMatch(/происхождение свечей не доказано/);
+    expect(r.message).not.toMatch(/профиль риска/);
+    // Актор так и не создан: отказ случается ДО `createActor`, и счётчик это доказывает.
     expect(calls).toEqual([]);
   }, 60_000);
 

@@ -15,6 +15,8 @@ import type { IndicatorEngine } from './indicators/index.js';
 interface CandleDatasetFile {
   readonly datasetRef: string;
   readonly timeframe: string;
+  /** Венью свечей — ОБЪЯВЛЯЕТ файл датасета; отсутствие означает «происхождение неизвестно». */
+  readonly candleVenue?: string;
   readonly symbols: Record<string, readonly Bar[]>;
 }
 
@@ -22,6 +24,12 @@ interface CandleDatasetFile {
 export interface CandleDataset {
   readonly datasetRef: string;
   readonly timeframe: string;
+  /**
+   * Венью, с которого записаны СВЕЧИ (083 S3). Объявляет ДАТАСЕТ; отсутствие читается как
+   * «происхождение неизвестно» и закрывает actor-путь (`proveCandleVenue`). Названо по ряду:
+   * агрегированные ряды своего венью не имеют по построению, и общего венью у датасета нет.
+   */
+  readonly candleVenue?: string;
   symbols(): readonly string[];
   candles(symbol: string): readonly Readonly<Bar>[];
 }
@@ -69,6 +77,9 @@ export function loadCandleDataset(datasetRef: string, fixturesDir?: string): Can
   return {
     datasetRef: parsed.datasetRef,
     timeframe: parsed.timeframe,
+    // Пробрасывается ТОЛЬКО когда объявлено. `candleVenue: undefined` и отсутствие ключа обязаны
+    // читаться одинаково: «не объявлено» — единственное состояние, а не два похожих.
+    ...(parsed.candleVenue !== undefined ? { candleVenue: parsed.candleVenue } : {}),
     symbols: () => Object.keys(frozen),
     candles: (symbol) => {
       const c = frozen[symbol];
