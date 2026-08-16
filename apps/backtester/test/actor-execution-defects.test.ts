@@ -39,6 +39,7 @@ const flatBars = (n: number, price: number): readonly ActorBar[] =>
     high: price + 5,
     low: price - 5,
     close: price,
+    volume: 0,
   }));
 
 const strategy = (): ResolvedStrategy =>

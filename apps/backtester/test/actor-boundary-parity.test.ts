@@ -90,6 +90,19 @@ const MANIFEST = {
       revisionPolicy: { mode: 'final_only' },
       priceType: 'trade',
     },
+    {
+      // Агрегированный вид рядом со свечами: паритет обязан покрывать и его доставку, и разрыв
+      // наблюдаемости. Венью тут — идентичность инструмента, а не заявление о происхождении
+      // значения: у кросс-биржевой величины его нет по построению.
+      kind: 'open_interest',
+      id: 'req-oi',
+      instrument: { venue: VENUE, symbol: 'BTCUSDT' },
+      interval: MINUTE_US,
+      lookback: 0,
+      revisionPolicy: { mode: 'final_only' },
+      scope: 'aggregate',
+      unit: 'usd',
+    },
   ],
 };
 
@@ -103,8 +116,18 @@ const MANIFEST = {
 const STRATEGY_SOURCE = `
 export function createActor(init) {
   let bar = -1;
+  const feed = [];
   return {
     onEvent(event, ctx) {
+      if (event.kind === 'market.open_interest.observed') {
+        feed.push('oi@' + event.oi.effectiveTsUs + '=' + event.oi.value.oiTotalUsd);
+        return [];
+      }
+      if (event.kind === 'market.subscription.status_changed') {
+        feed.push('gap@' + event.status.expectedTsUs
+          + (event.status.lastObservedTsUs === undefined ? '' : '<' + event.status.lastObservedTsUs));
+        return [];
+      }
       if (event.kind !== 'market.candle.closed') return [];
       bar += 1;
       const pos = ctx.position();
@@ -117,6 +140,7 @@ export function createActor(init) {
           + ' ready=' + ctx.readiness
           + ' state=' + ctx.tradingState
           + ' now=' + ctx.clock.nowUs()
+          + ' feed=' + feed.join(',')
           + ' open=' + ctx.orders.open().length
           + ' pos=' + (pos === undefined ? 'flat' : pos.side + '@' + pos.avgEntryPrice)
           + ' draw=' + ctx.rng.next().toString(),
@@ -242,7 +266,7 @@ async function runTrusted(fixtureDir: string, entryFile: string): Promise<Road> 
       riskProfiles: [DEFAULT_RISK],
       executionProfiles: [NO_COST],
     }),
-    dataset: loadCandleDataset(DATASET_REF, fixtureDir),
+    dataset: datasetWithOi(fixtureDir),
     router: createTrustedRouter(executor),
     eventDrivenEnabled: true,
     artifactStore: store,
@@ -250,6 +274,36 @@ async function runTrusted(fixtureDir: string, entryFile: string): Promise<Road> 
   // Прямой исполнитель не оставил сессий — это и есть его половина «нет утечек».
   expect(executor.activeActorSessions()).toBe(0);
   return { outcome, timeline: await readTimeline(outcome, store) };
+}
+
+/**
+ * Фикстура свечей, ДОПОЛНЕННАЯ наблюдениями open interest.
+ *
+ * Формат фикстуры 018 агрегатов не несёт, а паритет обязан проверяться и на них: доставка нового
+ * вида идёт другим кодом (`aggregateEventFor`, состояние разрыва наблюдаемости), и граница изолята
+ * не вправе менять ответ и там. Обёртка отдаёт ОДИН И ТОТ ЖЕ вход обеим дорогам — иначе
+ * сравнивались бы два разных входа, и совпадение не значило бы ничего.
+ *
+ * Наблюдения НЕ на каждом баре намеренно: пропуск порождает `market.subscription.status_changed`,
+ * и паритет обязан покрывать его тоже — это событие собирается из состояния, живущего МЕЖДУ
+ * frontier'ами, то есть ровно там, где две дороги могли бы разойтись незаметно.
+ */
+function datasetWithOi(fixtureDir: string): ReturnType<typeof loadCandleDataset> {
+  const base = loadCandleDataset(DATASET_REF, fixtureDir);
+  const observed = new Map<number, number>();
+  base.candles('BTCUSDT').forEach((c, i) => {
+    if (i % 2 === 0) observed.set(c.ts, 5_000 + i);
+  });
+  return {
+    ...base,
+    openInterest: () => ({
+      at: (minuteTs: number) => {
+        const oiTotalUsd = observed.get(minuteTs);
+        return oiTotalUsd === undefined ? undefined : { ts: minuteTs, oiTotalUsd };
+      },
+      covered: (minuteTs: number) => observed.has(minuteTs),
+    }),
+  } as unknown as ReturnType<typeof loadCandleDataset>;
 }
 
 /** ПЕСОЧНАЯ дорога: тот же файл, исполненный в изоляте. */
@@ -264,7 +318,7 @@ async function runSandboxed(fixtureDir: string, bundle: ModuleBundle): Promise<R
         riskProfiles: [DEFAULT_RISK],
         executionProfiles: [NO_COST],
       }),
-      dataset: loadCandleDataset(DATASET_REF, fixtureDir),
+      dataset: datasetWithOi(fixtureDir),
       router,
       eventDrivenEnabled: true,
       artifactStore: store,
@@ -332,6 +386,12 @@ describe('граница изолята не меняет ответ', () => {
     const draws = notes.map((n) => n.split(' draw=')[1]).filter((d): d is string => d !== undefined);
     expect(draws.length).toBeGreaterThanOrEqual(BAR_COUNT);
     expect(new Set(draws).size).toBe(draws.length);
+    // АГРЕГИРОВАННЫЙ ВИД ДЕЙСТВИТЕЛЬНО ДОСТАВЛЯЛСЯ — иначе паритет по нему был бы вакуумным:
+    // `feed=` совпал бы у обеих дорог пустым, и «побайтово одинаково» не значило бы про новый вид
+    // ничего. Проверяются ОБА состояния, потому что собираются они разным кодом: наблюдение — из
+    // бара, разрыв — из состояния, живущего МЕЖДУ frontier'ами.
+    expect(notes.some((n) => / feed=[^ ]*oi@/.test(n))).toBe(true);
+    expect(notes.some((n) => / feed=[^ ]*gap@/.test(n))).toBe(true);
     // Прогрев наблюдался автором и заявка при нём отклонена, а суффикс батча пропущен.
     expect(notes.some((n) => n.includes('ready=warming_up'))).toBe(true);
     expect(notes.some((n) => n.includes('ready=ready'))).toBe(true);

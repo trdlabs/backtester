@@ -61,6 +61,7 @@ const steppedBars = (flat: number, total: number): readonly ActorBar[] =>
       high: price + 5,
       low: price - 5,
       close: price,
+    volume: 0,
     };
   });
 

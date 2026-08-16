@@ -79,6 +79,81 @@ import type {
   HostActorContext,
 } from './execution-handle.js';
 
+/**
+ * Наблюдения агрегированных видов НА ЭТОЙ минуте.
+ *
+ * ОТСУТСТВИЕ КЛЮЧА — ЭТО «НАБЛЮДЕНИЯ НЕ БЫЛО», и оно НЕ подменяется нулём. У всех четырёх видов
+ * ноль — законное наблюдение: `{longUsd: 0, shortUsd: 0}` значит «бакет закрыт, каскадов не было»,
+ * а `fundingRate: 0` — что ставка равна нулю. Подставь здесь ноль вместо отсутствия — и стратегия
+ * не отличит тишину рынка от тишины канала.
+ *
+ * Контракт выражает отсутствие ЕДИНСТВЕННЫМ каналом — `market.subscription.status_changed` с
+ * `gap`; само событие вида несёт только present-содержимое. Поэтому здесь нет ни `| null`, ни
+ * трёхсостоянийного ридинга: есть ключ — было наблюдение, нет ключа — не было.
+ */
+export interface ActorBarAggregates {
+  readonly openInterest?: { readonly oiTotalUsd: number };
+  readonly liquidations?: { readonly longUsd: number; readonly shortUsd: number };
+  readonly takerVolume?: { readonly buyUsd: number; readonly sellUsd: number };
+  readonly funding?: { readonly fundingRate: number };
+}
+
+/**
+ * Фаза business-момента, в которую подаётся рыночное событие вида (§3.8.1).
+ *
+ * ЭТО НЕ ОПТИМИЗАЦИЯ ПОРЯДКА, А НОРМАТИВНАЯ КОДИРОВКА. Спека нормирует распад слота «bar» на фазы
+ * 3 (`market`) и 4 (`candle`) — решение 2026-08-06, и движок называет это дословно: «обе кодировки
+ * дали бы сегодня один и тот же порядок, но фаза — это то, что нормировано, а совпадение
+ * результата с альтернативной кодировкой случайно и не обязано пережить следующий вид данных».
+ *
+ * Отсюда и форма проверки. Пробой НА ПОРЯДОК эти две кодировки НЕ РАЗЛИЧИМЫ: и «агрегат в фазе
+ * market», и «агрегат в фазе candle со старшим рангом» дают сегодня одну и ту же
+ * последовательность. Различает только сама фаза, поэтому она вынесена сюда и пиннится
+ * НАПРЯМУЮ — зелёная проба на порядок доказывает не то, что кажется.
+ */
+export function marketPhaseFor(kind: string): 'market' | 'candle' {
+  return kind === 'candles' ? 'candle' : 'market';
+}
+
+/**
+ * Событие агрегированного вида для этой минуты, либо `undefined` — наблюдения не было.
+ *
+ * Одна функция на все четыре вида, а не четыре ветки по месту вызова: форма `ObservedValue`
+ * одинакова, и различие только в имени поля значения. Разложи это по месту — и `finality`/`revision`
+ * пришлось бы писать четырежды, то есть четырежды иметь возможность написать по-разному.
+ *
+ * `finality: 'final'` и `revision: 0` — не заглушка: архив несёт ОДНУ строку на `(minute_ts, symbol)`,
+ * второй записи с тем же ключом физически негде лежать, и `final_only` — единственная политика,
+ * которую допуск принимает.
+ */
+function aggregateEventFor(
+  kind: string,
+  frontierUs: TimestampUs,
+  aggregates: ActorBarAggregates | undefined,
+): ActorInputEvent | undefined {
+  const observed = <T>(value: T) => ({ effectiveTsUs: frontierUs, value, finality: 'final' as const, revision: 0 });
+  switch (kind) {
+    case 'open_interest':
+      return aggregates?.openInterest === undefined
+        ? undefined
+        : { kind: 'market.open_interest.observed', oi: observed(aggregates.openInterest) };
+    case 'liquidations':
+      return aggregates?.liquidations === undefined
+        ? undefined
+        : { kind: 'market.liquidations.bucket_closed', liq: observed(aggregates.liquidations) };
+    case 'taker_volume':
+      return aggregates?.takerVolume === undefined
+        ? undefined
+        : { kind: 'market.taker_volume.bucket_closed', taker: observed(aggregates.takerVolume) };
+    case 'funding':
+      return aggregates?.funding === undefined
+        ? undefined
+        : { kind: 'market.funding.observed', funding: observed(aggregates.funding) };
+    default:
+      return undefined;
+  }
+}
+
 /** Бар ленты в форме, которую матчит движок. */
 export interface ActorBar {
   readonly tsUs: TimestampUs;
@@ -86,6 +161,18 @@ export interface ActorBar {
   readonly high: number;
   readonly low: number;
   readonly close: number;
+  /**
+   * Объём закрытой свечи. Поле ОБЯЗАТЕЛЬНОЕ, потому что до него событие свечи уезжало автору с
+   * `volume: 0` — константой, неотличимой от честного нулевого объёма. Дефолт здесь был бы ровно
+   * тем законным значением, что скрывает потерю: автор, торгующий по объёму, получал бы «рынок
+   * стоял» на каждом баре и не имел бы никакого способа это заметить.
+   */
+  readonly volume: number;
+  /**
+   * Наблюдения агрегированных видов этой минуты. Отсутствие поля целиком = лента агрегатов не
+   * несёт (OHLCV-путь 018), и это отличается от «несёт, но в этой минуте наблюдения не было».
+   */
+  readonly aggregates?: ActorBarAggregates;
 }
 
 /**
@@ -241,6 +328,18 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
   // и ломается молча — как другое решение стратегии, а не как ошибка.
   const rngSource: CheckpointableRng = createCheckpointableRng(rngStateFromSeed(input.seed));
   const bindings = input.admission.bindings;
+  // Разделение по виду ОБЯЗАТЕЛЬНО, а не косметично: свечной цикл ниже шлёт
+  // `market.candle.closed` на КАЖДЫЙ элемент, и агрегированная подписка получила бы свечу.
+  // Вид берётся у ПРОВЕРЕННОГО требования, а не у дескриптора: у дескриптора в типе есть и
+  // хостовый вариант, которого в биндингах не бывает, — сужать пришлось бы приведением, то есть
+  // обещанием компилятору вместо проверки.
+  const candleBindings = bindings.filter((b) => b.requirement.kind === 'candles');
+  const aggregateBindings = bindings.filter((b) => b.requirement.kind !== 'candles');
+  // Состояние наблюдаемости ПО ПОДПИСКЕ, живёт через все frontier'ы прогона. Контракт требует
+  // ровно одного `status_changed` НА ПЕРЕХОДЕ observed → gap: повтор на каждом пустом frontier
+  // превратил бы сигнал об изменении в шум на каждом тике.
+  const inGap = new Set<string>();
+  const lastObservedTsUs = new Map<string, TimestampUs>();
   const tradingFrom = input.admission.tradingFromBarIndex;
 
   let state: ActorEngineState = {
@@ -550,11 +649,66 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
         });
       });
 
-      // ── Фаза 4: свечи. По одному событию на КАЖДУЮ разрешённую подписку ───────
-      bindings.forEach((binding, i) => {
+      // ── Фаза 3: агрегированные виды ───────────────────────────────────────────
+      //
+      // ПОРЯДОК ВНУТРИ FRONTIER'А ЗАДАЁТ ДВИЖОК, а не этот цикл: `marketKind` уезжает в
+      // `orderFrontier`, и §3.8.2 (`MARKET_KIND_RANK` — open_interest первым, свеча последней)
+      // применяется там. Своя сортировка здесь была бы второй реализацией нормативного порядка и
+      // разошлась бы с движковой при первой же правке ранга — молча, потому что обе «работают».
+      //
+      // СОБЫТИЕ ВИДА НЕСЁТ ТОЛЬКО PRESENT-СОДЕРЖИМОЕ (контракт, §3.11.2). Отсутствие наблюдения
+      // выражается ЕДИНСТВЕННЫМ каналом — `market.subscription.status_changed` с `gap`; событие
+      // вида со значением «данных не было» было бы самопротиворечивым высказыванием.
+      aggregateBindings.forEach((binding, i) => {
+        const sid = binding.descriptor.subscriptionId;
+        const event = aggregateEventFor(binding.requirement.kind, frontierUs, bar.aggregates);
+        if (event !== undefined) {
+          inGap.delete(sid);
+          lastObservedTsUs.set(sid, frontierUs);
+          seed.push({
+            businessTsUs: frontierUs,
+            phase: marketPhaseFor(binding.requirement.kind),
+            marketKind: binding.requirement.kind,
+            stableSubscriptionId: sid,
+            sourceSequence: i,
+            payload: { subscriptionId: sid, event },
+          });
+          return;
+        }
+        // Наблюдения не было. Событие статуса эмитится РОВНО ОДИН РАЗ на переходе: пока подписка
+        // уже в разрыве, молчание и есть её состояние.
+        if (inGap.has(sid)) return;
+        inGap.add(sid);
+        const last = lastObservedTsUs.get(sid);
         seed.push({
           businessTsUs: frontierUs,
-          phase: 'candle',
+          phase: marketPhaseFor(binding.requirement.kind),
+          marketKind: binding.requirement.kind,
+          stableSubscriptionId: sid,
+          sourceSequence: i,
+          payload: {
+            subscriptionId: sid,
+            event: {
+              kind: 'market.subscription.status_changed',
+              status: {
+                state: 'gap',
+                // Первая ОЖИДАЕМАЯ, но не пришедшая точка, а не момент детекции: у поля намеренно
+                // одно прочтение (`expectedTsUs`, не `sinceUs`).
+                expectedTsUs: frontierUs,
+                // Самый первый разрыв в жизни подписки последнего наблюдения не несёт — и это не
+                // «неизвестно», а «его не было». Ключ отсутствует, а не равен нулю.
+                ...(last !== undefined ? { lastObservedTsUs: last } : {}),
+              },
+            },
+          },
+        });
+      });
+
+      // ── Фаза 4: свечи. По одному событию на КАЖДУЮ разрешённую подписку ───────
+      candleBindings.forEach((binding, i) => {
+        seed.push({
+          businessTsUs: frontierUs,
+          phase: marketPhaseFor('candles'),
           marketKind: 'candles',
           stableSubscriptionId: binding.descriptor.subscriptionId,
           sourceSequence: i,
@@ -564,7 +718,7 @@ export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorE
               kind: 'market.candle.closed',
               candle: {
                 effectiveTsUs: frontierUs,
-                value: { open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: 0 },
+                value: { open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume },
                 finality: 'final',
                 revision: 0,
               },

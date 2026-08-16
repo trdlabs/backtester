@@ -46,6 +46,7 @@ const bars = (n: number): readonly ActorBar[] =>
     high: 101 + i,
     low: 99 + i,
     close: 100.5 + i,
+    volume: 0,
   }));
 
 const requirement = (lookback: number): MarketDataRequirement =>

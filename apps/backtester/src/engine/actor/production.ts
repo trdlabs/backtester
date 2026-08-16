@@ -345,13 +345,42 @@ export async function runActorProduction(
     const admission = admitActorMarketData(input.strategy, tape);
     if (admission.refusal !== null) return { refusal: admission.refusal };
 
-    const bars: readonly ActorBar[] = candles.map((c) => ({
-      tsUs: (c.ts * 1000) as ActorBar['tsUs'],
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-    }));
+    // Колонки берутся ОДИН РАЗ на символ, а не на бар: `openInterest(symbol)` строит колонку
+    // заново на каждый вызов, и вызов из цикла по барам превратил бы линейный проход в
+    // квадратичный на ровном месте.
+    const src = input.dataset as Partial<MarketTapeDataset>;
+    const oiCol = src.openInterest?.(symbol);
+    const liqCol = src.liquidations?.(symbol);
+    const takerCol = src.taker?.(symbol);
+    const fundCol = src.funding?.(symbol);
+
+    const bars: readonly ActorBar[] = candles.map((c) => {
+      // `at()` отвечает снимком либо `undefined` — ровно то различение, которое нужно: ключа нет
+      // ⇔ наблюдения не было. Ни один вид не подменяется нулём: у всех четырёх ноль законен
+      // (`{0,0}` у ликвидаций значит «бакет закрыт, каскадов не было»), и подстановка сделала бы
+      // тишину канала неотличимой от тишины рынка.
+      const oi = oiCol?.at(c.ts);
+      const liq = liqCol?.at(c.ts);
+      const taker = takerCol?.at(c.ts);
+      const fund = fundCol?.at(c.ts);
+      const aggregates = {
+        ...(oi !== undefined ? { openInterest: { oiTotalUsd: oi.oiTotalUsd } } : {}),
+        ...(liq !== undefined ? { liquidations: { longUsd: liq.longUsd, shortUsd: liq.shortUsd } } : {}),
+        ...(taker !== undefined ? { takerVolume: { buyUsd: taker.buyUsd, sellUsd: taker.sellUsd } } : {}),
+        ...(fund !== undefined ? { funding: { fundingRate: fund.fundingRate } } : {}),
+      };
+      return {
+        tsUs: (c.ts * 1000) as ActorBar['tsUs'],
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        // Пустой объект НЕ кладётся: «лента агрегатов не несёт» и «несёт, но в этой минуте
+        // наблюдений не было» — разные состояния, и первое обязано быть отсутствием поля.
+        ...(Object.keys(aggregates).length > 0 ? { aggregates } : {}),
+      };
+    });
 
     records.push(
       await runEventDrivenSymbol({

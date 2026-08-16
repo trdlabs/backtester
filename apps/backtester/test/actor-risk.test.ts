@@ -42,6 +42,7 @@ const bars = (n: number): readonly ActorBar[] =>
     high: 105,
     low: 95,
     close: 100,
+    volume: 0,
   }));
 
 const strategy = (): ResolvedStrategy =>
@@ -236,6 +237,7 @@ describe('RE-ВАЛИДАЦИЯ В МОМЕНТ ИСПОЛНЕНИЯ: обход
         high: price + 5,
         low: price - 5,
         close: price,
+    volume: 0,
       };
     });
 
