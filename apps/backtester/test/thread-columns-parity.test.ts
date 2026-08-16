@@ -216,7 +216,7 @@ describe('гейт колонок — лента из колонок эквив�
         has_taker_flow: true,
       },
     ];
-    const cols = encodeTapeColumns('ds', '1m', rows);
+    const cols = encodeTapeColumns('ds', '1m', undefined, rows);
     const cloned = structuredClone(cols);
     // Исходные буферы ОБЯЗАНЫ остаться живыми: колонки лежат в разделяемом кэше, и перенос
     // (в отличие от копии) опустошил бы запись для следующего прогона.

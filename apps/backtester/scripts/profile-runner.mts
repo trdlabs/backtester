@@ -179,7 +179,7 @@ const request = makeRequest(spec);
 // НЕ СОПОСТАВИМЫ между прогонами разной длины.
 const threadColumns =
   THREAD && inlineBundle !== undefined
-    ? encodeTapeColumns(datasetRefOf(spec), '1m', buildRows(spec))
+    ? encodeTapeColumns(datasetRefOf(spec), '1m', undefined, buildRows(spec))
     : undefined;
 
 /** Одна точка замера: своя лента, свой запрос, свои колонки. Строится ВНЕ замеряемой области. */
@@ -197,7 +197,7 @@ function makePoint(bars: number): Point {
     // Длину прогона задаёт ДАТАСЕТ, а не период в запросе: с укороченным периодом, но полной лентой
     // раннер всё равно обрабатывает все бары (проверено — половинная точка давала те же 4000).
     deps: inlineBundle !== undefined ? makeIsolateDeps(s, materialized!.bundleDir, WALL_MS_PER_CALL) : makeTrustedDeps(s),
-    columns: THREAD && inlineBundle !== undefined ? encodeTapeColumns(datasetRefOf(s), '1m', buildRows(s)) : undefined,
+    columns: THREAD && inlineBundle !== undefined ? encodeTapeColumns(datasetRefOf(s), '1m', undefined, buildRows(s)) : undefined,
     bars,
   };
 }

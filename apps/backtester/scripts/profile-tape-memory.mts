@@ -140,7 +140,7 @@ function measure(label: string, kinds: boolean): void {
   const rows = rowsM.value;
   const tapeM = retainedMb(() => marketTapeFromCanonicalRows('tm-fixture', '1m', rows));
   held = tapeM.value;
-  const colsM = retainedMb(() => encodeTapeColumns('tm-fixture', '1m', rows));
+  const colsM = retainedMb(() => encodeTapeColumns('tm-fixture', '1m', undefined, rows));
   const cols: TapeColumns = colsM.value;
   held = undefined;
   void held;
@@ -149,7 +149,7 @@ function measure(label: string, kinds: boolean): void {
   // Копия буферов — то, что делает structured clone на границе потока. Именно КОПИЯ, а не перенос:
   // колонки живут в разделяемом `overlayTapeCache`, и перенос отсоединил бы их у отправителя.
   const copyColsMs = minMs(REPEATS, () => structuredClone(cols));
-  const buildColsMs = minMs(REPEATS, () => encodeTapeColumns('tm-fixture', '1m', rows));
+  const buildColsMs = minMs(REPEATS, () => encodeTapeColumns('tm-fixture', '1m', undefined, rows));
 
   const f64PerRow =
     7 + // ts, open, high, low, close, volume, turnover — всегда
