@@ -101,9 +101,23 @@ export function rebuildActorInit(wire) {
  * что контракт обещает автору.
  */
 export function rebuildActorContext(wire, rng) {
+  // ПРИСУТСТВИЕ ПОЛЕЙ ТРЕБУЕТСЯ, А НЕ ПОДРАЗУМЕВАЕТСЯ. Первая редакция читала `wire.openOrders ?? []`
+  // и `wire.position ?? undefined` — то есть подставляла «книга пуста» и «позиции нет» на потерянное
+  // по дороге поле. Это худшая из возможных подстановок: оба значения ЗАКОННЫ, автор принял бы их
+  // за состояние рынка и торговал бы по нему, а потеря не оставила бы следа нигде.
+  //
+  // Отсюда `null` на проводе для отсутствующей позиции: `undefined` исчезает при `JSON.stringify`,
+  // и «позиции нет» стало бы неотличимо от «поля не доехало». Различить их можно только договорясь
+  // о значении для первого — и потребовав ключ для второго.
+  if (!Object.prototype.hasOwnProperty.call(wire, 'openOrders')) {
+    throw new Error('контекст без openOrders: пустая книга — законное состояние, потеря поля — нет');
+  }
+  if (!Object.prototype.hasOwnProperty.call(wire, 'position')) {
+    throw new Error('контекст без position: «позиции нет» на проводе это null, а не отсутствие ключа');
+  }
   const nowUs = wire.nowUs;
-  const openOrders = deepFreeze(wire.openOrders ?? []);
-  const position = wire.position === null || wire.position === undefined ? undefined : deepFreeze(wire.position);
+  const openOrders = deepFreeze(wire.openOrders);
+  const position = wire.position === null ? undefined : deepFreeze(wire.position);
   return Object.freeze({
     clock: Object.freeze({ nowUs: () => nowUs }),
     rng,

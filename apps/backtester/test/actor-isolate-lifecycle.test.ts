@@ -28,7 +28,10 @@ import { IsolateModuleExecutor } from '../src/engine/sandbox/isolate-executor.js
 import { isRngStateWire, revalidateActorCommands } from '../src/engine/sandbox/actor-boundary.js';
 import type { ActorSource, HostActorContext } from '../src/engine/actor/execution-handle.js';
 // Вендорная копия mulberry32 из ХАРНЕССА — та, что исполняется внутри изолята.
-import { createCheckpointableRng as harnessRng } from '../sandbox-harness-overlay/actor-harness.mjs';
+import {
+  createCheckpointableRng as harnessRng,
+  rebuildActorContext,
+} from '../sandbox-harness-overlay/actor-harness.mjs';
 
 const tempDirs: string[] = [];
 afterAll(() => {
@@ -208,6 +211,27 @@ describe('тройка lifecycle работает через настоящую 
     expect(seen.positionSide).toBe('long');
     await executor.disposeActor(handle);
   }, 60_000);
+
+  it('ПОТЕРЯННОЕ на проводе поле контекста — отказ, а не «пусто»', () => {
+    // Прямая проба, потому что дефект здесь неотличим от нормы по значению: «книга пуста» и
+    // «позиции нет» — ЗАКОННЫЕ состояния, и подстановка их на месте потерянного поля не оставила
+    // бы следа нигде. Автор торговал бы по миру, которого не было.
+    const full = {
+      nowUs: 1,
+      readiness: 'ready',
+      tradingState: 'normal',
+      openOrders: [],
+      position: null,
+      rng: { a: 0 },
+    };
+    const rng = harnessRng({ a: 0 }) as never;
+    expect(() => rebuildActorContext(full, rng)).not.toThrow();
+
+    const { openOrders: _o, ...noOrders } = full;
+    expect(() => rebuildActorContext(noOrders, rng)).toThrow(/без openOrders/);
+    const { position: _p, ...noPosition } = full;
+    expect(() => rebuildActorContext(noPosition, rng)).toThrow(/без position/);
+  });
 
   it('«позиции нет» доезжает как `undefined`, а не как пропавшее поле', async () => {
     // На проводе это `null`: `undefined` исчезает при `JSON.stringify`, и «позиции нет» стало бы
