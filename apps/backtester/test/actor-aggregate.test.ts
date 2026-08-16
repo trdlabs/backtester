@@ -83,6 +83,9 @@ async function runOne(symbol: string, actorId: string, base: number): Promise<Ac
     symbol,
     barIntervalUs: MINUTE_US,
     barCount: 4,
+    // Лента этих проб — только свечи: агрегатов она не несёт, и допуск обязан это
+    // увидеть, а не додумать. Значение явное, потому что дефолта у поля нет.
+    carries: () => false,
   });
   if (admission.refusal !== null) throw new Error(admission.refusal.message);
   return runEventDrivenSymbol({
@@ -175,6 +178,9 @@ describe('граница сериализации: содержимое, пор�
       symbol: 'BTCUSDT',
       barIntervalUs: MINUTE_US,
       barCount: 4,
+      // Лента этих проб — только свечи: агрегатов она не несёт, и допуск обязан это
+      // увидеть, а не додумать. Значение явное, потому что дефолта у поля нет.
+      carries: () => false,
     });
     if (admission.refusal !== null) throw new Error(admission.refusal.message);
     const init = buildActorInit({

@@ -169,6 +169,9 @@ describe('S3: полностью совместимый набор ПРОХОД�
       symbol: 'BTCUSDT',
       barIntervalUs: 60_000_000,
       barCount: 10,
+      // Лента этих проб — только свечи: агрегатов она не несёт, и допуск обязан это
+      // увидеть, а не додумать. Значение явное, потому что дефолта у поля нет.
+      carries: () => false,
     });
     expect(out.refusal?.code).toBe('unsupported_lifecycle');
     expect(out.refusal?.path).toBe('');
@@ -181,6 +184,9 @@ describe('S3: полностью совместимый набор ПРОХОД�
       symbol: 'BTCUSDT',
       barIntervalUs: 60_000_000,
       barCount: 10,
+      // Лента этих проб — только свечи: агрегатов она не несёт, и допуск обязан это
+      // увидеть, а не додумать. Значение явное, потому что дефолта у поля нет.
+      carries: () => false,
     });
     expect(out.refusal?.code).toBe('unsupported_lifecycle');
     expect(out.refusal?.message).toMatch(/не объявляет marketData/);

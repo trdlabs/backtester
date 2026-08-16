@@ -89,6 +89,9 @@ async function run(
     symbol: 'BTCUSDT',
     barIntervalUs: MINUTE_US,
     barCount: tape.length,
+    // Лента этих проб — только свечи: агрегатов она не несёт, и допуск обязан это
+    // увидеть, а не додумать. Значение явное, потому что дефолта у поля нет.
+    carries: () => false,
   });
   if (admission.refusal !== null) throw new Error(admission.refusal.message);
   return runEventDrivenSymbol({
@@ -255,6 +258,9 @@ describe('RE-ВАЛИДАЦИЯ В МОМЕНТ ИСПОЛНЕНИЯ: обход
       symbol: 'BTCUSDT',
       barIntervalUs: MINUTE_US,
       barCount: tape.length,
+      // Лента этих проб — только свечи: агрегатов она не несёт, и допуск обязан это
+      // увидеть, а не додумать. Значение явное, потому что дефолта у поля нет.
+      carries: () => false,
     });
     if (admission.refusal !== null) throw new Error(admission.refusal.message);
     return runEventDrivenSymbol({
