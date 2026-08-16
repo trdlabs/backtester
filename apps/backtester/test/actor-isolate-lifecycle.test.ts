@@ -29,7 +29,9 @@ import { isRngStateWire, revalidateActorCommands } from '../src/engine/sandbox/a
 import type { ActorSource, HostActorContext } from '../src/engine/actor/execution-handle.js';
 // Вендорная копия mulberry32 из ХАРНЕССА — та, что исполняется внутри изолята.
 import {
+  createActorSlot,
   createCheckpointableRng as harnessRng,
+  makeActorStore,
   rebuildActorContext,
 } from '../sandbox-harness-overlay/actor-harness.mjs';
 
@@ -354,6 +356,71 @@ describe('атомарность владения — по счётчикам О
     );
     await executor.disposeActor(live);
   }, 60_000);
+});
+
+describe('атомарность САМОГО харнесса — без страховки хоста', () => {
+  // ЭТОТ НАБОР ЗАВЕДЁН МУТАЦИЕЙ, КОТОРАЯ НИЧЕГО НЕ ПОКРАСИЛА.
+  //
+  // Перестановка `store.set` ПЕРЕД проверкой формы актора обязана была уронить «слот не заведён» —
+  // и не уронила. Причина: хост на пути отказа зовёт `disposeActor` в изоляте (страховка на случай
+  // «слот заведён, но ответ не доехал»), и она же прибирает слот, заведённый ошибочно.
+  //
+  // Поведение прода от этого верное: два независимых механизма, и защита в глубину сработала. Но
+  // утверждения выше доказывали ИСХОД («после отвергнутого создания слотов нет»), а не МЕХАНИЗМ,
+  // который харнесс заявляет о себе сам («запись — последняя строка удачного пути»). Пока механизм
+  // не пиннут, его можно сломать, не покрасив ни строки, — и утечка появится в тот день, когда
+  // страховка хоста не сработает: сессия мертва, изолят снят, ответ не доехал.
+  //
+  // Поэтому здесь харнесс вызывается НАПРЯМУЮ, без хоста и без изолята: страховки, которая могла
+  // бы подменить результат, в этой цепочке просто нет.
+
+  const module = (createActor: unknown): unknown => ({ createActor });
+
+  it('модуль без createActor: таблица осталась пустой', () => {
+    const store = makeActorStore();
+    expect(createActorSlot(store, {}, 'a-0', INIT).ok).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
+  it('фабрика вернула не актора: таблица осталась пустой', () => {
+    const store = makeActorStore();
+    expect(createActorSlot(store, module(() => ({})), 'a-0', INIT).ok).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
+  it('фабрика вернула null: таблица осталась пустой', () => {
+    const store = makeActorStore();
+    expect(createActorSlot(store, module(() => null), 'a-0', INIT).ok).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
+  it('фабрика бросила: таблица осталась пустой', () => {
+    const store = makeActorStore();
+    const boom = (): never => {
+      throw new Error('нет');
+    };
+    expect(createActorSlot(store, module(boom), 'a-0', INIT).ok).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
+  it('занятый дескриптор не перезаписывается: прежний актор остаётся тем же', () => {
+    // Тихая перезапись потеряла бы прежнего актора вместе со всем его состоянием, а хост продолжал
+    // бы адресовать его тем же дескриптором и получать ответы чужого.
+    const store = makeActorStore();
+    const first = { onEvent: () => [] };
+    expect(createActorSlot(store, module(() => first), 'a-0', INIT).ok).toBe(true);
+    const r = createActorSlot(store, module(() => ({ onEvent: () => [] })), 'a-0', INIT);
+    expect(r.ok).toBe(false);
+    expect(store.size).toBe(1);
+    expect((store.get('a-0') as { actor: unknown }).actor).toBe(first);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: удачное создание слот ЗАВОДИТ', () => {
+    // Иначе «таблица пуста» выше зеленело бы у функции, которая не заводит слотов никогда.
+    const store = makeActorStore();
+    expect(createActorSlot(store, module(() => ({ onEvent: () => [] })), 'a-0', INIT).ok).toBe(true);
+    expect(store.size).toBe(1);
+  });
 });
 
 describe('отказ доставки ГРОМКИЙ — пустой батч зарезервирован за автором', () => {
