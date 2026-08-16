@@ -117,6 +117,9 @@ function makeRun(opts: {
     symbol: 'BTCUSDT',
     barIntervalUs: MINUTE_US,
     barCount: opts.barCount,
+    // Лента этих проб — только свечи: агрегатов она не несёт, и допуск обязан это увидеть, а не
+    // додумать. Значение явное, потому что дефолта у поля нет.
+    carries: () => false,
   };
   const admission = admitActorMarketData(strategy(opts.lookback), tape);
   if (admission.refusal !== null) throw new Error(`фикстура не прошла допуск: ${admission.refusal.message}`);

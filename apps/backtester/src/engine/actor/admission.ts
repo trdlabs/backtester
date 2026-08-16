@@ -178,6 +178,22 @@ export function admitActorExecutor(
 const SUPPORTED_KIND = 'candles';
 
 /**
+ * Виды, у которых значение кросс-биржевое ПО ПОСТРОЕНИЮ — подтверждено кодом рекордера, а не
+ * записью: `buildFinalizedSnapshot` гейтит их валидность СЧЁТОМ ИСТОЧНИКОВ (`oiSourceCount`,
+ * `fundingSourceCount`, `takerSourceCount`), а ликвидации приходят списком срезов, типизированных
+ * биржей, и складываются. Венью-специфична в каноне ТОЛЬКО свеча
+ * (`docs/operations/evidence/2026-08-17-canonical-row-provenance-by-code.md` в control-center).
+ *
+ * Список закрыт НАЗЫВАНИЕМ венью-специфичного, а не перечислением агрегатов: новый вид с
+ * собственным венью обязан объявить это явно, а не попасть под правило по умолчанию.
+ */
+const AGGREGATE_KINDS = ['open_interest', 'liquidations', 'taker_volume', 'funding'] as const;
+
+function isAggregateKind(kind: string): kind is ActorAggregateKind {
+  return (AGGREGATE_KINDS as readonly string[]).includes(kind);
+}
+
+/**
  * Единственный ценовой ряд свечей в контракте. Тип замыкает `priceType` на `'trade'`, но манифест
  * приезжает из JSON недоверенного модуля: типом это НЕ проверено ни разу. Сравнение ниже намеренно
  * идёт через `String(...)`, иначе TypeScript сузил бы обе стороны к литералу и выкинул проверку как
@@ -259,6 +275,22 @@ export interface ActorTapeCapabilities {
   readonly barIntervalUs: number;
   /** Сколько баров в ленте — верхняя граница `lookback`. */
   readonly barCount: number;
+  /**
+   * НЕСЁТ ЛИ лента этот вид вообще — по составу, а не по покрытию.
+   *
+   * Состояний ТРИ, и они не сводятся к двум. «Вид не несётся» — отказ: обещать нечем. «Несётся,
+   * покрытие нулевое» — ДОПУСК: пустое наблюдение законно (у taker `{0,0}` при
+   * `has_taker_flow: true` это наблюдение, а не отсутствие). «Несётся частично» — тоже допуск, а
+   * разрывы автор видит по `ObservationStatus`.
+   *
+   * Слить первое со вторым значило бы либо отвергать законные пустые ленты, либо обещать вид,
+   * которого нет, — и второе хуже: стратегия ждала бы событий, которые не придут никогда, а
+   * прогон выглядел бы здоровым.
+   *
+   * Отсутствие функции — не «несёт всё»: вызывающий обязан её дать. Дефолт здесь был бы ровно тем
+   * законным значением, что скрывает потерю.
+   */
+  readonly carries: (kind: ActorAggregateKind) => boolean;
 }
 
 /**
@@ -272,7 +304,7 @@ export interface ActorSubscriptionBinding {
   /** Ровно то, что уедет в `ActorInit.subscriptions`. */
   readonly descriptor: ActorSubscriptionDescriptor;
   /** Нормализованный СНИМОК проверенного требования — не ссылка на объект манифеста. */
-  readonly requirement: ActorCandleRequirement;
+  readonly requirement: ActorRequirement;
   /** Проверенный `lookback` этого требования — в барах ленты. */
   readonly lookback: number;
 }
@@ -301,6 +333,47 @@ export interface ActorCandleRequirement {
   readonly priceType: 'trade';
   readonly revisions: 'final_only';
 }
+
+/** Четыре вида, у которых значение КРОСС-БИРЖЕВОЕ по построению. */
+export type ActorAggregateKind = 'open_interest' | 'liquidations' | 'taker_volume' | 'funding';
+
+/**
+ * Нормализованное требование агрегированного вида.
+ *
+ * ДВЕ ОСИ, А НЕ ОДНА, И ЭТО РЕШЕНИЕ КОНТРАКТА, НЕ ХОСТА. `instrument.venue` называет ИНСТРУМЕНТ
+ * («BTCUSDT такой-то биржи» — то, чем рынок однозначно идентифицируется), а `scope` говорит, венью
+ * ли ЛОКАЛЬНО само значение. Их легко спутать, и путаница стоила бы дорого в обе стороны: сверять
+ * venue агрегата с доказанным происхождением свечей значило бы требовать от кросс-биржевой величины
+ * того, чего у неё нет по построению, а не сверять вовсе — принять заявление, которого никто не
+ * обслуживает.
+ *
+ * Поэтому здесь venue проверяется как ИДЕНТИЧНОСТЬ (тот ли это инструмент, по которому идёт
+ * прогон), и отказ говорит об этом дословно, чтобы его не прочли как проверку происхождения.
+ *
+ * `scope: 'venue'` отвергается — по-источниковых значений архив не хранит и хранить не будет
+ * (решение владельца 2026-08-06). Хост проверяет это САМ, а не полагается на валидатор SDK: гейт,
+ * который держит кто-то другой, перестаёт держать ровно тогда, когда этого другого перестают
+ * звать.
+ */
+export interface ActorAggregateRequirement {
+  readonly id: string;
+  readonly kind: ActorAggregateKind;
+  /** Идентичность инструмента, НЕ происхождение значения. */
+  readonly venue: string;
+  readonly symbol: string;
+  readonly intervalUs: number;
+  readonly lookback: number;
+  /** Единственная область, которую лента может обслужить. */
+  readonly scope: 'aggregate';
+  /** Только у `open_interest` и `taker_volume`; лента несёт исключительно USD. */
+  readonly unit?: 'usd';
+  /** Только у `funding`; `settlement` не резолвится — колонки в архиве нет. */
+  readonly form?: 'rate';
+  readonly revisions: 'final_only';
+}
+
+/** Проверенное требование любого допущенного вида. */
+export type ActorRequirement = ActorCandleRequirement | ActorAggregateRequirement;
 
 /** Допуск отказал: ничего пригодного к употреблению НЕ отдаётся — этого требует тип, а не дисциплина. */
 export interface ActorMarketDataRefused {
@@ -410,30 +483,34 @@ export function admitActorMarketData(
   const subscriptions: ActorSubscriptionDescriptor[] = [HOST_SOURCE_DESCRIPTOR];
 
   for (const req of requirements) {
-    if (req.kind !== SUPPORTED_KIND) {
-      return no(
-        `${label(strategy)} требует market data вида «${req.kind}»; в этом срезе поддержаны только ` +
-          `«${SUPPORTED_KIND}». Запустить прогон, не доставляя объявленного, значит соврать молча`,
-      );
-    }
-    // `String(...)` — не украшение: без него TypeScript сузил бы обе стороны к `'trade'` и счёл
-    // сравнение заведомо истинным. Значение приезжает из JSON и типом здесь не подтверждено ничем.
-    if (String(req.priceType) !== SUPPORTED_PRICE_TYPE) {
-      return no(
-        `${label(strategy)}: требование «${req.id}» просит priceType «${String(req.priceType)}»; лента ` +
-          `несёт только «${SUPPORTED_PRICE_TYPE}» (сделки), и другого ценового ряда у неё нет`,
-      );
-    }
     if (seen.has(req.id)) {
       return no(`${label(strategy)}: требование «${req.id}» объявлено дважды`);
     }
     seen.add(req.id);
 
+    if (req.kind !== SUPPORTED_KIND && !isAggregateKind(req.kind)) {
+      return no(
+        `${label(strategy)} требует market data вида «${req.kind}»; поддержаны «${SUPPORTED_KIND}» и ` +
+          `${AGGREGATE_KINDS.map((k) => `«${k}»`).join(', ')}. Запустить прогон, не доставляя ` +
+          'объявленного, значит соврать молча',
+      );
+    }
+
+    // ВЕНЬЮ ТРЕБОВАНИЯ — ИДЕНТИЧНОСТЬ ИНСТРУМЕНТА, и проверяется она для ВСЕХ видов, но означает
+    // для них разное. У свечей это заявление о происхождении ЗНАЧЕНИЙ, и оно сверяется с
+    // доказанным провенансом. У агрегатов значение кросс-биржевое по построению, и venue отвечает
+    // только на вопрос «тот ли это инструмент»; сообщение отказа обязано это говорить, иначе его
+    // прочтут как проверку происхождения и пойдут чинить не туда.
     if (req.instrument.venue !== tape.candleVenue.venue) {
       return no(
-        `${label(strategy)}: требование «${req.id}» просит венью ${req.instrument.venue}, а свечи прогона ` +
-          `с ${tape.candleVenue.venue} (${tape.candleVenue.source}). Подставить одно вместо другого ` +
-          'нельзя: у разных венью различаются и цены, и комиссии, и funding',
+        req.kind === SUPPORTED_KIND
+          ? `${label(strategy)}: требование «${req.id}» просит венью ${req.instrument.venue}, а свечи прогона ` +
+            `с ${tape.candleVenue.venue} (${tape.candleVenue.source}). Подставить одно вместо другого ` +
+            'нельзя: у разных венью различаются и цены, и комиссии, и funding'
+          : `${label(strategy)}: требование «${req.id}» (${req.kind}) называет инструмент ` +
+            `${req.instrument.venue}, а прогон идёт по ${tape.candleVenue.venue}. Это несовпадение ` +
+            'ИНСТРУМЕНТА, а не происхождения: значение этого вида кросс-биржевое по построению, и ' +
+            'венью у него нет вовсе — но спрашивать его надо про тот же рынок, по которому идёт прогон',
       );
     }
     if (req.instrument.symbol !== tape.symbol) {
@@ -467,6 +544,77 @@ export function admitActorMarketData(
       );
     }
 
+    // ── ВИДОСПЕЦИФИЧНОЕ. Стоит ПОСЛЕ общего и ДО сборки: отказ здесь не должен оставлять за собой
+    //    заведённый дескриптор, а общие причины обязаны называться раньше частных, иначе диагност
+    //    получит частный диагноз на общей ошибке.
+    let requirement: ActorRequirement;
+    if (req.kind === SUPPORTED_KIND) {
+      // `String(...)` — не украшение: без него TypeScript сузил бы обе стороны к `'trade'` и счёл
+      // сравнение заведомо истинным. Значение приезжает из JSON и типом здесь не подтверждено ничем.
+      if (String(req.priceType) !== SUPPORTED_PRICE_TYPE) {
+        return no(
+          `${label(strategy)}: требование «${req.id}» просит priceType «${String(req.priceType)}»; лента ` +
+            `несёт только «${SUPPORTED_PRICE_TYPE}» (сделки), и другого ценового ряда у неё нет`,
+        );
+      }
+      requirement = Object.freeze({
+        id: req.id,
+        kind: SUPPORTED_KIND,
+        venue: req.instrument.venue,
+        symbol: req.instrument.symbol,
+        intervalUs: Number(req.interval),
+        lookback: req.lookback,
+        priceType: SUPPORTED_PRICE_TYPE,
+        revisions: 'final_only',
+      } satisfies ActorCandleRequirement);
+    } else {
+      // `scope: 'venue'` отвергается ХОСТОМ, а не только валидатором SDK. Гейт, который держит
+      // кто-то другой, перестаёт держать ровно тогда, когда этого другого перестают звать, — а
+      // допуск обязан быть самостоятельным.
+      if (String(req.scope) !== 'aggregate') {
+        return no(
+          `${label(strategy)}: требование «${req.id}» (${req.kind}) просит scope «${String(req.scope)}»; ` +
+            'по-источниковых значений архив не хранит и хранить не будет — это свойство записи, а не ' +
+            'пробел реализации. Обслуживается только «aggregate»',
+        );
+      }
+      // ТРЕТЬЕ СОСТОЯНИЕ. «Лента не несёт вид» — отказ; «несёт, но пусто» — допуск. Слить их
+      // значило бы обещать автору события, которых не будет никогда, а прогон при этом выглядел бы
+      // здоровым: стратегия просто не дождалась бы того, чего никто и не собирался слать.
+      if (!tape.carries(req.kind)) {
+        return no(
+          `${label(strategy)}: требование «${req.id}» просит вид «${req.kind}», а лента прогона его не ` +
+            'несёт вовсе. Пустое покрытие — законное состояние и отказом не является; отсутствие ' +
+            'вида в составе ленты — другое дело: доставлять нечего, и обещать это нельзя',
+        );
+      }
+      if ((req.kind === 'open_interest' || req.kind === 'taker_volume') && String(req.unit) !== 'usd') {
+        return no(
+          `${label(strategy)}: требование «${req.id}» просит unit «${String(req.unit)}»; лента несёт этот ` +
+            'вид только в USD, а пересчёт в базовую валюту требует цены того же момента и вносил бы ' +
+            'собственную ошибку в объявленное автором значение',
+        );
+      }
+      if (req.kind === 'funding' && String(req.form) !== 'rate') {
+        return no(
+          `${label(strategy)}: требование «${req.id}» просит funding form «${String(req.form)}»; колонки ` +
+            'settlement в архиве физически нет, и выдать её неоткуда',
+        );
+      }
+      requirement = Object.freeze({
+        id: req.id,
+        kind: req.kind,
+        venue: req.instrument.venue,
+        symbol: req.instrument.symbol,
+        intervalUs: Number(req.interval),
+        lookback: req.lookback,
+        scope: 'aggregate',
+        ...(req.kind === 'open_interest' || req.kind === 'taker_volume' ? { unit: 'usd' as const } : {}),
+        ...(req.kind === 'funding' ? { form: 'rate' as const } : {}),
+        revisions: 'final_only',
+      } satisfies ActorAggregateRequirement);
+    }
+
     // Дескриптор создаётся ЗДЕСЬ ОДИН РАЗ и кладётся и в binding, и в `subscriptions` — один и тот
     // же объект в обоих местах, а не два одинаковых.
     const descriptor: ActorSubscriptionDescriptor = Object.freeze({
@@ -478,22 +626,7 @@ export function admitActorMarketData(
 
     // Заморозка ПОУРОВНЕВАЯ и явная: `Object.freeze` поверхностна, а `Object.isFrozen` истинен и для
     // поверхностно замороженного — то есть проверка на родителе ничего не говорит о детях.
-    bindings.push(
-      Object.freeze({
-        descriptor,
-        requirement: Object.freeze({
-          id: req.id,
-          kind: SUPPORTED_KIND,
-          venue: req.instrument.venue,
-          symbol: req.instrument.symbol,
-          intervalUs: Number(req.interval),
-          lookback: req.lookback,
-          priceType: SUPPORTED_PRICE_TYPE,
-          revisions: 'final_only',
-        } satisfies ActorCandleRequirement),
-        lookback: req.lookback,
-      }),
-    );
+    bindings.push(Object.freeze({ descriptor, requirement, lookback: req.lookback }));
   }
 
   // Контрактный гейт уникальности (`findDuplicateSubscriptionIds`, doc у `ActorSubscriptionDescriptor`):

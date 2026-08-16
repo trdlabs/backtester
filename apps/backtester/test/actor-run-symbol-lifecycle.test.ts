@@ -28,6 +28,9 @@ const TAPE: ActorTapeCapabilities = {
   symbol: 'BTCUSDT',
   barIntervalUs: MINUTE_US,
   barCount: 10,
+  // Лента этих проб — только свечи: агрегатов она не несёт, и допуск обязан это
+  // увидеть, а не додумать. Значение явное, потому что дефолта у поля нет.
+  carries: () => false,
 };
 
 const REQUIREMENT = {

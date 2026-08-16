@@ -11,6 +11,8 @@
 
 import type { RiskDecision } from '@trdlabs/engine';
 
+import type { MarketTapeDataset } from '@trading/research-contracts/research';
+
 import type { CandleDataset } from '../dataset.js';
 import type { ResolvedStrategy } from '../artifacts.js';
 import type { RunAccumulators } from '../runner.js';
@@ -318,6 +320,26 @@ export async function runActorProduction(
       symbol,
       barIntervalUs: input.barIntervalUs,
       barCount: candles.length,
+      // СОСТАВ ленты, а не покрытие. Мульти-source лента (`MarketTapeDataset`) отвечает `undefined`
+      // на вид, которого не несёт ни одна её строка, и НЕПУСТОЙ колонкой на вид, который несётся
+      // хотя бы где-то, — включая случай нулевого покрытия. Это ровно то различение, которое
+      // допуску и нужно: «нечего доставлять» против «доставлять нечего в этой минуте».
+      //
+      // OHLCV-лента 018 (`CandleDataset`) агрегатов не несёт вовсе и методов для них не имеет,
+      // поэтому отвечает `false` на все четыре — не дефолтом, а по факту отсутствия метода.
+      carries: (kind) => {
+        const src = input.dataset as Partial<MarketTapeDataset>;
+        switch (kind) {
+          case 'open_interest':
+            return src.openInterest?.(symbol) !== undefined;
+          case 'liquidations':
+            return src.liquidations?.(symbol) !== undefined;
+          case 'taker_volume':
+            return src.taker?.(symbol) !== undefined;
+          case 'funding':
+            return src.funding?.(symbol) !== undefined;
+        }
+      },
     };
 
     const admission = admitActorMarketData(input.strategy, tape);
