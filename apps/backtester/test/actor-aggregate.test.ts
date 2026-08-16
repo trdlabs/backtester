@@ -39,6 +39,7 @@ const bars = (n: number, base: number): readonly ActorBar[] =>
     high: base + 1 + i,
     low: base - 1 + i,
     close: base + 0.5 + i,
+    volume: 0,
   }));
 
 const strategyFor = (symbol: string): ResolvedStrategy =>
