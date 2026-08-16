@@ -6,11 +6,14 @@
 //
 //   • содержимое подменено на диске (стор отдаёт не то, что писали);
 //   • ссылка указывает на чужой, но существующий и корректный артефакт;
+//   • ссылка указывает на поток ТОГО ЖЕ актора — самосогласованный, с теми же дескрипторами и тем
+//     же числом строк, но из другого прогона: самый тонкий случай, потому что все признаки, по
+//     которым артефакт сверялся с прогоном поштучно, у него сходятся;
 //   • артефакта нет вовсе, а ссылка на него есть;
 //   • ссылок меньше, чем акторов;
 //   • сериализация потеряла actor identity либо дескрипторы подписок.
 //
-// Общее у них одно: РЕЗУЛЬТАТ ПРОГОНА ВЫГЛЯДИТ НОРМАЛЬНО во всех пяти случаях. Именно поэтому гейт
+// Общее у них одно: РЕЗУЛЬТАТ ПРОГОНА ВЫГЛЯДИТ НОРМАЛЬНО во всех шести случаях. Именно поэтому гейт
 // обязателен, а не рекомендован: он единственный, кто эти состояния отличает от здорового.
 
 import { describe, expect, it } from 'vitest';
@@ -20,6 +23,7 @@ import type { ActorCommand, ActorInputEvent, MarketDataRequirement } from '@trdl
 import { timestampUsFromMillis } from '@trdlabs/sdk/research-contract';
 
 import { InMemoryArtifactStore, type ArtifactStore } from '../src/artifacts/store.js';
+import { contentRef } from '../src/determinism/hash.js';
 import { admitActorMarketData, proveCandleVenue } from '../src/engine/actor/admission.js';
 import { runEventDrivenSymbol } from '../src/engine/actor/run-symbol.js';
 import type { ActorBar } from '../src/engine/actor/frontier-runner.js';
@@ -75,8 +79,18 @@ const strategy = (): ResolvedStrategy =>
     module: {},
   }) as unknown as ResolvedStrategy;
 
-/** Настоящий прогон: поток обязан родиться из диспетчеризации, а не быть собранным в тесте. */
-async function realRecord(actorId = 'actor-btcusdt'): Promise<ActorExecutionRecord> {
+/**
+ * Настоящий прогон: поток обязан родиться из диспетчеризации, а не быть собранным в тесте.
+ *
+ * `clientOrderId` вынесен в параметр не ради удобства: он даёт ВТОРОЙ настоящий прогон того же
+ * актора той же конфигурации, отличающийся только содержимым строк. Собери такой документ руками —
+ * и проба доказывала бы, что гейт отвергает рукотворную форму, а не что он отличает чужой поток от
+ * своего.
+ */
+async function realRecord(
+  actorId = 'actor-btcusdt',
+  clientOrderId = 'o1',
+): Promise<ActorExecutionRecord> {
   let step = 0;
   const executor: ActorLifecycleExecutor = {
     createActor: async () => ({ __h: 1 }) as unknown as ActorExecutionHandle,
@@ -84,7 +98,7 @@ async function realRecord(actorId = 'actor-btcusdt'): Promise<ActorExecutionReco
       if (event.kind !== 'market.candle.closed') return [];
       step += 1;
       if (step === 1) {
-        return [{ kind: 'place', clientOrderId: 'o1', side: 'buy', qtyUsd: 1000, type: 'market' } as unknown as ActorCommand];
+        return [{ kind: 'place', clientOrderId, side: 'buy', qtyUsd: 1000, type: 'market' } as unknown as ActorCommand];
       }
       return [];
     },
@@ -182,6 +196,66 @@ describe('негативные гейты: каждый способ потер�
     const alienRefs = await persistActorTimelines(store, [alien]);
     await expect(assertActorTimelineIntegrity(store, alienRefs, [mine])).rejects.toThrow(
       /принадлежит актору «actor-ethusdt», которого в этом прогоне нет/,
+    );
+  });
+
+  it('ПОДМЕНА НА ПОТОК ТОГО ЖЕ АКТОРА: поштучные признаки сходятся, документ другой', async () => {
+    // Самый тонкий случай — и единственный, который гейт пропускал до 2026-08-16. Артефакт
+    // настоящий, самосогласованный, того же актора, с теми же дескрипторами и тем же числом строк.
+    // Отличается он только СОДЕРЖИМЫМ строк, а значит ни одна поштучная сверка его не ловит. Так
+    // выглядит повторный прогон той же конфигурации, чья ссылка попала в результат вместо своей:
+    // прогон объяснён потоком, который ему не принадлежит, и по результату это невидимо.
+    const mine = buildActorTimelineDocument(await realRecord('actor-btcusdt', 'o1'));
+    const other = buildActorTimelineDocument(await realRecord('actor-btcusdt', 'o2'));
+
+    // ПРОВЕРКА ПРОВЕРКИ, и здесь она несущая: без неё проба зеленела бы по любой причине — «актор
+    // не тот», «дескрипторы не те», «строк не столько», — то есть повторно проверяла бы уже
+    // закрытые случаи, а этот так и остался бы непокрытым.
+    expect(other.actorId).toBe(mine.actorId);
+    expect(contentRef(other.subscriptions)).toBe(contentRef(mine.subscriptions));
+    expect(other.rows.length).toBe(mine.rows.length);
+    expect(contentRef(other)).not.toBe(contentRef(mine));
+
+    const store = new InMemoryArtifactStore();
+    const refs = await persistActorTimelines(store, [other]);
+    await expect(assertActorTimelineIntegrity(store, refs, [mine])).rejects.toThrow(
+      /ссылка .* указывает не на тот документ/,
+    );
+  });
+
+  // ── Порядок проверок в гейте НОРМАТИВЕН, и эти две пробы его держат ──────────────────────────
+  //
+  // Замыкающая сверка «ссылка указывает не на тот документ» строго сильнее сверок дескрипторов и
+  // числа строк: она ловит и их случаи тоже. Поэтому обе стоят ВЫШЕ неё — иначе перестали бы
+  // срабатывать вовсе, оставшись ветками с недостижимым условием.
+  //
+  // Без этих проб порядок держался бы одним комментарием: перенеси замыкающую сверку наверх — и
+  // ничего не покраснеет, потому что отвергнут артефакт будет по-прежнему, просто другим,
+  // менее точным сообщением. Пробы пинят ДИАГНОЗ, и в этом весь их смысл; сам факт отвержения
+  // проверен соседними.
+  //
+  // Документы здесь собраны правкой готового, а не вторым прогоном: нужен ровно вход, попадающий
+  // в конкретную ветку. Правдоподобие класса доказывается не тут, а соседней пробой «поток того же
+  // актора», где оба документа настоящие.
+
+  it('ПОРЯДОК: расхождение дескрипторов называется своим именем, а не общим', async () => {
+    const mine = buildActorTimelineDocument(await realRecord());
+    expect(mine.subscriptions.length).toBeGreaterThan(1);
+    const skewed: ActorTimelineDocument = { ...mine, subscriptions: mine.subscriptions.slice(0, -1) };
+    const store = new InMemoryArtifactStore();
+    const refs = await persistActorTimelines(store, [skewed]);
+    await expect(assertActorTimelineIntegrity(store, refs, [mine])).rejects.toThrow(
+      /дескрипторы подписок в артефакте не совпадают/,
+    );
+  });
+
+  it('ПОРЯДОК: расхождение числа строк называется своим именем, а не общим', async () => {
+    const mine = buildActorTimelineDocument(await realRecord());
+    const shorter: ActorTimelineDocument = { ...mine, rows: mine.rows.slice(0, -1) };
+    const store = new InMemoryArtifactStore();
+    const refs = await persistActorTimelines(store, [shorter]);
+    await expect(assertActorTimelineIntegrity(store, refs, [mine])).rejects.toThrow(
+      /строк потока против/,
     );
   });
 
