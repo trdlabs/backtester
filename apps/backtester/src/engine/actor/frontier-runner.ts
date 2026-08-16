@@ -18,7 +18,9 @@
 import {
   applyBatch,
   applyFill,
-  createSeededRng,
+  createCheckpointableRng,
+  rngStateFromSeed,
+  type CheckpointableRng,
   executeFill,
   matchBar,
   nextSeq,
@@ -42,7 +44,6 @@ import { createActorHost } from '@trdlabs/engine';
 import { HOST_SOURCE_DESCRIPTOR, HOST_SUBSCRIPTION_ID } from '@trdlabs/sdk/research-contract';
 import type {
   ActorCommand,
-  ActorContext,
   ActorInputEvent,
   ExecutionLedgerEntry,
   OpenOrderView,
@@ -72,7 +73,11 @@ import type {
   ActorOrderRecord,
 } from './execution-record.js';
 import type { ActorTimelineCommand, ActorTimelineEntry } from './timeline.js';
-import type { ActorLifecycleExecutor, ActorExecutionHandle } from './execution-handle.js';
+import type {
+  ActorLifecycleExecutor,
+  ActorExecutionHandle,
+  HostActorContext,
+} from './execution-handle.js';
 
 /** Бар ленты в форме, которую матчит движок. */
 export interface ActorBar {
@@ -227,7 +232,14 @@ function advanceOrder(
 export async function runActorFrontiers(input: FrontierRunInput): Promise<ActorExecutionRecord> {
   const host = createActorHost();
   const core = createActorBatchCore(input.risk);
-  const rngSource = createSeededRng(input.seed);
+  // ГЕНЕРАТОР С ИЗВЛЕКАЕМЫМ СОСТОЯНИЕМ, а не закрытый в замыкании.
+  //
+  // Последовательность та же (тот же mulberry32 и тот же seed), но состояние теперь ЗНАЧЕНИЕ, а
+  // значит его можно передать за границу изолята и принять обратно. Прежний `createSeededRng`
+  // прячет положение генератора в замыкании: sandbox-исполнителю оставалось бы завести СВОЙ,
+  // засеяв его тем же числом. Это работает ровно до первого расхождения в числе вызовов `next()`
+  // и ломается молча — как другое решение стратегии, а не как ошибка.
+  const rngSource: CheckpointableRng = createCheckpointableRng(rngStateFromSeed(input.seed));
   const bindings = input.admission.bindings;
   const tradingFrom = input.admission.tradingFromBarIndex;
 
@@ -744,9 +756,9 @@ function openOrderViewOf(o: ActorOpenOrder): OpenOrderView {
 function buildContext(
   state: ActorEngineState,
   frontierUs: TimestampUs,
-  rng: { next: () => number },
+  rng: CheckpointableRng,
   position: PositionView | undefined,
-): ActorContext {
+): HostActorContext {
   return {
     clock: { nowUs: () => frontierUs },
     rng,

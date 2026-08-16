@@ -17,8 +17,14 @@
 import { createSeededRng, rehydrateContext } from './rehydrate.mjs';
 import { makeInstanceStore, resolveInstance } from './universe-instances.mjs';
 import { runHookBatchSync } from './hook-batch.mjs';
+import { createActorSlot, deliverActorEvent, makeActorStore } from './actor-harness.mjs';
 
 const store = makeInstanceStore();
+// 083 S3 — акторы живут в СВОЕЙ таблице, а не в per-symbol слотах legacy-хуков. Слот там несёт
+// свечной буфер, rng сессии и один экземпляр на символ; у актора нет ни буфера (ему доставляют
+// событие целиком), ни привязки «один на символ» (их создаёт и освобождает хост поимённо).
+// Общая таблица заставила бы каждую из двух форм жизни таскать поля другой.
+const actors = makeActorStore();
 // Диагностические счётчики протокола (batch-однозаходность наблюдаема тестами через stats()).
 const stats = { hookCalls: 0, batchCalls: 0, batchBarsReceived: 0 };
 
@@ -103,6 +109,54 @@ globalThis.__isolateHarness = {
     } catch (e) {
       return fail('bundle_load_failed', e && e.message ? e.message : e);
     }
+  },
+
+  // ── 083 S3: lifecycle актора ────────────────────────────────────────────────
+  //
+  // Тройка по обе стороны границы. Ответы — ВСЕГДА JSON-строка: `evalHarness` на хосте считает
+  // не-строку вмешательством в харнесс и гасит сессию, поэтому «бросить наружу» здесь означает
+  // «сказать хосту, что харнесс подменён», а это другой факт.
+
+  /** Создать актора под выданным хостом дескриптором. */
+  createActor(handleId, initJson) {
+    let initWire;
+    try {
+      initWire = JSON.parse(initJson);
+    } catch {
+      return fail('sandbox_output_malformed', 'createActor: init не валидный JSON');
+    }
+    const r = createActorSlot(actors, globalThis.__bundleModule, handleId, initWire);
+    if (!r.ok) return fail('bundle_load_failed', r.detail);
+    return JSON.stringify({ ok: true });
+  },
+
+  /** Доставить событие; вернуть команды автора и состояние генератора после его розыгрышей. */
+  actorEvent(msgJson) {
+    let msg;
+    try {
+      msg = JSON.parse(msgJson);
+    } catch {
+      return fail('sandbox_output_malformed', 'actorEvent: сообщение не валидный JSON');
+    }
+    const r = deliverActorEvent(actors, msg);
+    if (!r.ok) return fail('sandbox_crashed', r.detail);
+    return JSON.stringify({ ok: true, commands: r.commands, rng: r.rng });
+  },
+
+  /** Освободить актора. Идемпотентно: повторный вызов на освобождённом — не отказ. */
+  disposeActor(handleId) {
+    actors.delete(handleId);
+    return JSON.stringify({ ok: true });
+  },
+
+  /**
+   * Сколько акторов живо ВНУТРИ изолята.
+   *
+   * Существует ради гейта атомарности: счётчик хоста доказывает только то, что хост о себе думает.
+   * Утечка за границей — слот, который хост уже не адресует, — видна лишь отсюда.
+   */
+  actorSessions() {
+    return JSON.stringify({ ok: true, count: actors.size });
   },
 
   /** Диагностика протокола: счётчики вызовов + длина свечного буфера (единственного slot'а POC). */
