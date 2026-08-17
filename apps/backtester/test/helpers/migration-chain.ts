@@ -33,6 +33,7 @@ export const MIGRATION_CHAIN: readonly MigrationLink[] = [
   { id: 'f3-engine-migration', map: 'apps/backtester/test/fixtures/f3-engine-migration/hash-map.json' },
   { id: '017-4-migration', map: 'apps/backtester/test/fixtures/017-4-migration/hash-map.json' },
   { id: '017-5-migration', map: 'apps/backtester/test/fixtures/017-5-migration/hash-map.json' },
+  { id: '017-6-migration', map: 'apps/backtester/test/fixtures/017-6-migration/hash-map.json' },
 ];
 
 /** Голова цепи — единственное звено, которому разрешено писать в файлы голденов. */
@@ -74,6 +75,53 @@ export function chainAnchors(
     }
     return { id: link.id, legacy: entry.legacy, active: entry.active };
   });
+}
+
+/**
+ * `active` ГОЛОВЫ цепи для сценария — то есть значение, которое ОБЯЗАНО лежать в файле голдена.
+ *
+ * Заведено потому, что каждый исторический пруф выписывал это значение у себя, читая карту
+ * «следующего» звена по зашитому пути. Пока следующий был головой, утверждение было верным;
+ * появление нового звена делало его ложным СРАЗУ У ВСЕХ, и падали они все вместе — при том что
+ * сама цепь не рвалась и голдены были в порядке.
+ *
+ * `chainAnchors` существовал ровно против этого и НЕ БЫЛ ПОДКЛЮЧЁН НИ ОДНИМ пруфом: помощник был
+ * написан, задокументирован и оставлен без вызывающих. Поэтому класс дефекта повторился на
+ * следующем же звене — 017.6.
+ */
+export function headActive(
+  repoRoot: string,
+  scenarioId: string,
+  readJson: (path: string) => unknown,
+): string {
+  const anchors = chainAnchors(repoRoot, scenarioId, readJson);
+  return (anchors[anchors.length - 1] as LinkAnchors).active;
+}
+
+/**
+ * `legacy` звена, идущего СРАЗУ ПОСЛЕ указанного, — то, с чем обязан сцепляться его `active`.
+ *
+ * Отдельно от `headActive`, потому что это разные утверждения: сцепка соседей и содержимое диска.
+ * Пока звено предпоследнее, значения совпадают; на любом более раннем — расходятся, и именно эта
+ * разница делает цепь проверяемой, а не «замкнутой по построению».
+ */
+export function legacyAfter(
+  repoRoot: string,
+  scenarioId: string,
+  linkId: string,
+  readJson: (path: string) => unknown,
+): string {
+  const anchors = chainAnchors(repoRoot, scenarioId, readJson);
+  const idx = anchors.findIndex((a) => a.id === linkId);
+  if (idx < 0) throw new Error(`migration-chain: звено '${linkId}' не найдено в цепи`);
+  const next = anchors[idx + 1];
+  if (next === undefined) {
+    throw new Error(
+      `migration-chain: у звена '${linkId}' нет следующего — оно голова, и сцепляться ему не с кем. ` +
+        `Голова проверяется через headActive, а не через legacyAfter.`,
+    );
+  }
+  return next.legacy;
 }
 
 /**

@@ -15,14 +15,15 @@ export * from './historical.js';
  *  SDK 0.19.0 (preflight). Прежние версии из набора не уходят (append-only
  *  SUPPORTED_CONTRACT_VERSIONS) — но это ПРИНАДЛЕЖНОСТЬ НАБОРУ, а не обещание, что любой старый
  *  манифест по-прежнему валиден: у формы манифеста собственный порог версии. Явное поле
- *  `lifecycle` требует ≥ 017.3, `lifecycle: 'event_driven'` — ≥ 017.5, поэтому `event_driven`
- *  под 017.4 отклоняется `unsupported_contract_version`. Матрица целиком и её проверка —
- *  `contract-017-5-migration.test.ts`.
+ *  `lifecycle` требует ≥ 017.3, `lifecycle: 'event_driven'` — ≥ 017.5, требование со связанной
+ *  привязкой (`symbolFrom: 'actor'`) — ≥ 017.6. Пороги РАЗНЫЕ и двигаются по отдельности:
+ *  083 S3 поднял только третий, поэтому `event_driven` под 017.5 валиден ровно как был.
+ *  Матрица целиком и её проверка — `contract-017-6-migration.test.ts`.
  *
  *  Смена этой строки перебазирует КАЖДЫЙ committed result-голден: `runner.ts` кладёт её в
  *  `RunEvidence`, а evidence входит в канонический payload прогона. Двигать её в отрыве от
- *  доказательства миграции (`contract-017-4-migration.test.ts`) нельзя. */
-export const CONTRACT_VERSION = '017.5';
+ *  доказательства миграции (`contract-017-6-migration.test.ts` — голова цепи) нельзя. */
+export const CONTRACT_VERSION = '017.6';
 
 /** The platform's lifted 017 contract version (parity anchor). Root CONTRACT_VERSION must equal it. */
 export { CONTRACT_VERSION as PLATFORM_CONTRACT_VERSION } from './research/catalogs.js';

@@ -38,7 +38,7 @@ function loadMap(relPath: string): Record<string, Entry> {
 describe('цепь миграций голденов', () => {
   it('голова — последнее объявленное звено', () => {
     expect(CHAIN_HEAD).toBe(MIGRATION_CHAIN[MIGRATION_CHAIN.length - 1]);
-    expect(CHAIN_HEAD.id).toBe('017-5-migration');
+    expect(CHAIN_HEAD.id).toBe('017-6-migration');
   });
 
   it('каждое объявленное звено существует на диске', () => {
@@ -86,12 +86,15 @@ describe('право записи в файлы голденов', () => {
     // Прежняя голова стала историческим звеном — и потеряла право записи ТЕМ ЖЕ механизмом,
     // без правки своего кода. Ради этого реестр и заведён.
     expect(() => assertOwnsGoldenFiles('017-4-migration')).toThrow(/не голова цепи/);
-    expect(() => assertOwnsGoldenFiles('f3-engine-migration')).toThrow(/017-5-migration/);
+    expect(() => assertOwnsGoldenFiles('f3-engine-migration')).toThrow(/017-6-migration/);
   });
 
   it('незаявленное звено — тоже не может', () => {
     // Молчаливое «разрешить неизвестному» вернуло бы ту же дыру для любого нового скрипта.
-    expect(() => assertOwnsGoldenFiles('017-6-migration')).toThrow(/не объявлено/);
+    // Пример обязан быть звеном, которого в цепи НЕТ. Прежний (`017-6-migration`) перестал им
+    // быть, когда цепь до него доросла: проба продолжала бы «проходить», проверяя не свой
+    // предмет. Взято заведомо далёкое имя, а не соседнее по счёту.
+    expect(() => assertOwnsGoldenFiles('017-9-migration')).toThrow(/не объявлено/);
   });
 
   it('отказ — исключение, а не тихий пропуск записи', () => {

@@ -1,0 +1,41 @@
+{
+  "contract": {
+    "from": "017.5",
+    "to": "017.6"
+  },
+  "migration": {
+    "epic": "083 S3",
+    "slice": "ступень 1 multi-symbol",
+    "cause": "Контракт поднялся 017.5 → 017.6 (SDK 0.22.0, engine 0.18.0): привязка требования к инструменту стала размеченным объединением. CONTRACT_VERSION входит в RunEvidence, а evidence — в канонический payload, поэтому бамп меняет content-hash каждого прогона. Новой ветвью (symbolFrom) ни один из этих сценариев не пользуется, поэтому кроме строки версии в payload меняться нечему — и это доказано откатом, а не принято на слово."
+  },
+  "goldens": {
+    "overlay-baseline": {
+      "scenario": "overlay-baseline",
+      "source": "apps/backtester/test/fixtures/overlay/goldens/baseline.hash",
+      "legacy": "sha256:7a840aa36d00ab7c1a2b9f38cb6772cf515be168b018d97a48d719dbd93dd4c3",
+      "active": "sha256:7a657dae7ced511f0b2c86fc46245515eded5b14c1db3967c69bb222742d55b2",
+      "diffPaths": [
+        "/baseline/evidence/contractVersion"
+      ]
+    },
+    "overlay-variant": {
+      "scenario": "overlay-variant",
+      "source": "apps/backtester/test/fixtures/overlay/goldens/variant.hash",
+      "legacy": "sha256:e67c7d14db1b2e5ef178dd3e6f1ebf313695e3cea5516d4c565d53152c65fd9b",
+      "active": "sha256:c111e7fe3f538b0f001de6d99bd6674bbe143115b126d6dd77dfc55793b2e841",
+      "diffPaths": [
+        "/baseline/evidence/contractVersion",
+        "/variant/evidence/contractVersion"
+      ]
+    },
+    "bar-major": {
+      "scenario": "bar-major",
+      "source": "apps/backtester/test/helpers/bar-major-golden-hash.ts",
+      "legacy": "sha256:5dce2e7aede3688197fcf9881f1354111f756913afc603ea2f4e2f57cd1b5681",
+      "active": "sha256:3d5dafd0770966072522100bbf04caa1db04ab8670cd85e3b173144feac11eee",
+      "diffPaths": [
+        "/evidence/contractVersion"
+      ]
+    }
+  }
+}
