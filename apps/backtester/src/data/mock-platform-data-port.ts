@@ -46,6 +46,19 @@ interface CoverageEntry {
   readonly toMs: number;
   readonly barCount: number;
   readonly availability: string;
+  /**
+   * Происхождение СВЕЧЕЙ этой записи покрытия (083 S3, снятие cc#365).
+   *
+   * Необязательно и БЕЗ дефолта: сервер, не объявивший его, обязан читаться как «происхождение
+   * неизвестно», и actor-путь такой прогон отвергнет (`proveCandleVenue`). Дефолт превратил бы
+   * молчание сервера в утверждение — ровно тот класс, из-за которого поле и заводится: у писателя
+   * значение сегодня берётся с подстановкой, и отличить «названо» от «подставлено» по значению
+   * нельзя.
+   *
+   * Названо по РЯДУ, а не по датасету: общего венью у датасета нет — OI, funding, ликвидации и
+   * taker агрегированы по нескольким венью по построению.
+   */
+  readonly candleVenue?: string;
 }
 
 interface CoverageSnapshot {
@@ -244,6 +257,10 @@ export class MockPlatformDataPort implements BacktesterDataPort {
         timeframe:  e.timeframe,
         period:     { from: msToISO(e.fromMs), to: msToISO(e.toMs) },
         rowCount:   e.barCount,
+        // ТОЛЬКО когда объявлено. `candleVenue: undefined` и отсутствие ключа обязаны читаться
+        // одинаково — «не объявлено» одно состояние, а не два похожих, — иначе потребитель ниже
+        // (`proveCandleVenue`) увидит присутствующий ключ и станет разбирать его значение.
+        ...(e.candleVenue !== undefined ? { candleVenue: e.candleVenue } : {}),
       }));
   }
 
