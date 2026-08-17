@@ -122,6 +122,27 @@ describe('прувер отвечает на дескриптор так, как
     expect(out.proven === false && out.reason).toMatch(/НЕОДНОРОДЕН/);
   });
 
+  it('перечень венью СОХРАНЯЕТСЯ в отказе — знание не складывается в «неизвестно»', () => {
+    // «Источников было несколько, вот они» — установленный факт. Отказ без перечня заставил бы
+    // владельца датасета выяснять состав заново, хотя он уже известен тому, кто отказ породил.
+    const out = proveCandleVenue({
+      datasetRef: 'mixed-day',
+      candleVenueHomogeneous: false,
+      candleVenues: ['okx', 'bybit'],
+    });
+    expect(out.proven === false && out.venues).toEqual(['okx', 'bybit']);
+    // В тексте перечень отсортирован: сообщение отказа обязано быть одинаковым при одинаковом
+    // составе, иначе два прогона по одним суткам дадут два разных текста.
+    expect(out.proven === false && out.reason).toMatch(/\(bybit, okx\)/);
+  });
+
+  it('перечня нет — отказ остаётся, но ключа venues тоже нет', () => {
+    // Пустой массив читался бы как «источников ноль», а это другое утверждение.
+    const out = proveCandleVenue({ datasetRef: 'mixed-day', candleVenueHomogeneous: false });
+    expect(out.proven).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(out, 'venues')).toBe(false);
+  });
+
   it('неоднородность перевешивает ПРИСУТСТВУЮЩЕЕ имя', () => {
     // По согласованной форме при неоднородности имя не пишется. Полагаться на дисциплину писателя
     // нельзя: приехавшее имя будет именем ОДНОГО из источников и совпадёт с чьим-нибудь
