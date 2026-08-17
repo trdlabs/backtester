@@ -7,4 +7,4 @@
 // as a side effect of the import (Vitest test files are plain ES modules — importing one for a
 // constant executes its top-level `describe(...)` calls too). `bar-major-golden.test.ts` and
 // Task 7's `bar-major-batch-golden.test.ts` both import from here instead.
-export const BAR_MAJOR_GOLDEN = 'sha256:5dce2e7aede3688197fcf9881f1354111f756913afc603ea2f4e2f57cd1b5681';
+export const BAR_MAJOR_GOLDEN = 'sha256:3d5dafd0770966072522100bbf04caa1db04ab8670cd85e3b173144feac11eee';

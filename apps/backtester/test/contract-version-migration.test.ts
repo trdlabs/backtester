@@ -27,8 +27,22 @@ import {
   readCommittedGolden,
   structuralDiffPaths,
 } from './helpers/golden-scenarios.js';
+import { headActive } from './helpers/migration-chain.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/** Общий читатель карт для производных от цепи: помощник не знает, как тест читает файлы. */
+const readJson = (p: string): unknown => JSON.parse(readFileSync(p, 'utf8'));
+
+/**
+ * Значение, которое ОБЯЗАНО лежать в файле голдена, — `active` ГОЛОВЫ цепи.
+ *
+ * Раньше здесь стояла карта «следующего» звена, прочитанная по зашитому пути. Это верно ровно
+ * пока следующий и есть голова; появление нового звена делает утверждение ложным у ВСЕХ
+ * исторических пруфов разом. Теперь голова выводится из `MIGRATION_CHAIN`, и добавление звена
+ * не требует правки ни одного теста.
+ */
+const onDiskFor = (scenarioId: string): string => headActive(REPO_ROOT, scenarioId, readJson);
 
 interface HashMapEntry {
   readonly scenario: string;
@@ -106,9 +120,7 @@ describe('017.2 → 017.3 golden migration proof', () => {
         // Д3 добавил пятое звено (017.4 → 017.5): файл на диске уехал ещё раз. Цепь по-прежнему
         // проверяется ЦЕЛИКОМ — до головы, а не до ближайшего соседа.
         expect(s1HashMap.goldens[scenario.id].active).toBe(d3HashMap.goldens[scenario.id].legacy);
-        expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(
-          d3HashMap.goldens[scenario.id].active,
-        );
+        expect(readCommittedGolden(REPO_ROOT, scenario.goldenSource)).toBe(onDiskFor(scenario.id));
       });
     });
   }

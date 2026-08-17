@@ -38,6 +38,15 @@ export const S1_CONTRACT_VERSION = '017.4';
 /** Голова цепи после Д3: контракт с preflight. Звено `017.4 → 017.5`. */
 export const PRE_D3_CONTRACT_VERSION = '017.4';
 export const D3_CONTRACT_VERSION = '017.5';
+/**
+ * Голова цепи после 083 S3 ступени 1: привязка требования к инструменту стала размеченным
+ * объединением. Звено `017.5 → 017.6`.
+ *
+ * `PRE_S3_CONTRACT_VERSION` численно равна `D3_CONTRACT_VERSION`, и это опять РАЗНЫЕ утверждения:
+ * та говорит «куда пришло звено 017.4 → 017.5», эта — «откуда уходит звено 017.5 → 017.6».
+ */
+export const PRE_S3_CONTRACT_VERSION = '017.5';
+export const S3_CONTRACT_VERSION = '017.6';
 
 /** Один воспроизводимый сценарий, чей canonical payload заморожен как golden. */
 export interface GoldenScenario {
@@ -220,6 +229,20 @@ export function atPreD3Contract(payload: unknown): unknown {
   return projectContractVersion(payload, D3_CONTRACT_VERSION, PRE_D3_CONTRACT_VERSION);
 }
 
+/**
+ * Нормализация свежего прогона к эпохе 017.5 — общий вход ВСЕХ трёх исторических звеньев.
+ *
+ * Та же причина, что у двух соседей выше, ещё на одно звено позже: якоря звеньев 017.2→017.3,
+ * 017.3→017.4 и 017.4→017.5 заморожены в своих эпохах, а свежий прогон эмитит 017.6. Без этого
+ * шага уехали бы ВСЕ якоря разом, и три звена продолжали бы «проходить», ничего не утверждая.
+ *
+ * Композиция нормализаций читается справа налево: самая новая применяется первой. Каждое новое
+ * звено дописывает ровно один шаг в начало цепочки у каждого исторического пруфа.
+ */
+export function atPreS3Contract(payload: unknown): unknown {
+  return projectContractVersion(payload, S3_CONTRACT_VERSION, PRE_S3_CONTRACT_VERSION);
+}
+
 /** Все JSON-pointer пути, по которым два canonical payload'а различаются. */
 export function structuralDiffPaths(a: unknown, b: unknown, base = ''): readonly string[] {
   if (Array.isArray(a) && Array.isArray(b)) {
@@ -260,7 +283,10 @@ export function proveContractVersionMigration(payload: unknown): MigrationProof 
   // прогон эмитит 017.4, и без нормализации оба хеша уехали бы вместе с версией, а звено молча
   // перестало бы что-либо доказывать. Нормализация стоит ЗДЕСЬ, а не у вызывающих: так её нельзя
   // забыть ни в тесте, ни в дериваторе.
-  const activePayload = projectToPreF3Shape(atPreS1Contract(atPreD3Contract(payload)));
+  // 083 S3: и к 017.5 — тот же довод ещё на одно звено позже.
+  const activePayload = projectToPreF3Shape(
+    atPreS1Contract(atPreD3Contract(atPreS3Contract(payload))),
+  );
   const legacyPayload = projectToLegacyContractVersion(activePayload);
   return {
     id: '',
@@ -287,7 +313,7 @@ export function proveContractVersionMigration(payload: unknown): MigrationProof 
 export function proveS1ContractMigration(payload: unknown): MigrationProof {
   // Нормализация к 017.4 — по той же причине, что и в звене выше: якоря этого
   // звена заморожены в эпохе 017.4, а свежий прогон эмитит 017.5.
-  const atS1 = atPreD3Contract(payload);
+  const atS1 = atPreD3Contract(atPreS3Contract(payload));
   const legacyPayload = projectContractVersion(atS1, S1_CONTRACT_VERSION, PRE_S1_CONTRACT_VERSION);
   return {
     id: '',
@@ -302,7 +328,27 @@ export function proveS1ContractMigration(payload: unknown): MigrationProof {
  * незачем, эта версия и есть голова цепи.
  */
 export function proveD3ContractMigration(payload: unknown): MigrationProof {
-  const legacyPayload = atPreD3Contract(payload);
+  // 083 S3: это звено БОЛЬШЕ НЕ ГОЛОВА. Прежде свежий payload и был его `active` — теперь свежий
+  // прогон эмитит 017.6, и `active` этого звена получается нормализацией к 017.5. Пропустить её
+  // значило бы утверждать, что якорь эпохи 017.5 равен хешу payload'а другой эпохи.
+  const atD3 = atPreS3Contract(payload);
+  const legacyPayload = atPreD3Contract(atD3);
+  return {
+    id: '',
+    activeHash: contentRef(atD3),
+    legacyHash: contentRef(legacyPayload),
+    diffPaths: structuralDiffPaths(legacyPayload, atD3),
+  };
+}
+
+/**
+ * Звено 083 S3 ступени 1: `017.5 → 017.6`. НОВАЯ ГОЛОВА цепи.
+ *
+ * Свежий payload И ЕСТЬ `active` — нормализовать его здесь нечем и незачем, эта версия и есть
+ * голова. Ровно так же выглядело звено Д3, пока головой было оно.
+ */
+export function proveS3ContractMigration(payload: unknown): MigrationProof {
+  const legacyPayload = atPreS3Contract(payload);
   return {
     id: '',
     activeHash: contentRef(payload),
@@ -338,7 +384,8 @@ export function proveEngineExtraction(payload: unknown): ExtractionProof {
   // Д3: и к 017.4 — по той же причине на одно звено позже. Свежий прогон эмитит 017.5, и без
   // этого шага уехали бы ОБА якоря Ф3-звена, включая исторический `legacy`. Исторические хеши
   // Ф3 при этом НЕ меняются — меняется только то, к какой эпохе приводится свежий payload.
-  const at0173 = atPreS1Contract(atPreD3Contract(payload));
+  // 083 S3: ещё один шаг по той же причине — свежий прогон эмитит 017.6.
+  const at0173 = atPreS1Contract(atPreD3Contract(atPreS3Contract(payload)));
   const preF3Payload = projectToPreF3Shape(at0173);
   return {
     activeHash: contentRef(at0173),

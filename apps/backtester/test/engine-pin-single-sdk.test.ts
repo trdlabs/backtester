@@ -25,7 +25,7 @@
 // дерево — о факте.
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -80,17 +80,21 @@ describe('S3: пин движка', () => {
     //           «позиция перевернулась» в один вход: движок отвечал на оба словом `flat`, что для
     //           второго случая неправда.
     //
-    // ТУ САМУЮ ОТЛОЖЕННУЮ МИГРАЦИЮ ИСПОЛНЯЕТ ЭТА ВЕТКА (083 S3), и потому пин здесь старше, чем в
-    // main: обе ступени breaking-изменения исхода пройдены вместе с потребителем, который их
-    // единственный использует. Legacy-путь `executeFill` не вызывает вовсе — отсюда и то, что
-    // голдены не сдвинулись ни на байт: перебазировка под 017.5 в main и здесь дала одни хеши.
+    // Ту отложенную миграцию исполнил срез 083 S3, и она давно в main — фраза «пин здесь старше,
+    // чем в main» стояла здесь ровно до его вливания и после него стала неправдой. Убрана.
+    //
+    //   0.18.0 — точный репин контракта на `@trdlabs/sdk@0.22.0` (017.6): привязка требования к
+    //           инструменту стала размеченным объединением. Прыжок через два минора SDK (0.20.0 —
+    //           оракул result-digest, 0.21.0 — candle-origin) поведения движка не касается: оба
+    //           живут в подпути `@trdlabs/sdk/historical`, который движок не импортирует, а
+    //           `research-contract` в них не менялся. Голдены это подтверждают побайтово.
     //
     // Пин точен именно ради таких смен: диапазон подменил бы семантику причины снятия между двумя
     // установками, не тронув ни строки здесь.
     //
     // Число живёт ТОЛЬКО в утверждении ниже. В прозе его нет намеренно: комментарий, называющий
     // версию, переживает первый же подъём и начинает врать подробно — а подробному верят.
-    expect(manifest.dependencies['@trdlabs/engine']).toBe('0.17.0');
+    expect(manifest.dependencies['@trdlabs/engine']).toBe('0.18.0');
   });
 
   it('установленный движок — та же версия, что заявлена', () => {
@@ -134,7 +138,7 @@ describe('S3: ровно одна копия контракта в дереве'
     const version = (JSON.parse(readFileSync(join(appSdkDir(), 'package.json'), 'utf8')) as {
       version: string;
     }).version;
-    expect(version).toBe('0.19.0');
+    expect(version).toBe('0.22.0');
   });
 
   it('пин приложения совпадает с ТОЧНЫМ пином движка', () => {
@@ -155,5 +159,54 @@ describe('S3: ровно одна копия контракта в дереве'
     expect(installed).toBe(enginePin);
     expect(manifest.dependencies['@trdlabs/sdk']).toMatch(/^\d+\.\d+\.\d+$/);
     expect(manifest.dependencies['@trdlabs/sdk']).toBe(enginePin);
+  });
+
+  it('КАЖДЫЙ пакет рабочей области называет ту же версию контракта', () => {
+    // ЭТА ПРОВЕРКА ЗАВЕДЕНА ПОТОМУ, ЧТО ГЕЙТ ОДНАЖДЫ ПРОПУСТИЛ ТО, РАДИ ЧЕГО СТОИТ.
+    //
+    // Проверки выше сравнивают ДВЕ стороны: приложение и установленный движок. При подъёме на
+    // 017.6 обе стороны сошлись, гейт был зелёным — а в дереве лежали ДВЕ копии контракта, и
+    // typecheck падал двадцатью ошибками «ModuleManifest не присваивается ModuleManifest».
+    //
+    // Третьим держателем оказался `packages/research-contracts` — приватная копия контракта,
+    // через которую типы и текут по всему коду. Гейт её не спрашивал вовсе, потому что был
+    // написан под вопрос «сходятся ли приложение и движок», а настоящий вопрос шире: «называет ли
+    // КТО-НИБУДЬ в рабочей области другую версию».
+    //
+    // Отсюда форма: перечень пакетов не выписан руками, а прочитан с диска. Выписанный руками
+    // список устаревает молча — ровно так же, как устарел прежний охват.
+    // Эталон берётся у ДВИЖКА, а не у приложения: движок пинит контракт точно, и именно его
+    // версия определяет, какая копия обязана быть единственной.
+    const enginePin = (
+      JSON.parse(readFileSync(resolve(HERE, '../node_modules/@trdlabs/engine/package.json'), 'utf8')) as {
+        dependencies: Record<string, string>;
+      }
+    ).dependencies['@trdlabs/sdk'];
+
+    const wsRoot = resolve(HERE, '..', '..', '..');
+    const pkgDirs = [
+      ...readdirSync(join(wsRoot, 'packages'), { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => join(wsRoot, 'packages', e.name)),
+      join(wsRoot, 'apps', 'backtester'),
+    ];
+
+    const pins = new Map<string, string>();
+    for (const dir of pkgDirs) {
+      const file = join(dir, 'package.json');
+      if (!existsSync(file)) continue;
+      const pkg = JSON.parse(readFileSync(file, 'utf8')) as {
+        name?: string;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      const pin = pkg.dependencies?.['@trdlabs/sdk'] ?? pkg.devDependencies?.['@trdlabs/sdk'];
+      if (pin !== undefined) pins.set(pkg.name ?? dir, pin);
+    }
+
+    // Проверка проверки: перечень непуст и содержит больше одного держателя. Пустой набор дал бы
+    // зелёное «расхождений нет» на дереве, где просто ничего не прочиталось.
+    expect(pins.size).toBeGreaterThan(1);
+    expect([...new Set(pins.values())]).toEqual([enginePin]);
   });
 });
