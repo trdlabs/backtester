@@ -73,7 +73,13 @@ function probe(overrides: Record<string, unknown>): {
   const noCost: ExecutionProfile = {
     id: 'paper_match',
     version: '1.0.0',
-    fillModel: { kind: 'same_bar_close' } as never,
+  // `next_bar_open`, А НЕ `same_bar_close`, И ЭТО ИСПРАВЛЕНИЕ ЛЖИ, А НЕ НАСТРОЙКА.
+  //
+  // Прежде здесь стояло `same_bar_close`, тогда как actor-дорога наливает по ОТКРЫТИЮ
+  // СЛЕДУЮЩЕГО бара всегда: `fillModel` до неё не доезжает вовсе. То есть проба объявляла одну
+  // модель и исполняла другую — и молчала об этом, потому что проверять расхождение было нечем.
+  // Гейт профиля исполнения сделал его наблюдаемым, и это первое, что он нашёл.
+    fillModel: { kind: 'next_bar_open' } as never,
     feeModel: { kind: 'fixed_bps', bps: 0 },
     slippageModel: { kind: 'fixed_bps', bps: 0 },
   };

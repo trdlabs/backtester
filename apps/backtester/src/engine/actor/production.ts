@@ -41,6 +41,17 @@ export interface ActorProductionInput {
   readonly barIntervalUs: number;
   /** Риск-профиль прогона. Обязателен: без него нечем проверить, что лимиты кто-то соблюдает. */
   readonly riskProfile: RiskProfileShape;
+  /**
+   * Профиль ИСПОЛНЕНИЯ прогона — целиком, а не только вынутые из него bps.
+   *
+   * Нужен именно целиком: гейт совместимости обязан видеть и те правила, которые путь НЕ
+   * применяет. Отдать сюда одни `costs` значило бы показать допуску ровно то подмножество,
+   * которое уже исполнимо, и спрашивать его было бы не о чем.
+   *
+   * Необязателен ради вызывающих, у которых профиля нет (пробы уровня раннера): отсутствие
+   * означает «нечего проверять», а не «проверка пройдена».
+   */
+  readonly executionProfile?: ExecutionProfileShape;
 }
 
 /** Риск-профиль прогона в той форме, в какой его видит допуск: ключи важны все, включая чужие. */
@@ -194,22 +205,105 @@ export function provenActorRiskProfile(profile: RiskProfileShape): ActorRiskProf
  *
  * Профиль объявляет `maxConcurrentPositions` для ПОРТФЕЛЯ, а актор видит только свой символ:
  * соседний во время `validate` не существует, записи сводятся лишь после прогона. Per-actor
- * трактовка запрещена решением владельца — она тихо превратила бы «1 позиция на портфель» в «до N
- * позиций», и результат выглядел бы законным.
+ * трактовка запрещена решением владельца 2026-08-14 — она тихо превратила бы «L позиций на
+ * портфель» в «до N×L», и результат выглядел бы законным.
  *
- * Сегодня эту проверку опережает отказ многосимвольного прогона по `marketData[].instrument`, и
- * потому в проде она недостижима. Она стоит здесь не «на будущее», а потому что снятие того
- * блокера иначе тихо открыло бы этот: обе причины независимы, и закрывать их одной строкой нельзя.
+ * ═══ ПОЧЕМУ ОТКАЗ УЖЕ, ЧЕМ «ЛИМИТ ОБЪЯВЛЕН» ═══
+ *
+ * Первая редакция отвергала прогон при ЛЮБОМ объявленном конечном лимите, ссылаясь на отсутствие
+ * координатора над акторами. Это было ШИРЕ необходимого, и вот доказательство.
+ *
+ * Актор ступени 1 односимвольный, а `openPositionsOf(signedQty)` возвращает `qty === 0 ? 0 : 1` —
+ * то есть один актор держит НЕ БОЛЬШЕ ОДНОЙ позиции ПО ПОСТРОЕНИЮ, а не по договорённости.
+ * Значит `N` акторов дают не больше `N` одновременных позиций портфеля, и эта граница —
+ * структурная: её нечем нарушить, и следить за ней некому не нужно.
+ *
+ * Отсюда: при `maxConcurrentPositions >= N` объявленный портфельный лимит СОБЛЮДЁН — превысить
+ * его невозможно. Координатор нужен ровно тогда, когда `L < N`: там граница уже не структурная, и
+ * без сведения позиций соседей её никто не удержит.
+ *
+ * ЭТО НЕ ПЕР-АКТОРНАЯ ТРАКТОВКА, ЗАПРЕЩЁННАЯ ВЛАДЕЛЬЦЕМ. Та выдавала бы каждому актору БЮДЖЕТ `L`
+ * и допускала `N×L` позиций. Здесь `L` остаётся портфельным числом, и утверждается ровно одно:
+ * при `L >= N` гарантия владельца выполняется без принуждения. Гарантия не ослаблена ни на
+ * позицию — доказана.
+ *
+ * `DEFAULT_RISK` (`L = 1`) по-прежнему отвергает любой многосимвольный прогон: два актора могут
+ * держать две позиции, а разрешена одна. Поведение дефолта не изменилось.
+ *
+ * ЧЕМ ЭТО ДЕРЖИТСЯ. Всё рассуждение опирается на «один актор ≤ 1 позиция». Если это перестанет
+ * быть правдой (мульти-инструментный актор ступени 2), граница `N` перестанет быть верной, и
+ * рассуждение обязано сломаться ЗАМЕТНО — поэтому факт пиннится отдельной пробой, а не
+ * пересказывается здесь.
  */
 export function portfolioLimitUnsupported(
   profile: RiskProfileShape,
   actorCount: number,
 ): boolean {
-  return (
-    actorCount > 1 &&
-    profile.maxConcurrentPositions !== undefined &&
-    Number.isFinite(profile.maxConcurrentPositions)
-  );
+  if (actorCount <= 1) return false;
+  const limit = profile.maxConcurrentPositions;
+  if (limit === undefined || !Number.isFinite(limit)) return false;
+  // Строго меньше: `L === N` — ровно достижимая граница, и она соблюдена.
+  return limit < actorCount;
+}
+
+/** Профиль исполнения в той форме, в какой его видит допуск: ключи важны все, включая чужие. */
+export interface ExecutionProfileShape {
+  readonly id: string;
+  readonly version: string;
+  readonly fillModel?: { readonly kind?: unknown };
+  // `bps` объявлен наравне с `kind`, потому что гейт читает ОБА: модель может назваться
+  // `fixed_bps` и не нести числа, и это отдельный отказ, а не тот же самый.
+  readonly feeModel?: { readonly kind?: unknown; readonly bps?: unknown };
+  readonly slippageModel?: { readonly kind?: unknown; readonly bps?: unknown };
+  readonly fundingModel?: unknown;
+}
+
+/**
+ * Правила профиля ИСПОЛНЕНИЯ, которые actor-путь умеет применить. Whitelist — как у риска.
+ *
+ * ЗАЧЕМ ЭТО ЗАВЕДЕНО. У риск-профиля такой гейт стоял с самого начала и стоял затем, чтобы
+ * объявленное, но неисполняемое правило не проехало молча. У профиля ИСПОЛНЕНИЯ его не было, и
+ * асимметрия стоила ровно того, чего гейт риска не допускает: в actor-путь из профиля доезжают
+ * только `feeModel.bps` и `slippageModel.bps`, а `fillModel` не доезжает вовсе — прогон,
+ * объявивший `same_bar_close`, исполнялся по открытию СЛЕДУЮЩЕГО бара. Числа при этом выглядят
+ * совершенно законными: расхождение видно только тому, кто сравнит объявленное с исполненным.
+ *
+ * Дефолтный путь не двигается: `DEFAULT_EXEC` объявляет `next_bar_open` — ровно то, что дорога и
+ * делает. Гейт закрывает не поведение, а РАСХОЖДЕНИЕ между объявленным и исполняемым.
+ */
+const ACTOR_ENFORCEABLE_EXECUTION_RULES = new Set(['id', 'version', 'fillModel', 'feeModel', 'slippageModel']);
+
+/** Единственная fill-модель, которую actor-путь ИСПОЛНЯЕТ, а не только принимает. */
+const ACTOR_FILL_MODEL = 'next_bar_open';
+
+export function unsupportedExecutionRules(profile: ExecutionProfileShape): readonly string[] {
+  const unsupported: string[] = [];
+  const seen = profile as unknown as Readonly<Record<string, unknown>>;
+
+  for (const key of Object.keys(profile)) {
+    // `fundingModel` попадает сюда именно так: он объявляет начисление, которого actor-путь не
+    // делает (в `ActorExecutionCosts` его нет вовсе). Прогон под ним посчитался бы БЕЗ фандинга,
+    // и разница ушла бы прямо в pnl.
+    if (!ACTOR_ENFORCEABLE_EXECUTION_RULES.has(key)) unsupported.push(key);
+  }
+
+  const fill = seen.fillModel as { readonly kind?: unknown } | undefined;
+  if (fill !== undefined && String(fill.kind) !== ACTOR_FILL_MODEL) {
+    unsupported.push(`fillModel.kind=${String(fill.kind)}`);
+  }
+  // Комиссия и проскальзывание читаются как `.bps`, то есть модель обязана быть именно этой:
+  // у другой формы поля `bps` может не быть вовсе, и вместо числа приехал бы `undefined`.
+  for (const key of ['feeModel', 'slippageModel'] as const) {
+    const model = seen[key] as { readonly kind?: unknown; readonly bps?: unknown } | undefined;
+    if (model === undefined) continue;
+    if (String(model.kind) !== 'fixed_bps') {
+      unsupported.push(`${key}.kind=${String(model.kind)}`);
+    } else if (typeof model.bps !== 'number' || !Number.isFinite(model.bps)) {
+      unsupported.push(`${key}.bps=${String(model.bps)}`);
+    }
+  }
+
+  return unsupported;
 }
 
 export interface ActorProductionOutcome {
@@ -260,9 +354,25 @@ export async function runActorProduction(
   // ЦЕЛИКОМ: допуск видит одну ленту и об остальных символах не знает, поэтому «требование на
   // символ вне прогона» он бы назвал «не тот символ», а «символ без требований» не заметил бы
   // вовсе — актор поднялся бы и не получил ничего.
+  const requirements =
+    (
+      input.strategy.manifest as {
+        marketData?: readonly { instrument: { symbol?: string }; symbolFrom?: unknown }[];
+      }
+    ).marketData ?? [];
+
+  // СВЯЗАННАЯ ВЕТВЬ ОБСЛУЖИВАЕТ ЛЮБОЙ СИМВОЛ ПРОГОНА, и оба отказа ниже обязаны это знать.
+  //
+  // Считать её символом «объявленным» нельзя — у неё символа нет вовсе; считать её отсутствующей
+  // тоже нельзя — тогда символ, покрытый ТОЛЬКО связанным требованием, был бы объявлен «без
+  // требований» и прогон отвергся бы при полностью законном манифесте. Поэтому она не участвует в
+  // множестве объявленных символов, но снимает второй отказ целиком.
+  const hasBoundRequirement = requirements.some((r) => r.symbolFrom === 'actor');
   const declaredSymbols = new Set(
-    ((input.strategy.manifest as { marketData?: readonly { instrument: { symbol: string } }[] })
-      .marketData ?? []).map((r) => r.instrument.symbol),
+    requirements
+      .filter((r) => r.symbolFrom !== 'actor')
+      .map((r) => r.instrument.symbol)
+      .filter((s): s is string => s !== undefined),
   );
   const runSymbols = new Set(input.symbols);
 
@@ -282,7 +392,9 @@ export async function runActorProduction(
     };
   }
 
-  const symbolsWithoutRequirements = [...runSymbols].filter((s) => !declaredSymbols.has(s)).sort();
+  const symbolsWithoutRequirements = hasBoundRequirement
+    ? []
+    : [...runSymbols].filter((s) => !declaredSymbols.has(s)).sort();
   if (symbolsWithoutRequirements.length > 0) {
     return {
       refusal: {
@@ -304,6 +416,38 @@ export async function runActorProduction(
   // объявляющий правило, которого путь не умеет, отвергается здесь — а не исполняется молча в
   // усечённом виде. Разница не в точности, а в предмете: прогон без объявленного лимита — это
   // другой прогон, и числа его выглядят как результат стратегии.
+  // ГЕЙТ ПРОФИЛЯ ИСПОЛНЕНИЯ — рядом с риском и по тому же образцу.
+  //
+  // Стоит РАНЬШЕ риска намеренно: объявленная fill-модель определяет, по какой цене вообще
+  // считается прогон, и отказ по ней содержательнее отказа по лимиту, который к этим ценам
+  // применялся бы.
+  //
+  // ЭТОТ ВЫЗОВ ОДНАЖДЫ ОТСУТСТВОВАЛ, И ГЕЙТ БЫЛ МЁРТВОЙ ПРОВОДКОЙ. Функция была написана,
+  // задокументирована, покрыта семью пробами — и не вызывалась ниоткуда. Пробы оставались
+  // зелёными, потому что звали её НАПРЯМУЮ: они проверяли реализацию правила, но ничего не
+  // говорили о том, включено ли оно. Отсюда правило, применённое здесь: у гейта обязана быть
+  // проба, идущая ЧЕРЕЗ НАСТОЯЩУЮ ДОРОГУ, — только она отличает «правило написано» от «правило
+  // действует». Измерено: снятие этого `if` краснит РОВНО ОДНУ пробу из десяти.
+  if (input.executionProfile !== undefined) {
+    const badExecution = unsupportedExecutionRules(input.executionProfile);
+    if (badExecution.length > 0) {
+      return {
+        refusal: {
+          code: 'unsupported_lifecycle',
+          path: '',
+          message:
+            `${input.strategy.manifest.id}@${input.strategy.manifest.version}: профиль исполнения ` +
+            `${input.executionProfile.id}@${input.executionProfile.version} объявляет правила, которых ` +
+            `actor-путь не исполняет (${badExecution.join(', ')}). Исполнима единственная fill-модель ` +
+            `«${ACTOR_FILL_MODEL}»; комиссия и проскальзывание берутся как fixed_bps. Посчитать прогон ` +
+            'по другой цене, чем объявлено, значило бы вернуть числа, которые выглядят как результат ' +
+            'стратегии, но получены не по заказанным правилам. Чинит ОПЕРАТОР СТЕНДА: выбрать профиль ' +
+            'исполнения, совместимый с actor-путём',
+        },
+      };
+    }
+  }
+
   const unsupported = unsupportedRiskRules(input.riskProfile);
   if (unsupported.length > 0) {
     return {
