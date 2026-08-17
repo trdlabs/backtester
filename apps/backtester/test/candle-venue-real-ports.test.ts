@@ -49,9 +49,22 @@ function portOver(body: unknown): MockPlatformDataPort {
 }
 
 describe('mock-platform: происхождение доезжает до дескриптора', () => {
-  it('объявленное венью проброшено', async () => {
-    const [d] = await portOver(coverage({ candleVenue: 'bybit' })).listDatasets();
+  it('объявленное венью проброшено — В ПАРЕ с флагом однородности', async () => {
+    const [d] = await portOver(
+      coverage({ candleVenue: 'bybit', candleVenueHomogeneous: true }),
+    ).listDatasets();
     expect(d?.candleVenue).toBe('bybit');
+  });
+
+  it('имя БЕЗ флага однородности не принимается: половина факта неотличима от целого', async () => {
+    // Такая пара возможна только при рассинхроне версий (старый сервер, новый клиент). Сервер,
+    // назвавший венью и промолчавший про однородность, сообщил половину факта — а имя выглядит
+    // одинаково и при однородных сутках, и при собранных из двух источников.
+    //
+    // Проверяется ЗДЕСЬ, а не в прувере: этот порт разговаривает с сервером и умеет отличить его от
+    // фикстуры, где отсутствие флага законно, — прувер такого различения не имеет.
+    const [d] = await portOver(coverage({ candleVenue: 'bybit' })).listDatasets();
+    expect(Object.prototype.hasOwnProperty.call(d as DatasetDescriptor, 'candleVenue')).toBe(false);
   });
 
   it('НЕобъявленное остаётся без ключа, а не пустым', async () => {
@@ -64,7 +77,9 @@ describe('mock-platform: происхождение доезжает до дес
 
   it('ПРОВЕРКА ПРОВЕРКИ: дескриптор вообще собран', async () => {
     // Иначе обе пробы выше зеленели бы на пустом списке.
-    const list = await portOver(coverage({ candleVenue: 'bybit' })).listDatasets();
+    const list = await portOver(
+      coverage({ candleVenue: 'bybit', candleVenueHomogeneous: true }),
+    ).listDatasets();
     expect(list).toHaveLength(1);
     expect(list[0]?.datasetRef).toBe('BTCUSDT:1m');
     expect(list[0]?.rowCount).toBe(2);
@@ -73,7 +88,9 @@ describe('mock-platform: происхождение доезжает до дес
 
 describe('прувер отвечает на дескриптор так, как обязан', () => {
   it('объявленное венью доказано и названо источником', async () => {
-    const [d] = await portOver(coverage({ candleVenue: 'bybit' })).listDatasets();
+    const [d] = await portOver(
+      coverage({ candleVenue: 'bybit', candleVenueHomogeneous: true }),
+    ).listDatasets();
     const proven = proveCandleVenue({
       datasetRef: d!.datasetRef,
       ...(d!.candleVenue !== undefined ? { candleVenue: d!.candleVenue } : {}),
@@ -132,7 +149,9 @@ describe('прувер отвечает на дескриптор так, как
   it('пробел вместо венью — тоже отказ, а не доказательство', async () => {
     // Пробел выглядит заполненным значением и прошёл бы проверку «ключ есть». Доказательством
     // объявляется ЗНАЧЕНИЕ, а не факт присутствия ключа.
-    const [d] = await portOver(coverage({ candleVenue: '   ' })).listDatasets();
+    const [d] = await portOver(
+      coverage({ candleVenue: '   ', candleVenueHomogeneous: true }),
+    ).listDatasets();
     const proven = proveCandleVenue({ datasetRef: d!.datasetRef, candleVenue: d!.candleVenue! });
     expect(proven.proven).toBe(false);
   });
