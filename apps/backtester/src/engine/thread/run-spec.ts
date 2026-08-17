@@ -28,6 +28,7 @@
 // против 12.5 МБ и 164–211 мс на 60 тыс. строк. Отсюда второй вариант `ThreadDataPortSpec`.
 
 import type { OverlayRouterSpec } from '../sandbox/overlay-router-spec.js';
+import type { S3Settings } from '../../storage/s3-client.js';
 import type { TapeColumns } from '../tape-columns.js';
 
 /**
@@ -69,6 +70,27 @@ export interface ThreadDatasetSpec {
   readonly timeframe: string;
   readonly period: { readonly from: string; readonly to: string };
 }
+
+/**
+ * ОПИСАНИЕ artifact store — то, из чего поток соберёт СВОЙ эквивалентный экземпляр (блокер №4).
+ *
+ * ПОЧЕМУ ОПИСАНИЕ, А НЕ ВОЗВРАТ ДОКУМЕНТОВ НА ГЛАВНЫЙ ПОТОК. Сам store через `postMessage` не
+ * проходит — это интерфейс с методами. Возврат документов потоком выглядит естественнее и был
+ * отвергнут дизайном (cc#386) по причине, найденной чтением кода: ссылки на артефакты входят в
+ * `assembleResult`, то есть в ХЕШ результата. Значит их пришлось бы дописывать ПОСТФАКТУМ в уже
+ * собранный результат — то есть ослабить нормативный порядок «записать → сверить → собрать» ровно
+ * там, где гейт ADR-0014 и существует. Описание оставляет порядок локальным: поток пишет, сверяет
+ * и собирает результат сам, ОДНИМ кодом с главным потоком.
+ *
+ * ОПИСУЕМЫ НЕ ВСЕ. `InMemoryArtifactStore` принципиально неописуем: воссозданный в потоке
+ * экземпляр будет ДРУГИМ, артефакты исчезнут вместе с потоком, а прогон завершится успешно — то
+ * есть законный дефолт, скрывающий потерю. Поэтому спека НЕ несёт варианта «в памяти»: хост,
+ * которому нечего описать, обязан отказать ДО запуска потока, а не подставить сюда что-нибудь
+ * похожее.
+ */
+export type ThreadArtifactStoreSpec =
+  | { readonly kind: 'file'; readonly baseDir: string }
+  | { readonly kind: 's3'; readonly settings: S3Settings };
 
 /** Флаги прогона — подмножество `RunDeps`, состоящее ТОЛЬКО из простых данных. */
 export interface ThreadRunFlags {
@@ -124,6 +146,12 @@ export interface ThreadRunSpec {
   readonly dataPort: ThreadDataPortSpec;
   /** Обязателен для `dataPort.kind === 'fixture'`; при `columns` игнорируется (метки внутри колонок). */
   readonly dataset?: ThreadDatasetSpec;
+  /**
+   * Описание artifact store. Отсутствует ⇔ хост не смог его описать; для legacy-прогона это
+   * законно (хранилище ему не нужно), для actor-пути — нет, и такой прогон отвергается ДО запуска
+   * потока, а не здесь.
+   */
+  readonly artifactStore?: ThreadArtifactStoreSpec;
   readonly flags?: ThreadRunFlags;
 }
 

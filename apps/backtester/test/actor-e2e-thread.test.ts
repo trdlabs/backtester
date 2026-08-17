@@ -53,10 +53,17 @@
 // Файл по-прежнему не обходит оставшийся блокер подставным исполнителем: подставить его значило бы
 // доказать паритет двух дорог на состоянии, в которое прод попасть не может.
 
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve as resolvePath } from 'node:path';
+import type { ContentHash } from '@trdlabs/backtester-sdk/artifacts';
+
+import { FileArtifactStore } from '../src/artifacts/store.js';
+import { contentRef } from '../src/determinism/hash.js';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import type { BacktestRunRequest, ModuleBundle } from '@trading/research-contracts';
 
 import { AUTH, buildTestApp, testDeps } from './helpers.js';
@@ -104,14 +111,31 @@ const EXPECTED_REFUSAL =
  */
 const CLOSED_BLOCKER = 'не умеет lifecycle актора';
 
+/**
+ * Зависимости БЕЗ подсунутого хранилища: приложение построит файловое из конфигурации теста
+ * (`artifactsDir` — временный каталог). Ключ убирается явно, а не «не передаётся»: `testDeps()`
+ * кладёт `InMemoryArtifactStore` всегда, и молчаливое «мы его не просили» здесь не сработало бы.
+ */
+function depsWithFileStore(): ReturnType<typeof testDeps> {
+  const { artifactStore: _unusedInMemory, ...rest } = testDeps();
+  return rest as ReturnType<typeof testDeps>;
+}
+
+const storeProbeDirs: string[] = [];
+afterAll(() => {
+  for (const d of storeProbeDirs) rmSync(d, { recursive: true, force: true });
+});
+
 async function runThroughQueue(
   runId: string,
-  opts: { readonly barLoopThread: boolean },
+  opts: { readonly barLoopThread: boolean; readonly inMemoryStore?: boolean; readonly artifactsDir?: string },
 ): Promise<{
   status: string;
   terminalCode: string | null;
   /** ЦЕЛИКОМ, а не выборка. См. комментарий у возврата. */
   terminalIssues: readonly unknown[];
+  /** Строка задания как есть — нужна пробе, читающей артефакт ПОВТОРНО из хранилища. */
+  row: unknown;
 }> {
   __resetTapeCachesForTest();
   const bundle = loadBundle('event-driven-probe.bundle.json');
@@ -121,9 +145,16 @@ async function runThroughQueue(
       workerConcurrency: 1,
       eventDrivenEnabled: true,
       barLoopThread: opts.barLoopThread,
+      ...(opts.artifactsDir !== undefined ? { artifactsDir: opts.artifactsDir } : {}),
       overlaySandbox: { ...loadConfig().overlaySandbox, backend: 'isolate' },
     },
-    testDeps({ artifactStore: new InMemoryArtifactStore() }),
+    // ХРАНИЛИЩЕ ПО УМОЛЧАНИЮ — ФАЙЛОВОЕ, из конфигурации теста (`artifactsDir` — временный
+    // каталог). Прежде здесь подсовывался `InMemoryArtifactStore`, и это было незаметной подменой
+    // предмета: прод-дорога так не ходит, а потоковая ветка на таком хранилище работать не может
+    // в принципе — воссозданный в потоке экземпляр был бы ДРУГИМ, и артефакты умерли бы вместе с
+    // потоком. Отсюда же берётся достижимость пробы на отказ: `inMemoryStore: true` даёт ровно то
+    // неописуемое хранилище, ради которого гейт и стоит.
+    opts.inMemoryStore === true ? testDeps({ artifactStore: new InMemoryArtifactStore() }) : depsWithFileStore(),
   );
   try {
     const res = await app.server.inject({
@@ -160,6 +191,7 @@ async function runThroughQueue(
       status: row!.status,
       terminalCode: row!.terminalCode ?? null,
       terminalIssues: (row!.terminalIssues ?? []) as readonly unknown[],
+      row,
     };
   } finally {
     await app.dispose();
@@ -224,39 +256,86 @@ describe.runIf(THREAD_SEAM_LOADS)('прод-дорога очереди: где 
   // СЕЙЧАС. Он содержателен и в таком виде: транспорт не вправе менять исход, и если поток начнёт
   // отвечать иначе, чем прямая ветка, это будет видно здесь — независимо от того, отказ это или
   // завершение.
-  it('ветки РАСХОДЯТСЯ: прямая доезжает до completed, потоковая упирается в artifact store', async () => {
-    // ПОСЛЕДОВАТЕЛЬНО, а не `Promise.all`. Первая редакция запускала оба приложения параллельно, и
-    // это дало недетерминизм: один прогон возвращал ПУСТОЙ `terminalIssues` при непустом у
-    // второго. Два `buildTestApp` в одном процессе делят кэш ленты (`__resetTapeCachesForTest`
-    // сбрасывает его глобально) и временные каталоги — то есть параллельный запуск проверял бы не
-    // паритет транспортов, а живучесть тестовой обвязки. Заметить это позволило только точное
-    // сравнение полных причин: на сокращённой выборке расхождение выглядело бы так же, как
-    // совпадение.
+  it('обе транспортные ветки дают ОДИН исход — вплоть до полного равенства', async () => {
+    // ПРОБА ВЕРНУЛАСЬ К РАВЕНСТВУ, и это предписанный исход починки блокера №4, а не совпадение.
+    // Пока хранилище не пересекало границу потока, здесь стоял поимённый пин РАСХОЖДЕНИЯ с
+    // обещанием покраснеть в день починки — он покраснел, и заменён на то, ради чего стоял.
+    //
+    // Сравниваются ПОЛНЫЕ исходы, а не коды: транспорт не вправе изменить ни статус, ни причину,
+    // ни ЧИСЛО issues. Расхождение за пределами первого поля — ровно то, что выборочная проверка
+    // пропускала бы.
     const thread = await runThroughQueue('thr-parity-thread', { barLoopThread: true });
     const direct = await runThroughQueue('thr-parity-direct', { barLoopThread: false });
+    expect(thread.status).toBe('completed');
+    // Сырая строка задания из сравнения исключена, и это не послабление: она несёт ИДЕНТИЧНОСТЬ
+    // прогона (`runId`, метки времени, ссылки на артефакты своего прогона), которая у двух разных
+    // прогонов обязана различаться. Сравнивать её значило бы получить красную пробу по причине, не
+    // имеющей отношения к транспорту, — то есть гейт, который нельзя удовлетворить.
+    const { row: _threadRow, ...threadOutcome } = thread;
+    const { row: _directRow, ...directOutcome } = direct;
+    expect(threadOutcome).toEqual(directOutcome);
+  });
 
-    // ВЕТКИ РАСХОДЯТСЯ, И ЭТО ЗАФИКСИРОВАНО НАМЕРЕННО — четвёртый блокер подряд, вскрывшийся ровно
-    // тогда, когда сняли третий. Пока прогон отвергался по происхождению свечей, обе ветки
-    // отвечали одинаково, и равенство было настоящим. Теперь прямая ветка ДОЕЗЖАЕТ ДО КОНЦА, а
-    // потоковая падает на ADR-0014: actor-путь требует artifact store, а хранилище — объект с
-    // методами, и через `postMessage` оно не проходит. То есть весь бэктест считается ВНУТРИ
-    // потока, и передать ему store как объект нельзя ничем; нужен либо возврат документов потока
-    // на главный поток для записи, либо ОПИСАНИЕ хранилища, которое поток восстановит у себя.
-    // Это отдельный срез, а не хвост этого.
-    //
-    // Проба пиннит расхождение ПОИМЁННО, а не терпит его: в день, когда хранилище пересечёт
-    // границу, эта строка покраснеет и обязана быть возвращена к равенству. Ослабить её до
-    // «сравниваем только terminalIssues» значило бы сделать зелёным и день, когда ветки разойдутся
-    // чем-нибудь ещё.
+  it('НЕОПИСУЕМОЕ хранилище отвергается ДО запуска потока и называет чинящего', async () => {
+    // ДОСТИЖИМОСТЬ ЭТОЙ ПРОБЫ — критерий приёмки дизайна, а не удобство. Вход с `InMemoryArtifactStore`
+    // порождает ровно то хранилище, которое описанию не подлежит: воссозданный в потоке экземпляр
+    // был бы ДРУГИМ, артефакты умерли бы вместе с потоком, а прогон завершился бы успешно. Без
+    // входа, попадающего в эту ветку, гейт был бы вакуумным и мутация прошла бы зелёной.
+    const thread = await runThroughQueue('thr-store-undescribable', {
+      barLoopThread: true,
+      inMemoryStore: true,
+    });
     expect(thread.status).toBe('failed');
-    expect(thread.terminalCode).toBe('runner_failure');
+    const text = JSON.stringify(thread.terminalIssues);
+    expect(text).toMatch(/требует ОПИСУЕМОГО artifact store/);
+    // Отказ обязан назвать, ЧЕМ он чинится: это конфигурация стенда, а не манифест стратегии.
+    expect(text).toMatch(/Чинится конфигурацией стенда/);
+  });
+
+  it('на ПРЯМОЙ ветке то же хранилище прогону не мешает', async () => {
+    // Проверка проверки: отказ выше относится к границе потока, а не к хранилищу как таковому.
+    // Не будь этой пробы, гейт мог бы отвергать in-memory везде, и проба выше зеленела бы,
+    // доказывая не то.
+    const direct = await runThroughQueue('thr-store-direct-inmem', {
+      barLoopThread: false,
+      inMemoryStore: true,
+    });
     expect(direct.status).toBe('completed');
-    expect(direct.terminalCode).toBeNull();
-    // Причина у обеих пуста: отказ потоковой ветки — не валидационный, он приходит исключением
-    // раннера, и `terminalIssues` его не несёт. Это тоже утверждение, а не наблюдение: появись
-    // здесь issue, различие между «прогон отвергнут» и «прогон сломался» перестало бы читаться.
-    expect(thread.terminalIssues).toEqual([]);
-    expect(direct.terminalIssues).toEqual([]);
+  });
+
+
+  it('артефакт потока РЕАЛЬНО записан потоком: лежит в хранилище и отвечает своему адресу', async () => {
+    // Поток мог собрать документ в памяти, вернуть его в ответе и не записать НИКУДА — прогон при
+    // этом выглядит безупречно: статус `completed`, метрики на месте. Отличает записанный артефакт
+    // от собранного только чтение из хранилища, открытого по тому же адресу ЧУЖИМИ руками.
+    const artifactsDir = mkdtempSync(resolvePath(tmpdir(), 'bt-thread-artifacts-'));
+    storeProbeDirs.push(artifactsDir);
+
+    const run = await runThroughQueue('thr-store-written', { barLoopThread: true, artifactsDir });
+    expect(run.status).toBe('completed');
+
+    // Ищется ИМЕННО поток диспетчеризации: в том же каталоге лежат run-summary, metrics и trades,
+    // которые пишет ГЛАВНЫЙ поток. Проба без различения формы зеленела бы на них — то есть
+    // доказывала бы работу другой стороны границы.
+    const store = new FileArtifactStore(artifactsDir);
+    const timelines: { ref: string; doc: unknown }[] = [];
+    for (const file of readdirSync(artifactsDir)) {
+      if (!file.endsWith('.json')) continue;
+      const ref = `sha256:${file.slice(0, -'.json'.length)}`;
+      const doc = await store.read(ref as ContentHash);
+      const shape = doc as { actorId?: unknown; rows?: unknown };
+      if (typeof shape.actorId === 'string' && Array.isArray(shape.rows)) {
+        timelines.push({ ref, doc });
+      }
+    }
+    expect(timelines.length, 'поток диспетчеризации не найден в хранилище').toBeGreaterThan(0);
+
+    for (const { ref, doc } of timelines) {
+      // Содержимое отвечает СВОЕМУ адресу — то же утверждение, что держит гейт ADR-0014, но
+      // проверенное СНАРУЖИ прогона.
+      expect(contentRef(doc)).toBe(ref);
+      expect((doc as { rows: unknown[] }).rows.length).toBeGreaterThan(0);
+    }
   });
 
   it('СНЯТЫЙ блокер не вернулся: отказ не называет способность исполнителя', async () => {

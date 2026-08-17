@@ -20,6 +20,7 @@ import { API_CONTRACT_VERSION } from '@trdlabs/backtester-sdk/contracts';
 import { contentRef } from '../determinism/hash';
 import { tapeFingerprint } from '../determinism/dataset-fingerprint';
 import { persistRunArtifacts, type ArtifactStore } from '../artifacts/store';
+import type { ThreadArtifactStoreSpec } from '../engine/thread/run-spec';
 import { persistOverlayArtifacts } from '../artifacts/overlay-store';
 import {
   datasetFingerprint,
@@ -110,6 +111,12 @@ export interface WorkerDeps extends CompletionDeps {
   store: JobStore;
   dataPort: BacktesterDataPort;
   artifactStore: ArtifactStore;
+  /**
+   * Описание `artifactStore` для барного цикла в отдельном потоке (блокер №4). Отсутствует ⇔ store
+   * не построен из конфигурации и потому неописуем; для legacy это безразлично, actor-путь на
+   * потоковой ветке такой прогон отвергает.
+   */
+  artifactStoreSpec?: ThreadArtifactStoreSpec;
   bundleStore?: BundleStore;
   sandbox?: SandboxConfig;
   overlaySandbox: OverlaySandboxSettings;
@@ -209,6 +216,18 @@ export function periodMs(period: RunPeriod): { tsFrom: number; tsTo: number } {
     throw new RunnerError('validation_error', `period.from must be before period.to: ${period.from}..${period.to}`);
   }
   return { tsFrom: from, tsTo: to };
+}
+
+/**
+ * Объявляет ли бандл форму актора.
+ *
+ * Читается из МАНИФЕСТА, а не из флага раскатки: флаг разрешает дорогу, форму выбирает манифест
+ * (решение владельца по осям, 2026-08-11). Гейт хранилища ниже нужен ровно для актора — legacy
+ * хранилища не читает вовсе.
+ */
+function isEventDrivenManifest(bundle: unknown): boolean {
+  const manifest = (bundle as { manifest?: { lifecycle?: unknown } } | undefined)?.manifest;
+  return manifest?.lifecycle === 'event_driven';
 }
 
 async function sandboxBundleFor(deps: WorkerDeps, hash: ContentHash): Promise<SandboxBundleHandle> {
@@ -1171,9 +1190,45 @@ export async function processNextQueued(deps: WorkerDeps): Promise<JobRow | unde
             'barLoopThread включён, но материализация пришла без колонок — путь потока не может получить ленту',
           );
         }
+        // ГЕЙТ БЛОКЕРА №4, и он стоит ДО запуска потока намеренно.
+        //
+        // Хранилище через `postMessage` не проходит, поэтому поток собирает своё из ОПИСАНИЯ. Не
+        // всякое хранилище описуемо: подсунутое в обход конфигурации (стенды, тесты) описанию не
+        // подлежит, а `InMemoryArtifactStore` неописуем принципиально — воссозданный в потоке
+        // экземпляр будет ДРУГИМ, артефакты исчезнут вместе с потоком, а прогон завершится
+        // успешно. Это в чистом виде законный дефолт, скрывающий потерю.
+        //
+        // Отказ адресован ОПЕРАТОРУ СТЕНДА, а не автору стратегии: чинится он конфигурацией, а не
+        // манифестом. Условие узкое — только actor-путь: legacy хранилища не читает вовсе, и
+        // отвергать его здесь значило бы сломать работающую дорогу ради чужого требования.
+        // Флаг в условии не избыточен: при выключенной раскатке event_driven-прогон отвергается
+        // допуском со СВОЕЙ причиной, и опередить её здесь значило бы назвать диагносту не тот
+        // адрес починки.
+        if (
+          runFlags.eventDrivenEnabled === true &&
+          isEventDrivenManifest(sandboxBundle?.bundle) &&
+          deps.artifactStoreSpec === undefined
+        ) {
+          // Причина едет СТРУКТУРОЙ, а не только текстом исключения: `validation_error` склеивает
+          // десятки несовместимых отказов, и оператор, видящий один код, не узнаёт из него
+          // ничего. Пустой JSON Pointer нормативен — нарушающего узла нет, запрос корректен, не
+          // совпадает окружение.
+          const message =
+            'actor-путь в отдельном потоке требует ОПИСУЕМОГО artifact store: хранилище не ' +
+            'пересекает границу потока объектом, поэтому поток собирает своё из описания. ' +
+            'Текущее хранилище описанию не подлежит (подсунуто в обход конфигурации либо ' +
+            'существует только в памяти), а записать поток диспетчеризации в экземпляр, ' +
+            'умирающий вместе с потоком, значит вернуть успешный прогон без артефактов ' +
+            '(ADR-0014). Чинится конфигурацией стенда: файловое либо S3-хранилище';
+          throw new RunnerError('validation_error', message, 'failed', [
+            { severity: 'error', code: 'unsupported_lifecycle', message, path: '' },
+          ]);
+        }
+
         const threadSpec = {
           request: engineRequest,
           bundleDir: sandboxBundle!.bundleDir,
+          ...(deps.artifactStoreSpec !== undefined ? { artifactStore: deps.artifactStoreSpec } : {}),
           // Описание роутера считается ЗДЕСЬ той же функцией, что и для главного потока; поток его
           // только применяет (`engine/sandbox/overlay-router-spec.ts`).
           router: workerInternals.overlayRouterSpecFor(deps, r.symbols.length),

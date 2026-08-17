@@ -30,7 +30,17 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { BacktestRunRequest, ModuleBundle, ValidationIssue } from '@trading/research-contracts';
 
-import { AUTH, buildTestApp } from './helpers.js';
+import { AUTH, buildTestApp, testDeps } from './helpers.js';
+
+/**
+ * Зависимости БЕЗ подсунутого хранилища: приложение построит файловое из конфигурации теста.
+ * Ключ убирается явно — `testDeps()` кладёт `InMemoryArtifactStore` всегда, и «мы его не просили»
+ * здесь не сработало бы.
+ */
+function depsWithFileStore(): ReturnType<typeof testDeps> {
+  const { artifactStore: _unusedInMemory, ...rest } = testDeps();
+  return rest as ReturnType<typeof testDeps>;
+}
 import { loadConfig } from '../src/config.js';
 import { __resetTapeCachesForTest } from '../src/data/tape-cache.js';
 
@@ -74,7 +84,14 @@ async function runAndReadBack(
     barLoopThread: opts.barLoopThread,
     ...(opts.barBatching === true ? { barBatching: true } : {}),
     overlaySandbox: { ...loadConfig().overlaySandbox, backend: 'isolate' },
-  });
+  },
+  // ХРАНИЛИЩЕ ФАЙЛОВОЕ, из конфигурации теста. `testDeps()` по умолчанию подсовывает
+  // `InMemoryArtifactStore`, и на потоковой дороге это меняло ПРЕДМЕТ пробы: такое хранилище
+  // неописуемо, поток его получить не может, и прогон отвергается по ОКРУЖЕНИЮ раньше, чем дойдёт
+  // до причины, ради которой проба стоит. Здесь проверяются причины, относящиеся к ЗАПРОСУ, —
+  // значит окружение обязано быть исправным, как на прод-дороге.
+  depsWithFileStore(),
+  );
   try {
     const res = await app.server.inject({
       method: 'POST',

@@ -74,10 +74,27 @@ async function runSpec(spec: ThreadRunSpec): Promise<ThreadRunReply> {
       // не должен попадать в хэшируемый `RunOutcome`. Фикстуры станков этих полей не несут — их
       // добавляет HTTP-приём, — поэтому прежний прямой вызов проходил тесты и сломался бы на первом
       // же настоящем задании из очереди.
+      // Хранилище собирается ЗДЕСЬ из описания — блокер №4. Оно не проходит через `postMessage`
+      // (интерфейс с методами), а возвращать документы на главный поток для записи нельзя: ссылки
+      // на артефакты входят в `assembleResult`, то есть в хеш результата, и дописывать их
+      // постфактум значило бы ослабить порядок «записать → сверить → собрать» ровно там, где гейт
+      // ADR-0014 и существует. С описанием порядок остаётся ЛОКАЛЬНЫМ и одинаковым на обеих
+      // ветках.
+      //
+      // Отсутствие описания здесь НЕ подменяется ничем: actor-путь отвергается хостом ДО запуска
+      // потока, а legacy хранилища не читает вовсе. Подставить сюда `InMemoryArtifactStore` значило
+      // бы записать артефакты в экземпляр, умирающий вместе с потоком, при внешне успешном
+      // прогоне.
+      const artifactStore =
+        spec.artifactStore === undefined
+          ? undefined
+          : await (await import('../../storage/stores.js')).artifactStoreFromSpec(spec.artifactStore);
+
       const result = await runStrategyBacktest(spec.request as never, {
         registry,
         router,
         marketTape,
+        ...(artifactStore !== undefined ? { artifactStore } : {}),
         ...(spec.flags ?? {}),
       } as never);
       // Ошибки песочницы переживают `closeAll()` по построению роутера — снимаем ДО teardown, но
