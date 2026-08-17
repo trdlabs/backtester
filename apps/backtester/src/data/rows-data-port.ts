@@ -173,6 +173,20 @@ export class RowsDataPort implements BacktesterDataPort {
     this.preflight = (fromMs, toMs) => this.client.preflight(fromMs, toMs);
   }
 
+  /**
+   * ПРОИСХОЖДЕНИЕ СВЕЧЕЙ ЗДЕСЬ ПОКА НЕ ПРОБРАСЫВАЕТСЯ, и это блокировка, а не пробел.
+   *
+   * `HistoricalCoverageEntry` объявлен в `@trdlabs/sdk` (платформенный SDK) и поля венью не несёт;
+   * у snapshot'а есть index-signature для forward-compat, у ЗАПИСИ — нет. Прочитать поле, которого
+   * нет в типе, можно только приведением — то есть обещанием компилятору вместо проверки, и ровно
+   * в том месте, где значение станет ДОКАЗАТЕЛЬСТВОМ происхождения. Этого делать нельзя.
+   *
+   * Цепь снятия cc#365 (звеньев на одно больше, чем предполагалось при разделении среза):
+   * рекордер пишет ключ → `platform` отдаёт его в `/historical/coverage` → `@trdlabs/sdk`
+   * объявляет поле в `HistoricalCoverageEntry` → ЭТОТ порт пробрасывает его в `DatasetDescriptor`.
+   * Пока третье звено не сделано, здесь честнее не иметь значения вовсе: отсутствие читается как
+   * «неизвестно», и actor-путь отвергает прогон.
+   */
   async listDatasets(): Promise<DatasetDescriptor[]> {
     const snapshot = await this.client.coverage();
     if (snapshot.availability === 'unavailable') return [];

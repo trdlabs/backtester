@@ -1,0 +1,102 @@
+// ПРОИСХОЖДЕНИЕ СВЕЧЕЙ У НАСТОЯЩИХ ПОРТОВ (083 S3, снятие cc#365) — потребительская половина.
+//
+// ═══ ЧТО ЗДЕСЬ ПРОВЕРЯЕТСЯ, А ЧТО НЕТ ═══
+//
+// Цепь снятия блокера длиннее, чем кажется: рекордер пишет источник в состав дня →
+// `platform` отдаёт его в покрытии → `@trdlabs/sdk` объявляет поле в `HistoricalCoverageEntry` →
+// порт бэктестера кладёт его в `DatasetDescriptor` → `proveCandleVenue` превращает в
+// доказательство. Здесь закрыто ПОСЛЕДНЕЕ звено и только оно.
+//
+// ═══ ПОЧЕМУ ОТСУТСТВИЕ ОБЯЗАНО БЫТЬ ОТКАЗОМ ═══
+//
+// У писателя значение сегодня берётся с подстановкой (`args['price-source'] || 'bybit'`), то есть
+// «оператор назвал bybit» и «оператор промолчал» по значению НЕРАЗЛИЧИМЫ. Единственное, что
+// потребитель может сделать честно, — не подставлять ничего своего: нет ключа, значит нет
+// доказательства, значит отказ. Дефолт на этой стороне превратил бы молчание писателя в
+// утверждение читателя.
+
+import { describe, expect, it } from 'vitest';
+import type { DatasetDescriptor } from '@trading/research-contracts';
+
+import { MockPlatformDataPort } from '../src/data/mock-platform-data-port.js';
+import { proveCandleVenue } from '../src/engine/actor/admission.js';
+
+const T0 = 1_700_000_000_000;
+
+/** Ответ мока на `/historical/coverage` — ровно та форма, которую разбирает порт. */
+const coverage = (over: Record<string, unknown> = {}): unknown => ({
+  availability: 'available',
+  entries: [
+    {
+      symbol: 'BTCUSDT',
+      timeframe: '1m',
+      fromMs: T0,
+      toMs: T0 + 60_000,
+      barCount: 2,
+      availability: 'available',
+      ...over,
+    },
+  ],
+});
+
+function portOver(body: unknown): MockPlatformDataPort {
+  const fetchImpl = (async () =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof globalThis.fetch;
+  return new MockPlatformDataPort({ baseUrl: 'http://mock.invalid', fetchImpl });
+}
+
+describe('mock-platform: происхождение доезжает до дескриптора', () => {
+  it('объявленное венью проброшено', async () => {
+    const [d] = await portOver(coverage({ candleVenue: 'bybit' })).listDatasets();
+    expect(d?.candleVenue).toBe('bybit');
+  });
+
+  it('НЕобъявленное остаётся без ключа, а не пустым', async () => {
+    // Проверяется отсутствие КЛЮЧА, а не равенство `undefined`: `{candleVenue: undefined}` пережил
+    // бы JSON-сериализацию как потеря, а отсутствие ключа — как отсутствие. Ниже по цепи разница
+    // становится разницей между «неизвестно» и «объявлено пустым».
+    const [d] = await portOver(coverage()).listDatasets();
+    expect(Object.prototype.hasOwnProperty.call(d as DatasetDescriptor, 'candleVenue')).toBe(false);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: дескриптор вообще собран', async () => {
+    // Иначе обе пробы выше зеленели бы на пустом списке.
+    const list = await portOver(coverage({ candleVenue: 'bybit' })).listDatasets();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.datasetRef).toBe('BTCUSDT:1m');
+    expect(list[0]?.rowCount).toBe(2);
+  });
+});
+
+describe('прувер отвечает на дескриптор так, как обязан', () => {
+  it('объявленное венью доказано и названо источником', async () => {
+    const [d] = await portOver(coverage({ candleVenue: 'bybit' })).listDatasets();
+    const proven = proveCandleVenue({
+      datasetRef: d!.datasetRef,
+      ...(d!.candleVenue !== undefined ? { candleVenue: d!.candleVenue } : {}),
+    });
+    expect(proven.proven).toBe(true);
+    expect(proven.proven === true && proven.venue).toBe('bybit');
+  });
+
+  it('НЕобъявленное — отказ, и причина названа', async () => {
+    const [d] = await portOver(coverage()).listDatasets();
+    const proven = proveCandleVenue({
+      datasetRef: d!.datasetRef,
+      ...(d!.candleVenue !== undefined ? { candleVenue: d!.candleVenue } : {}),
+    });
+    expect(proven.proven).toBe(false);
+    expect(proven.proven === false && proven.reason).toMatch(/не объявляет происхождение свечей/);
+  });
+
+  it('пробел вместо венью — тоже отказ, а не доказательство', async () => {
+    // Пробел выглядит заполненным значением и прошёл бы проверку «ключ есть». Доказательством
+    // объявляется ЗНАЧЕНИЕ, а не факт присутствия ключа.
+    const [d] = await portOver(coverage({ candleVenue: '   ' })).listDatasets();
+    const proven = proveCandleVenue({ datasetRef: d!.datasetRef, candleVenue: d!.candleVenue! });
+    expect(proven.proven).toBe(false);
+  });
+});
