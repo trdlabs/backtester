@@ -184,6 +184,69 @@ describe('связанная ветвь обслуживает КАЖДЫЙ си
   });
 });
 
+
+/**
+ * Подписки, порождённые ТРЕБОВАНИЯМИ манифеста, — без канонического хостового источника.
+ *
+ * Хостовый в списке есть всегда и никакому требованию не принадлежит; отличается он отсутствием
+ * `requirementId`, а не именем — по имени это была бы догадка о чужой строке.
+ */
+const requirementSubscriptions = (admission: {
+  readonly subscriptions: readonly { readonly requirementId?: string }[];
+}): readonly string[] =>
+  admission.subscriptions
+    .map((s) => s.requirementId)
+    .filter((id): id is string => id !== undefined);
+
+describe('ФИКСИРОВАННАЯ ветвь обслуживает ТОЛЬКО свой символ', () => {
+  it('требование чужого символа не попадает в подписки актора', async () => {
+    // ДЫРА, НАЙДЕННАЯ МУТАЦИЕЙ. Отбор чужого требования — исходное поведение фиксированной ветви,
+    // и на уровне ДОПУСКА его не пиннил никто: мутация «фиксированная ветвь обслуживает любую
+    // ленту» проходила зелёной. Отказы уровня прогона её не ловят — они срабатывают раньше и
+    // говорят о другом (символ вне прогона / символ без требований).
+    //
+    // Незамеченной ценой было бы вот что: актор получал бы события ЧУЖОГО инструмента под своим
+    // `subscriptionId`, и стратегия торговала бы по смешанным лентам, не имея способа заметить.
+    const { admitActorMarketData, proveCandleVenue } = await import('../src/engine/actor/admission.js');
+
+    const admission = admitActorMarketData(
+      strategyFor([fixed('BTCUSDT', 'r-btc'), fixed('ETHUSDT', 'r-eth')]),
+      {
+        candleVenue: proveCandleVenue({ datasetRef: 'probe', candleVenue: VENUE }),
+        symbol: 'BTCUSDT',
+        barIntervalUs: MINUTE_US,
+        barCount: 5,
+        carries: () => false,
+      },
+    );
+
+    expect(admission.refusal).toBeNull();
+    // РОВНО ОДНА подписка требования, и именно своя. Проверяется идентификатор, а не число:
+    // совпадение по количеству прошло бы и при подмене одной подписки другой.
+    //
+    // Хостовый источник отбирается намеренно: он есть в списке ВСЕГДА и требованию не принадлежит
+    // (`requirementId` у него отсутствует). Считать его наравне значило бы мерить не тот предмет.
+    expect(requirementSubscriptions(admission)).toEqual(['r-btc']);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: связанное требование в тех же условиях подписку ДАЁТ', async () => {
+    // Иначе проба выше зеленела бы у реализации, отбрасывающей вообще всё, — и «чужого нет»
+    // означало бы «нет ничего».
+    const { admitActorMarketData, proveCandleVenue } = await import('../src/engine/actor/admission.js');
+
+    const admission = admitActorMarketData(strategyFor([bound('r-any')]), {
+      candleVenue: proveCandleVenue({ datasetRef: 'probe', candleVenue: VENUE }),
+      symbol: 'BTCUSDT',
+      barIntervalUs: MINUTE_US,
+      barCount: 5,
+      carries: () => false,
+    });
+
+    expect(admission.refusal).toBeNull();
+    expect(requirementSubscriptions(admission)).toEqual(['r-any']);
+  });
+});
+
 describe('НИ ОДИН ПОСТАВЛЯЕМЫЙ ПРОФИЛЬ РИСКА НЕ ДОПУСКАЕТ MULTI-SYMBOL', () => {
   it('каждый профиль доверенного реестра объявляет maxConcurrentPositions — и потому отвергает', async () => {
     // ЭТА ПРОБА ФИКСИРУЕТ НЕ ПОВЕДЕНИЕ, А ТУПИК, и стоит здесь именно поэтому.
