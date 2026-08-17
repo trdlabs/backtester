@@ -1,6 +1,6 @@
 {
   "name": "@trdlabs/backtester-sdk",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Standalone authoring, contracts, artifacts and HTTP client SDK for trading-backtester.",
   "type": "module",
   "license": "Apache-2.0",

@@ -21,7 +21,7 @@ const pkg = JSON.parse(
 describe('@trdlabs/backtester-sdk package shape', () => {
   it('is public, licensed and exposes only the approved entrypoints', () => {
     expect(pkg.name).toBe('@trdlabs/backtester-sdk');
-    expect(pkg.version).toBe('0.8.1');
+    expect(pkg.version).toBe('0.8.2');
     expect(pkg.private).not.toBe(true);
     expect(pkg.license).toBe('Apache-2.0');
     expect(Object.keys(pkg.exports).sort()).toEqual([
