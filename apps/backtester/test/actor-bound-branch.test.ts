@@ -119,6 +119,33 @@ function executorPlacingOnce(): ActorLifecycleExecutor {
  * не в код: поставляемый профиль потребует сделать поле необязательным, то есть ещё одного звена
  * релизной цепочки.
  */
+const RISK_BASE = {
+  id: 'probe_risk',
+  version: '1.0.0',
+  exposureLimits: { maxPositionNotionalPct: 1.0 },
+  allowedSides: ['long', 'short'],
+} satisfies RiskProfileShape;
+
+/** Прогон с ЯВНО названным профилем риска — им и различаются пробы портфельного лимита. */
+async function runWithRisk(
+  symbols: readonly string[],
+  reqs: readonly MarketDataRequirement[],
+  riskProfile: RiskProfileShape,
+) {
+  return runActorProduction({
+    executor: executorPlacingOnce(),
+    strategy: strategyFor(reqs),
+    symbols,
+    dataset: datasetOf(symbols),
+    barIntervalUs: MINUTE_US,
+    seed: 1,
+    params: {},
+    costs: { feeBps: 0, slippageBps: 0, initialEquity: 10_000 },
+    riskProfile,
+    artifactStore: new InMemoryArtifactStore(),
+  } as never);
+}
+
 async function run(symbols: readonly string[], reqs: readonly MarketDataRequirement[]) {
   return runActorProduction({
     executor: executorPlacingOnce(),
@@ -254,48 +281,53 @@ describe('ФИКСИРОВАННАЯ ветвь обслуживает ТОЛЬ�
   });
 });
 
-describe('НИ ОДИН ПОСТАВЛЯЕМЫЙ ПРОФИЛЬ РИСКА НЕ ДОПУСКАЕТ MULTI-SYMBOL', () => {
-  it('каждый профиль доверенного реестра объявляет maxConcurrentPositions — и потому отвергает', async () => {
-    // ЭТА ПРОБА ФИКСИРУЕТ НЕ ПОВЕДЕНИЕ, А ТУПИК, и стоит здесь именно поэтому.
-    //
-    // Ступень 1 multi-symbol влита, но воспользоваться ею из коробки нечем: контракт объявляет
-    // `RiskProfile.maxConcurrentPositions` ОБЯЗАТЕЛЬНЫМ, а правило портфеля отвергает прогон при
-    // любом конечном значении — координатора над акторами в этом срезе нет, и применить лимит к
-    // каждому актору отдельно запрещено решением владельца 2026-08-14.
-    //
-    // Проба покраснеет ровно тогда, когда тупик разомкнут: появится поставляемый профиль без
-    // поля (после того как контракт сделает его необязательным). Красный здесь — это ХОРОШАЯ
-    // новость, и текст отказа обязан об этом сказать, иначе следующий читатель «починит» пробу.
-    const { TRUSTED_REGISTRY_DEFINITION } = await import('../src/engine/registry-definition.js');
-    const shipped = TRUSTED_REGISTRY_DEFINITION.riskProfiles;
-
-    expect(shipped.length).toBeGreaterThan(0);
-    for (const profile of shipped) {
-      expect(
-        (profile as { maxConcurrentPositions?: number }).maxConcurrentPositions,
-        `профиль ${profile.id} больше не объявляет maxConcurrentPositions — если это осознанный ` +
-          'шаг под multi-symbol, тупик разомкнут и эту пробу надо ЗАМЕНИТЬ проверкой того, что ' +
-          'прогон под ним действительно идёт, а не просто удалить',
-      ).toBeTypeOf('number');
-    }
+describe('ПОРТФЕЛЬНЫЙ ЛИМИТ: отказ ровно там, где гарантию нечем удержать', () => {
+  it('ФАКТ, НА КОТОРОМ СТОИТ ВСЁ РАССУЖДЕНИЕ: один актор держит не больше ОДНОЙ позиции', async () => {
+    // Граница «N акторов ⇒ не больше N позиций портфеля» структурна ровно потому, что
+    // односимвольный актор держит максимум одну позицию. Если ступень 2 сделает актора
+    // мультиинструментным, граница перестанет быть верной — и это обязано сломаться ЗАМЕТНО,
+    // а не тихо разрешить прогон, чью гарантию больше нечем удержать.
+    const { openPositionsOf } = await import('../src/engine/actor/risk.js');
+    expect(openPositionsOf(0)).toBe(0);
+    expect(openPositionsOf(5)).toBe(1);
+    expect(openPositionsOf(-5)).toBe(1);
+    expect(openPositionsOf(0.0001)).toBe(1);
   });
 
-  it('ПРОВЕРКА ПРОВЕРКИ: под поставляемым профилем многосимвольный прогон действительно отвергается', async () => {
-    // Без этого утверждение выше было бы про форму данных, а не про последствие.
+  it('лимит МЕНЬШЕ числа акторов — отказ: границу нечем удержать', async () => {
     const { DEFAULT_RISK } = await import('../src/engine/profiles.js');
-    const out = await runActorProduction({
-      executor: executorPlacingOnce(),
-      strategy: strategyFor([bound('r1')]),
-      symbols: [...SYMBOLS],
-      dataset: datasetOf([...SYMBOLS]),
-      barIntervalUs: MINUTE_US,
-      seed: 1,
-      params: {},
-      costs: { feeBps: 0, slippageBps: 0, initialEquity: 10_000 },
-      riskProfile: DEFAULT_RISK,
-      artifactStore: new InMemoryArtifactStore(),
-    } as never);
+    // DEFAULT_RISK объявляет 1: два актора могут держать две позиции, разрешена одна.
+    const out = await runWithRisk([...SYMBOLS], [bound('r1')], DEFAULT_RISK);
     expect(out.refusal?.message).toMatch(/для ПОРТФЕЛЯ/);
+  });
+
+  it('лимит НЕ МЕНЬШЕ числа акторов — прогон идёт: граница структурна', async () => {
+    // Поставляемый профиль, а не выдуманный в тесте: доказывать работу на конфигурации, которой
+    // у потребителя нет, значило бы доказывать не то.
+    const { MULTI_SYMBOL_RISK } = await import('../src/engine/profiles.js');
+    const out = await runWithRisk([...SYMBOLS], [bound('r1')], MULTI_SYMBOL_RISK);
+    expect(out.refusal).toBeNull();
+    expect(out.records).toHaveLength(SYMBOLS.length);
+  });
+
+  it('ГРАНИЦА РОВНО НА РАВЕНСТВЕ: L === N проходит, L === N-1 отвергается', async () => {
+    // Стороны различаются не строгостью знака, а смыслом: при L === N портфель достигает
+    // объявленного максимума и не превышает его; при L === N-1 превышение возможно.
+    const atLimit = { ...RISK_BASE, maxConcurrentPositions: SYMBOLS.length };
+    const belowLimit = { ...RISK_BASE, maxConcurrentPositions: SYMBOLS.length - 1 };
+
+    expect((await runWithRisk([...SYMBOLS], [bound('r1')], atLimit)).refusal).toBeNull();
+    expect(
+      (await runWithRisk([...SYMBOLS], [bound('r1')], belowLimit)).refusal?.message,
+    ).toMatch(/для ПОРТФЕЛЯ/);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: односимвольный прогон под DEFAULT_RISK не задет', async () => {
+    // Отказ обязан относиться к МНОЖЕСТВУ акторов, а не к наличию лимита: дефолт на одном
+    // символе работал и обязан работать.
+    const { DEFAULT_RISK } = await import('../src/engine/profiles.js');
+    const out = await runWithRisk(['BTCUSDT'], [bound('r1')], DEFAULT_RISK);
+    expect(out.refusal).toBeNull();
   });
 });
 

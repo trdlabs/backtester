@@ -1,7 +1,7 @@
 import { METRIC_CATALOG as MOMENTUM_METRIC_CATALOG } from '@trading/research-contracts';
 import { METRIC_CATALOG as OVERLAY_METRIC_CATALOG } from '@trading/research-contracts/research';
 import { E1A_METRIC_CATALOG } from './metrics.js';
-import { DEFAULT_RISK, DEFAULT_EXEC } from './profiles.js';
+import { DEFAULT_RISK, DEFAULT_EXEC, MULTI_SYMBOL_RISK } from './profiles.js';
 import { shortAfterPump } from './examples/short-after-pump.strategy.js';
 import { earlyExitShortAfterPump } from './examples/early-exit-short-after-pump.overlay.js';
 import type {
@@ -37,7 +37,13 @@ export interface RegistryDefinition {
 export const TRUSTED_REGISTRY_DEFINITION: RegistryDefinition = {
   strategies: [shortAfterPump],
   overlays: [earlyExitShortAfterPump],
-  riskProfiles: [DEFAULT_RISK],
+  // ДВА поставляемых профиля риска, а не один. `DEFAULT_RISK` объявляет
+  // `maxConcurrentPositions: 1` для ПОРТФЕЛЯ, поэтому многосимвольный actor-прогон под ним
+  // отвергается: два актора могут держать две позиции, а разрешена одна. `MULTI_SYMBOL_RISK`
+  // объявляет 10 — и это число ЧЕСТНО СОБЛЮДАЕТСЯ до десяти символов, потому что односимвольный
+  // актор держит не больше одной позиции по построению. Выбор между профилями делает АВТОР
+  // ЗАПРОСА явно, а не хост за него.
+  riskProfiles: [DEFAULT_RISK, MULTI_SYMBOL_RISK],
   executionProfiles: [DEFAULT_EXEC],
   momentumMetricCatalog: MOMENTUM_METRIC_CATALOG,
   // Advertised overlay vocabulary = external kernel catalog + E1a local extension. The default-overlay
