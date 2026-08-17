@@ -92,6 +92,43 @@ describe('прувер отвечает на дескриптор так, как
     expect(proven.proven === false && proven.reason).toMatch(/не объявляет происхождение свечей/);
   });
 
+  it('НЕОДНОРОДНЫЕ сутки — отказ ОТЛИЧИМЫЙ от «неизвестно»', () => {
+    // Различение машиночитаемое, а не только текстом. «Неизвестно» и «источников было несколько» —
+    // разные состояния: второе есть ЗНАНИЕ о данных, и чинится оно пересборкой суток, а не
+    // дозаписью метаданных. Свести их в одну ветку значило бы потерять доказанный факт.
+    const out = proveCandleVenue({
+      datasetRef: 'mixed-day',
+      candleVenueHomogeneous: false,
+    });
+    expect(out.proven).toBe(false);
+    expect(out.proven === false && out.unknownBecause).toBe('heterogeneous');
+    expect(out.proven === false && out.reason).toMatch(/НЕОДНОРОДЕН/);
+  });
+
+  it('неоднородность перевешивает ПРИСУТСТВУЮЩЕЕ имя', () => {
+    // По согласованной форме при неоднородности имя не пишется. Полагаться на дисциплину писателя
+    // нельзя: приехавшее имя будет именем ОДНОГО из источников и совпадёт с чьим-нибудь
+    // требованием, доказав происхождение, которого у части минут не было.
+    const out = proveCandleVenue({
+      datasetRef: 'mixed-day',
+      candleVenue: 'bybit',
+      candleVenueHomogeneous: false,
+    });
+    expect(out.proven).toBe(false);
+    expect(out.proven === false && out.unknownBecause).toBe('heterogeneous');
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: та же лента без флага неоднородности ДОКАЗАНА', () => {
+    // Иначе пробы выше зеленели бы на пруверe, который отвергает всё подряд.
+    const out = proveCandleVenue({ datasetRef: 'mixed-day', candleVenue: 'bybit' });
+    expect(out.proven).toBe(true);
+  });
+
+  it('отсутствие объявления различимо как «неизвестно», а не как неоднородность', () => {
+    const out = proveCandleVenue({ datasetRef: 'silent-day' });
+    expect(out.proven === false && out.unknownBecause).toBe('undeclared');
+  });
+
   it('пробел вместо венью — тоже отказ, а не доказательство', async () => {
     // Пробел выглядит заполненным значением и прошёл бы проверку «ключ есть». Доказательством
     // объявляется ЗНАЧЕНИЕ, а не факт присутствия ключа.
