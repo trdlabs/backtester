@@ -20,9 +20,15 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { unsupportedExecutionRules } from '../src/engine/actor/production.js';
+import { CONTRACT_VERSION } from '@trading/research-contracts/research';
+
+import { runActorProduction, unsupportedExecutionRules } from '../src/engine/actor/production.js';
 import type { ExecutionProfileShape } from '../src/engine/actor/production.js';
-import { DEFAULT_EXEC } from '../src/engine/profiles.js';
+import type { ActorExecutionHandle, ActorLifecycleExecutor } from '../src/engine/actor/execution-handle.js';
+import type { ResolvedStrategy } from '../src/engine/artifacts.js';
+import type { CandleDataset } from '../src/engine/dataset.js';
+import { InMemoryArtifactStore } from '../src/artifacts/store.js';
+import { DEFAULT_EXEC, DEFAULT_RISK } from '../src/engine/profiles.js';
 
 const base: ExecutionProfileShape = {
   id: 'probe_exec',
@@ -31,6 +37,100 @@ const base: ExecutionProfileShape = {
   feeModel: { kind: 'fixed_bps', bps: 10 },
   slippageModel: { kind: 'fixed_bps', bps: 5 },
 };
+
+describe('ГЕЙТ ДЕЙСТВУЕТ НА НАСТОЯЩЕЙ ДОРОГЕ, а не только существует', () => {
+  // ЭТИ ДВЕ ПРОБЫ ЗАВЕДЕНЫ ПОТОМУ, ЧТО ГЕЙТ ОДНАЖДЫ БЫЛ МЁРТВОЙ ПРОВОДКОЙ.
+  //
+  // `unsupportedExecutionRules` была написана, задокументирована и покрыта всеми пробами ниже — и
+  // не вызывалась НИОТКУДА. Пробы оставались зелёными, потому что зовут функцию НАПРЯМУЮ: они
+  // проверяют реализацию правила, но ничего не говорят о том, включено ли оно. Ревью нашло это по
+  // файлам ветки, а не по диффу.
+  //
+  // Разница между «правило написано» и «правило действует» видна только отсюда — с прогона,
+  // который идёт продовым путём и обязан быть отвергнут.
+
+  const MINUTE_US = 60_000_000;
+  const T0 = 1_700_000_000_000;
+
+  const datasetOf = (): CandleDataset =>
+    ({
+      datasetRef: 'exec-gate-probe-1m',
+      timeframe: '1m',
+      candleVenue: 'bybit',
+      symbols: () => ['BTCUSDT'],
+      candles: () =>
+        Array.from({ length: 3 }, (_, i) => ({
+          ts: T0 + i * 60_000,
+          open: 100 + i,
+          high: 101 + i,
+          low: 99 + i,
+          close: 100 + i,
+          volume: 10,
+        })),
+    }) as unknown as CandleDataset;
+
+  const strategy = {
+    manifest: {
+      id: 'exec-gate-probe',
+      version: '1.0.0',
+      kind: 'strategy',
+      contractVersion: CONTRACT_VERSION,
+      lifecycle: 'event_driven',
+      marketData: [
+        {
+          kind: 'candles',
+          id: 'r1',
+          instrument: { venue: 'bybit', symbol: 'BTCUSDT' },
+          interval: MINUTE_US,
+          lookback: 0,
+          revisionPolicy: { mode: 'final_only' },
+          priceType: 'trade',
+        },
+      ],
+    },
+    module: {},
+  } as unknown as ResolvedStrategy;
+
+  const runWithExec = async (executionProfile: ExecutionProfileShape | undefined) =>
+    runActorProduction({
+      executor: {
+        createActor: async () => ({ __h: 1 }) as unknown as ActorExecutionHandle,
+        executeActorEvent: async () => [],
+        disposeActor: async () => {},
+      } satisfies ActorLifecycleExecutor,
+      strategy,
+      symbols: ['BTCUSDT'],
+      dataset: datasetOf(),
+      barIntervalUs: MINUTE_US,
+      seed: 1,
+      params: {},
+      costs: { feeBps: 0, slippageBps: 0, initialEquity: 10_000 },
+      riskProfile: DEFAULT_RISK,
+      artifactStore: new InMemoryArtifactStore(),
+      ...(executionProfile !== undefined ? { executionProfile } : {}),
+    } as never);
+
+  it('прогон с same_bar_close ОТВЕРГАЕТСЯ продовым путём', async () => {
+    // Красная без подключения гейта — и именно этим отличается от всех проб ниже.
+    const out = await runWithExec({ ...base, fillModel: { kind: 'same_bar_close' } });
+    expect(out.refusal?.message).toMatch(/профиль исполнения/);
+    expect(out.refusal?.message).toMatch(/fillModel\.kind=same_bar_close/);
+    expect(out.refusal?.message).toMatch(/Чинит ОПЕРАТОР СТЕНДА/);
+    expect(out.accumulators).toBeUndefined();
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: тот же прогон с исполнимым профилем ИДЁТ', async () => {
+    // Иначе проба выше зеленела бы и у реализации, отвергающей любой прогон с профилем.
+    const out = await runWithExec(base);
+    expect(out.refusal).toBeNull();
+  });
+
+  it('профиль НЕ передан — «нечего проверять», а не «проверка пройдена»', async () => {
+    // Вызывающие без профиля (пробы уровня раннера) не должны получать отказ на пустом месте.
+    const out = await runWithExec(undefined);
+    expect(out.refusal).toBeNull();
+  });
+});
 
 describe('поставляемый профиль исполнения проходит', () => {
   it('DEFAULT_EXEC исполним actor-путём — дефолт не сдвинулся', () => {
