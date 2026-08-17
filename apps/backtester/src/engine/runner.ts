@@ -1250,6 +1250,10 @@ export async function runBacktest(request: BacktestRunRequest, deps: RunDeps): P
         },
         barIntervalUs: (parseTimeframeMs(request.timeframe) ?? 60_000) * 1000,
         riskProfile: riskProfile as never,
+        // Профиль исполнения едет ЦЕЛИКОМ, а не только вынутыми выше bps: допуск обязан увидеть и
+        // те правила, которых actor-путь не применяет, иначе объявленное и неисполняемое проедет
+        // молча — ровно то, чего гейт риск-профиля не допускает с самого начала.
+        executionProfile: execProfile as never,
       });
       if (actorOutcome.refusal !== null) {
         return rejected(actorOutcome.refusal.code, actorOutcome.refusal.message, actorOutcome.refusal.path);

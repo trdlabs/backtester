@@ -41,6 +41,17 @@ export interface ActorProductionInput {
   readonly barIntervalUs: number;
   /** Риск-профиль прогона. Обязателен: без него нечем проверить, что лимиты кто-то соблюдает. */
   readonly riskProfile: RiskProfileShape;
+  /**
+   * Профиль ИСПОЛНЕНИЯ прогона — целиком, а не только вынутые из него bps.
+   *
+   * Нужен именно целиком: гейт совместимости обязан видеть и те правила, которые путь НЕ
+   * применяет. Отдать сюда одни `costs` значило бы показать допуску ровно то подмножество,
+   * которое уже исполнимо, и спрашивать его было бы не о чем.
+   *
+   * Необязателен ради вызывающих, у которых профиля нет (пробы уровня раннера): отсутствие
+   * означает «нечего проверять», а не «проверка пройдена».
+   */
+  readonly executionProfile?: ExecutionProfileShape;
 }
 
 /** Риск-профиль прогона в той форме, в какой его видит допуск: ключи важны все, включая чужие. */
@@ -212,6 +223,66 @@ export function portfolioLimitUnsupported(
   );
 }
 
+/** Профиль исполнения в той форме, в какой его видит допуск: ключи важны все, включая чужие. */
+export interface ExecutionProfileShape {
+  readonly id: string;
+  readonly version: string;
+  readonly fillModel?: { readonly kind?: unknown };
+  // `bps` объявлен наравне с `kind`, потому что гейт читает ОБА: модель может назваться
+  // `fixed_bps` и не нести числа, и это отдельный отказ, а не тот же самый.
+  readonly feeModel?: { readonly kind?: unknown; readonly bps?: unknown };
+  readonly slippageModel?: { readonly kind?: unknown; readonly bps?: unknown };
+  readonly fundingModel?: unknown;
+}
+
+/**
+ * Правила профиля ИСПОЛНЕНИЯ, которые actor-путь умеет применить. Whitelist — как у риска.
+ *
+ * ЗАЧЕМ ЭТО ЗАВЕДЕНО. У риск-профиля такой гейт стоял с самого начала и стоял затем, чтобы
+ * объявленное, но неисполняемое правило не проехало молча. У профиля ИСПОЛНЕНИЯ его не было, и
+ * асимметрия стоила ровно того, чего гейт риска не допускает: в actor-путь из профиля доезжают
+ * только `feeModel.bps` и `slippageModel.bps`, а `fillModel` не доезжает вовсе — прогон,
+ * объявивший `same_bar_close`, исполнялся по открытию СЛЕДУЮЩЕГО бара. Числа при этом выглядят
+ * совершенно законными: расхождение видно только тому, кто сравнит объявленное с исполненным.
+ *
+ * Дефолтный путь не двигается: `DEFAULT_EXEC` объявляет `next_bar_open` — ровно то, что дорога и
+ * делает. Гейт закрывает не поведение, а РАСХОЖДЕНИЕ между объявленным и исполняемым.
+ */
+const ACTOR_ENFORCEABLE_EXECUTION_RULES = new Set(['id', 'version', 'fillModel', 'feeModel', 'slippageModel']);
+
+/** Единственная fill-модель, которую actor-путь ИСПОЛНЯЕТ, а не только принимает. */
+const ACTOR_FILL_MODEL = 'next_bar_open';
+
+export function unsupportedExecutionRules(profile: ExecutionProfileShape): readonly string[] {
+  const unsupported: string[] = [];
+  const seen = profile as unknown as Readonly<Record<string, unknown>>;
+
+  for (const key of Object.keys(profile)) {
+    // `fundingModel` попадает сюда именно так: он объявляет начисление, которого actor-путь не
+    // делает (в `ActorExecutionCosts` его нет вовсе). Прогон под ним посчитался бы БЕЗ фандинга,
+    // и разница ушла бы прямо в pnl.
+    if (!ACTOR_ENFORCEABLE_EXECUTION_RULES.has(key)) unsupported.push(key);
+  }
+
+  const fill = seen.fillModel as { readonly kind?: unknown } | undefined;
+  if (fill !== undefined && String(fill.kind) !== ACTOR_FILL_MODEL) {
+    unsupported.push(`fillModel.kind=${String(fill.kind)}`);
+  }
+  // Комиссия и проскальзывание читаются как `.bps`, то есть модель обязана быть именно этой:
+  // у другой формы поля `bps` может не быть вовсе, и вместо числа приехал бы `undefined`.
+  for (const key of ['feeModel', 'slippageModel'] as const) {
+    const model = seen[key] as { readonly kind?: unknown; readonly bps?: unknown } | undefined;
+    if (model === undefined) continue;
+    if (String(model.kind) !== 'fixed_bps') {
+      unsupported.push(`${key}.kind=${String(model.kind)}`);
+    } else if (typeof model.bps !== 'number' || !Number.isFinite(model.bps)) {
+      unsupported.push(`${key}.bps=${String(model.bps)}`);
+    }
+  }
+
+  return unsupported;
+}
+
 export interface ActorProductionOutcome {
   readonly refusal: ActorAdmissionRefusal | null;
   readonly accumulators?: RunAccumulators;
@@ -260,9 +331,25 @@ export async function runActorProduction(
   // ЦЕЛИКОМ: допуск видит одну ленту и об остальных символах не знает, поэтому «требование на
   // символ вне прогона» он бы назвал «не тот символ», а «символ без требований» не заметил бы
   // вовсе — актор поднялся бы и не получил ничего.
+  const requirements =
+    (
+      input.strategy.manifest as {
+        marketData?: readonly { instrument: { symbol?: string }; symbolFrom?: unknown }[];
+      }
+    ).marketData ?? [];
+
+  // СВЯЗАННАЯ ВЕТВЬ ОБСЛУЖИВАЕТ ЛЮБОЙ СИМВОЛ ПРОГОНА, и оба отказа ниже обязаны это знать.
+  //
+  // Считать её символом «объявленным» нельзя — у неё символа нет вовсе; считать её отсутствующей
+  // тоже нельзя — тогда символ, покрытый ТОЛЬКО связанным требованием, был бы объявлен «без
+  // требований» и прогон отвергся бы при полностью законном манифесте. Поэтому она не участвует в
+  // множестве объявленных символов, но снимает второй отказ целиком.
+  const hasBoundRequirement = requirements.some((r) => r.symbolFrom === 'actor');
   const declaredSymbols = new Set(
-    ((input.strategy.manifest as { marketData?: readonly { instrument: { symbol: string } }[] })
-      .marketData ?? []).map((r) => r.instrument.symbol),
+    requirements
+      .filter((r) => r.symbolFrom !== 'actor')
+      .map((r) => r.instrument.symbol)
+      .filter((s): s is string => s !== undefined),
   );
   const runSymbols = new Set(input.symbols);
 
@@ -282,7 +369,9 @@ export async function runActorProduction(
     };
   }
 
-  const symbolsWithoutRequirements = [...runSymbols].filter((s) => !declaredSymbols.has(s)).sort();
+  const symbolsWithoutRequirements = hasBoundRequirement
+    ? []
+    : [...runSymbols].filter((s) => !declaredSymbols.has(s)).sort();
   if (symbolsWithoutRequirements.length > 0) {
     return {
       refusal: {
