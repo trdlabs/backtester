@@ -41,7 +41,7 @@ import { ObsRegistry } from './jobs/obs-registry.js';
 import { loadSigningKeyFromPem, type SigningKey } from './evidence/signing.js';
 import type { BundleStore } from './sandbox/bundle-store';
 import type { SandboxConfig } from './sandbox/sandbox-executor';
-import { createArtifactStore, createBundleStore } from './storage/stores';
+import { createArtifactStore, createBundleStore, describeArtifactStore } from './storage/stores';
 import { createS3ObjectClient } from './storage/s3-client';
 import { BarLoopThreadPool, defaultMaxWorkers } from './engine/thread/thread-pool';
 
@@ -171,6 +171,11 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
       ? await createS3ObjectClient(config.s3)
       : undefined;
   const artifactStore = overrides.artifactStore ?? (await createArtifactStore(config, sharedS3Client));
+  // Описание хранилища для барного цикла в отдельном потоке (блокер №4). Считается ТОЛЬКО когда
+  // работающий store действительно построен из этой конфигурации: подсунутый в обход неё описанию
+  // не подлежит, и описать его «по конфигу» значило бы выдать описание ДРУГОГО хранилища —
+  // артефакты уехали бы не туда при внешне успешном прогоне.
+  const artifactStoreSpec = overrides.artifactStore ? undefined : describeArtifactStore(config);
   const bundleStore = overrides.bundleStore ?? (await createBundleStore(config, sharedS3Client));
   const clock = overrides.clock ?? ((): number => Date.now());
   const uid = overrides.uid ?? ((): string => randomUUID());
@@ -223,6 +228,9 @@ export async function buildApp(config: AppConfig, overrides: BuildAppOptions = {
     ...completionDeps,
     dataPort,
     artifactStore,
+    // Только когда описание есть: отсутствие поля — законное состояние (подсунутый store), и
+    // actor-путь на потоковой ветке отвергнет прогон сам, назвав чинящего.
+    ...(artifactStoreSpec !== undefined ? { artifactStoreSpec } : {}),
     bundleStore,
     sandbox,
     overlaySandbox: config.overlaySandbox,
