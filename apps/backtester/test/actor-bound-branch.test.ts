@@ -192,11 +192,16 @@ describe('связанная ветвь обслуживает КАЖДЫЙ си
  * `requirementId`, а не именем — по имени это была бы догадка о чужой строке.
  */
 const requirementSubscriptions = (admission: {
-  readonly subscriptions: readonly { readonly requirementId?: string }[];
+  readonly subscriptions: readonly unknown[];
 }): readonly string[] =>
   admission.subscriptions
-    .map((s) => s.requirementId)
-    .filter((id): id is string => id !== undefined);
+    // Сужение через `in`, а не расширение типа: у хостового дескриптора поля НЕТ ВОВСЕ, а не
+    // «оно необязательно». Объявить его опциональным значило бы описать чужой union своей,
+    // более слабой формой — и разойтись с ним на первой же правке контракта.
+    .filter((s): s is { readonly requirementId: string } =>
+      typeof s === 'object' && s !== null && 'requirementId' in s,
+    )
+    .map((s) => s.requirementId);
 
 describe('ФИКСИРОВАННАЯ ветвь обслуживает ТОЛЬКО свой символ', () => {
   it('требование чужого символа не попадает в подписки актора', async () => {
@@ -220,7 +225,9 @@ describe('ФИКСИРОВАННАЯ ветвь обслуживает ТОЛЬ�
       },
     );
 
-    expect(admission.refusal).toBeNull();
+    // Сужение union'а, а не только проверка: у отказной ветви подписок НЕТ ВОВСЕ, и тип это
+    // знает. Бросок здесь заодно печатает причину — `toBeNull()` сообщил бы лишь «не null».
+    if (admission.refusal !== null) throw new Error(admission.refusal.message);
     // РОВНО ОДНА подписка требования, и именно своя. Проверяется идентификатор, а не число:
     // совпадение по количеству прошло бы и при подмене одной подписки другой.
     //
@@ -242,7 +249,7 @@ describe('ФИКСИРОВАННАЯ ветвь обслуживает ТОЛЬ�
       carries: () => false,
     });
 
-    expect(admission.refusal).toBeNull();
+    if (admission.refusal !== null) throw new Error(admission.refusal.message);
     expect(requirementSubscriptions(admission)).toEqual(['r-any']);
   });
 });
