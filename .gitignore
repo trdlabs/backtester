@@ -27,3 +27,8 @@ apps/backtester/.evidence-out/
 
 # VPS stand concrete env (secrets)
 deploy/vps/backtester.env
+
+# Деревья, создаваемые Claude Code, — тот же класс, что и .worktrees/.
+# Без этой строки созданное дерево показывается как untracked и уезжает в коммит
+# первым же `git add -A` — вместе с чужим node_modules.
+.claude/worktrees/
