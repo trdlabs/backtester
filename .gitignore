@@ -14,7 +14,7 @@ coverage/
 *.log
 *.tsbuildinfo
 .DS_Store
-.worktrees/
+.worktrees
 # gortex daemon/CLI local output (e.g. `gortex audit` writes .gortex/badge.svg) — never committed
 .gortex/
 # superpowers subagent-driven-development scratch (briefs, reports, ledger, review diffs) — never committed
@@ -31,4 +31,4 @@ deploy/vps/backtester.env
 # Деревья, создаваемые Claude Code, — тот же класс, что и .worktrees/.
 # Без этой строки созданное дерево показывается как untracked и уезжает в коммит
 # первым же `git add -A` — вместе с чужим node_modules.
-.claude/worktrees/
+.claude/worktrees
